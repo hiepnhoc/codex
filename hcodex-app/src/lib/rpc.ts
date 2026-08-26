@@ -46,7 +46,7 @@ export class CodexRpc {
   }
 
   async initialize(clientInfo: InitializeParams["clientInfo"]): Promise<InitializeResponse> {
-    const params: InitializeParams = { clientInfo, capabilities: null };
+    const params: InitializeParams = { clientInfo, capabilities: { experimentalApi: true, requestAttestation: false } };
     const res = (await this.request("initialize", params)) as InitializeResponse;
     this.notify("initialized");
     return res;

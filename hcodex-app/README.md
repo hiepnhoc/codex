@@ -44,7 +44,16 @@ Env overrides read by the Rust side:
 ## Roadmap
 
 1. [x] Agent chat: streaming, command/file-change items, approvals, model picker
-2. [ ] File tree + Monaco editor, agent diffs inline (`fs/*`, `fuzzyFileSearch`, `turn/diff/updated`)
-3. [ ] Terminal pane (xterm.js over `process/spawn` / `process/outputDelta`)
+2. [x] File tree + Monaco editor, agent diff in a "Changes" tab (`fs/*`, `turn/diff/updated`)
+3. [x] Terminal pane (xterm.js over `process/spawn` / `process/outputDelta`)
 4. [ ] Thread list / resume (`thread/list`, `thread/resume`)
-5. [ ] Provider/model settings UI (`config/read`, `config/batchWrite`)
+5. [ ] Fuzzy file search (`fuzzyFileSearch/*`), @-mentions in the composer
+6. [ ] Provider/model settings UI (`config/read`, `config/batchWrite`)
+7. [ ] Side-by-side diff per file change, accept/revert
+
+## Smoke tests (no GUI needed)
+
+```bash
+node scripts/smoke.mjs /tmp "Reply with exactly: pong"   # agent turn end-to-end
+node scripts/smoke-fs-process.mjs                         # fs/* + process/* (PTY)
+```
