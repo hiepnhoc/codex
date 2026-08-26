@@ -45,6 +45,7 @@ export default function App() {
         setModel(configured || ids[0] || "");
         setBoot("ready");
       } catch (e) {
+        console.error("boot failed:", e);
         setBoot("error");
         setBootMsg(String(e));
       }

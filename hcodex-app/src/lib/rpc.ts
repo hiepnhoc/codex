@@ -31,8 +31,20 @@ export class CodexRpc {
   private unlisten: UnlistenFn[] = [];
   private logHandlers = new Set<(line: string) => void>();
   private exitHandlers = new Set<() => void>();
+  private starting: Promise<{ codex_bin: string; codex_home: string | null; pid: number }> | null = null;
 
-  async start(opts?: { codexBin?: string; codexHome?: string }) {
+  /** Spawn app-server once; concurrent/repeated calls (React StrictMode) share the same start. */
+  start(opts?: { codexBin?: string; codexHome?: string }) {
+    if (!this.starting) {
+      this.starting = this.doStart(opts).catch((e) => {
+        this.starting = null;
+        throw e;
+      });
+    }
+    return this.starting;
+  }
+
+  private async doStart(opts?: { codexBin?: string; codexHome?: string }) {
     this.unlisten.push(
       await listen<string>("codex-rpc", (e) => this.onLine(e.payload)),
       await listen<string>("codex-log", (e) => this.logHandlers.forEach((h) => h(e.payload))),
@@ -45,16 +57,26 @@ export class CodexRpc {
     return info;
   }
 
-  async initialize(clientInfo: InitializeParams["clientInfo"]): Promise<InitializeResponse> {
-    const params: InitializeParams = { clientInfo, capabilities: { experimentalApi: true, requestAttestation: false } };
-    const res = (await this.request("initialize", params)) as InitializeResponse;
-    this.notify("initialized");
-    return res;
+  private initialized: Promise<InitializeResponse> | null = null;
+
+  /** Handshake once per connection (server rejects repeated `initialize`). */
+  initialize(clientInfo: InitializeParams["clientInfo"]): Promise<InitializeResponse> {
+    if (!this.initialized) {
+      const params: InitializeParams = { clientInfo, capabilities: { experimentalApi: true, requestAttestation: false } };
+      this.initialized = this.request<InitializeResponse>("initialize", params).then((res) => {
+        this.notify("initialized");
+        return res;
+      });
+      this.initialized.catch(() => (this.initialized = null));
+    }
+    return this.initialized;
   }
 
   async stop() {
     this.unlisten.forEach((u) => u());
     this.unlisten = [];
+    this.starting = null;
+    this.initialized = null;
     await invoke("stop_server");
   }
 

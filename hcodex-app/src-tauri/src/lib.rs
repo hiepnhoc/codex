@@ -139,6 +139,12 @@ fn default_cwd() -> String {
         .unwrap_or_else(|| "/".into())
 }
 
+/// Frontend console/error forwarding so `pnpm tauri dev` shows webview problems on stderr.
+#[tauri::command]
+fn frontend_log(level: String, message: String) {
+    eprintln!("[webview:{level}] {message}");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -148,7 +154,8 @@ pub fn run() {
             start_server,
             stop_server,
             rpc_send,
-            default_cwd
+            default_cwd,
+            frontend_log
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
