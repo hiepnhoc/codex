@@ -1,4 +1,5 @@
-//! hcodex harness: model discovery for the built-in `local-proxy` provider.
+//! hcodex harness: model discovery for OpenAI-compatible providers (local proxy,
+//! Ollama, LM Studio, custom `model_providers.*`).
 //!
 //! The proxy speaks the plain OpenAI `GET /v1/models` shape (`{"data":[{"id":..}]}`),
 //! not Codex's `ModelsResponse` catalog, so we map every model id onto a
@@ -17,6 +18,8 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CoreResult;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelVisibility;
+use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::openai_models::ReasoningEffortPreset;
 use serde::Deserialize;
 use tokio::time::timeout;
 
@@ -51,6 +54,7 @@ impl LocalProxyModelsEndpoint {
             .base_url
             .clone()
             .unwrap_or_else(|| codex_model_provider_info::LOCAL_PROXY_DEFAULT_BASE_URL.to_string());
+        // Fail fast on typos instead of guessing a URL.
         format!("{}/models", base.trim_end_matches('/'))
     }
 
@@ -84,16 +88,26 @@ impl LocalProxyModelsEndpoint {
             .into_iter()
             .filter(|m| seen.insert(m.id.clone()))
             .enumerate()
-            .map(|(index, m)| model_info_for(&m.id, m.owned_by.as_deref(), index as i32))
+            .map(|(index, m)| {
+                model_info_for(&m.id, m.owned_by.as_deref(), index as i32, &self.provider_info.name)
+            })
             .collect();
         Ok(models)
     }
 }
 
-pub(crate) fn model_info_for(slug: &str, owned_by: Option<&str>, priority: i32) -> ModelInfo {
+pub(crate) fn model_info_for(
+    slug: &str,
+    owned_by: Option<&str>,
+    priority: i32,
+    provider_name: &str,
+) -> ModelInfo {
     let mut info = model_info_from_slug(slug);
     info.display_name = slug.to_string();
-    info.description = owned_by.map(|o| format!("via local proxy ({o})"));
+    info.description = Some(match owned_by {
+        Some(o) => format!("via {provider_name} ({o})"),
+        None => format!("via {provider_name}"),
+    });
     info.visibility = ModelVisibility::List;
     info.supported_in_api = true;
     // The harness default model sorts first so the picker marks it as default.
@@ -102,6 +116,20 @@ pub(crate) fn model_info_for(slug: &str, owned_by: Option<&str>, priority: i32) 
     } else {
         priority
     };
+    // Expose the standard effort ladder; the proxy forwards `reasoning.effort`.
+    info.supported_reasoning_levels = [
+        (ReasoningEffort::Low, "Fast, lighter reasoning"),
+        (ReasoningEffort::Medium, "Balanced"),
+        (ReasoningEffort::High, "Deeper reasoning"),
+        (ReasoningEffort::XHigh, "Maximum reasoning"),
+    ]
+    .into_iter()
+    .map(|(effort, description)| ReasoningEffortPreset {
+        effort,
+        description: description.to_string(),
+    })
+    .collect();
+    info.default_reasoning_level = Some(ReasoningEffort::Medium);
     info.context_window = Some(DEFAULT_CONTEXT_WINDOW);
     info.max_context_window = Some(DEFAULT_CONTEXT_WINDOW);
     info.supports_parallel_tool_calls = true;

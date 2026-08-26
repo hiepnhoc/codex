@@ -338,9 +338,12 @@ struct ConfiguredModelProvider {
 }
 
 impl ConfiguredModelProvider {
-    /// hcodex: the built-in local proxy lists models via plain OpenAI `GET /models`.
+    /// hcodex: OpenAI-compatible providers (local proxy, Ollama, LM Studio, custom
+    /// `model_providers.*`) list models via plain `GET {base_url}/models`. Only
+    /// OpenAI itself and Bedrock keep the Codex catalog endpoint.
     fn models_endpoint(&self) -> Arc<dyn ModelsEndpointClient> {
-        if self.info.name == codex_model_provider_info::LOCAL_PROXY_PROVIDER_NAME {
+        let openai_compatible = !self.info.requires_openai_auth && self.info.aws.is_none();
+        if openai_compatible {
             Arc::new(LocalProxyModelsEndpoint::new(self.info.clone()))
         } else {
             Arc::new(OpenAiModelsEndpoint::new(

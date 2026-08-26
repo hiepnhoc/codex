@@ -12,7 +12,7 @@ Branch `my-harness` trong repo này. Binary tên `hcodex`, tách hoàn toàn kh�
 | Provider built-in `local-proxy` và là provider **mặc định** | `codex-rs/model-provider-info/src/lib.rs` |
 | Model mặc định `claude-sonnet-5` khi dùng `local-proxy` | `codex-rs/core/src/config/mod.rs` |
 | Branding `OpenAI Codex` → `hcodex` | `codex-rs/tui/...`, `codex-rs/exec/...` |
-| `/model` liệt kê model từ proxy (`GET {base_url}/models`) thay vì catalog OpenAI | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/models-manager/src/manager.rs` |
+| `/model` liệt kê model từ provider (`GET {base_url}/models`, mọi provider OpenAI-compatible) + effort low/medium/high/xhigh | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/models-manager/src/manager.rs` |
 
 Chỉ ~7 file, +39/−11 dòng → rebase lên upstream dễ.
 
@@ -33,8 +33,10 @@ qua gateway nói được `/v1/responses` (proxy local ở dưới, LiteLLM, Ope
 cd ~/github/codex/codex-rs
 
 # release (khuyên dùng; lần đầu 15–30 phút, sau đó incremental nhanh)
-cargo build --release --bin hcodex
+cargo build --release --bin hcodex --bin codex-code-mode-host
 ln -sf ~/github/codex/codex-rs/target/release/hcodex ~/.cargo/bin/hcodex
+# code-mode host phải nằm cạnh hcodex (codex tìm nó trong cùng thư mục)
+ln -sf ~/github/codex/codex-rs/target/release/codex-code-mode-host ~/.cargo/bin/codex-code-mode-host
 
 # hoặc debug (build nhanh hơn, binary to hơn, chạy chậm hơn)
 cargo build --bin hcodex
@@ -84,17 +86,35 @@ Biến môi trường riêng của harness:
 | `HCODEX_PROXY_API_KEY` | bearer token nếu proxy yêu cầu | (không gửi auth) |
 | `CODEX_HOME` | thư mục state/config | `~/.hcodex` |
 
-Muốn thêm provider khác (Azure, OpenRouter, vLLM…) thì khai như codex gốc:
+### Thêm provider khác
+
+Khai như codex gốc (Azure, OpenRouter, vLLM, Ollama, LM Studio, proxy thứ hai…).
+`/model` sẽ tự lấy danh sách từ `GET {base_url}/models` của provider đó.
 
 ```toml
-model_provider = "myprovider"
+model_provider = "myprovider"          # provider mặc định
+model = "some-model"                   # model mặc định cho provider này
 
 [model_providers.myprovider]
 name = "My Provider"
-base_url = "https://api.example.com/v1"   # phải có POST {base_url}/responses
-env_key = "MY_API_KEY"
+base_url = "https://api.example.com/v1"   # phải có POST {base_url}/responses (Responses API)
+env_key = "MY_API_KEY"                    # đọc key từ biến môi trường; bỏ nếu không cần auth
 wire_api = "responses"
+# tuỳ chọn:
+# http_headers = { "X-Custom" = "value" }
+# query_params = { "api-version" = "2025-04-01-preview" }   # Azure
+# request_max_retries = 4
+# stream_idle_timeout_ms = 300000
 ```
+
+Chuyển provider tạm thời không cần sửa config:
+
+```bash
+hcodex -c model_provider=myprovider -m some-model
+```
+
+Built-in có sẵn: `local-proxy` (mặc định), `openai` (cần login/`OPENAI_API_KEY`),
+`ollama` (`localhost:11434`), `lmstudio` (`localhost:1234`), `amazon-bedrock`.
 
 ## Cập nhật từ upstream
 
@@ -109,6 +129,8 @@ cd codex-rs && cargo build --release --bin hcodex
 
 - `Model provider ... not found` / lỗi kết nối → proxy chưa chạy ở `:8181`,
   hoặc set `HCODEX_PROXY_URL` đúng.
+- `Code Mode is unavailable ... codex-code-mode-host: host executable was not found`
+  → chưa symlink `codex-code-mode-host` cạnh `hcodex` (xem Build & cài).
 - `/model` hiện danh sách cũ → danh sách được cache 5 phút ở
   `~/.hcodex/models_cache.json`; xoá file đó để buộc tải lại.
 - `hcodex exec` treo → stdin không phải TTY, thêm `</dev/null`.
