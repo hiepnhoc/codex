@@ -35,6 +35,7 @@ export function Terminal({ cwd }: Props) {
     const handle = `ide-term-${Math.random().toString(36).slice(2)}`;
     const enc = new TextEncoder();
     let alive = false;
+    let disposed = false;
 
     const offOut = rpc.onNotification("process/outputDelta", (p) => {
       const n = p as ProcessOutputDeltaNotification;
@@ -63,7 +64,9 @@ export function Terminal({ cwd }: Props) {
         size: { rows: term.rows, cols: term.cols },
       })
       .then(() => {
-        alive = true;
+        // Effect may already be torn down (React StrictMode double-mount): kill immediately.
+        if (disposed) rpc.request("process/kill", { processHandle: handle }).catch(() => {});
+        else alive = true;
       })
       .catch((e) => term.writeln(`\x1b[31mprocess/spawn failed: ${e}\x1b[0m`));
 
@@ -79,6 +82,7 @@ export function Terminal({ cwd }: Props) {
     ro.observe(ref.current);
 
     return () => {
+      disposed = true;
       ro.disconnect();
       onData.dispose();
       offOut();
