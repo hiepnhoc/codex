@@ -3736,7 +3736,7 @@ impl Config {
 
         let model_provider_id = model_provider
             .or(cfg.model_provider)
-            .unwrap_or_else(|| "openai".to_string());
+            .unwrap_or_else(|| codex_model_provider_info::LOCAL_PROXY_PROVIDER_ID.to_string());
         let model_provider = model_providers
             .get(&model_provider_id)
             .ok_or_else(|| {
@@ -3880,7 +3880,11 @@ impl Config {
 
         let forced_login_method = cfg.forced_login_method;
 
-        let model = model.or(cfg.model);
+        let model = model.or(cfg.model).or_else(|| {
+            // hcodex harness: sensible default for the built-in local proxy.
+            (model_provider_id == codex_model_provider_info::LOCAL_PROXY_PROVIDER_ID)
+                .then(|| codex_model_provider_info::LOCAL_PROXY_DEFAULT_MODEL.to_string())
+        });
         let notices = cfg.notice.unwrap_or_default();
         let service_tier = match service_tier_override {
             Some(Some(service_tier)) => Some(service_tier),

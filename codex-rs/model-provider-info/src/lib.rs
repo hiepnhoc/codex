@@ -508,6 +508,29 @@ pub const DEFAULT_OLLAMA_PORT: u16 = 11434;
 pub const LMSTUDIO_OSS_PROVIDER_ID: &str = "lmstudio";
 pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
 
+/// hcodex harness: built-in provider for the local Responses-API proxy.
+/// Override the endpoint with `HCODEX_PROXY_URL`; auth via `HCODEX_PROXY_API_KEY` if set.
+pub const LOCAL_PROXY_PROVIDER_ID: &str = "local-proxy";
+pub const LOCAL_PROXY_DEFAULT_BASE_URL: &str = "http://127.0.0.1:8181/v1";
+pub const LOCAL_PROXY_DEFAULT_MODEL: &str = "claude-sonnet-5";
+
+pub fn create_local_proxy_provider() -> ModelProviderInfo {
+    let base_url = std::env::var("HCODEX_PROXY_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| LOCAL_PROXY_DEFAULT_BASE_URL.to_string());
+    let has_key = std::env::var("HCODEX_PROXY_API_KEY")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    ModelProviderInfo {
+        name: "Local Proxy".into(),
+        base_url: Some(base_url),
+        env_key: has_key.then(|| "HCODEX_PROXY_API_KEY".to_string()),
+        wire_api: WireApi::Responses,
+        ..ModelProviderInfo::default()
+    }
+}
+
 /// Built-in default provider list.
 pub fn built_in_model_providers(
     openai_base_url: Option<String>,
@@ -523,6 +546,7 @@ pub fn built_in_model_providers(
     // open source ("oss") providers by default. Users are encouraged to add to
     // `model_providers` in config.toml to add their own providers.
     [
+        (LOCAL_PROXY_PROVIDER_ID, create_local_proxy_provider()),
         (OPENAI_PROVIDER_ID, openai_provider),
         (AMAZON_BEDROCK_PROVIDER_ID, amazon_bedrock_provider),
         (
