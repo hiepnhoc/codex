@@ -12,6 +12,7 @@ Branch `my-harness` trong repo này. Binary tên `hcodex`, tách hoàn toàn kh�
 | Provider built-in `local-proxy` và là provider **mặc định** | `codex-rs/model-provider-info/src/lib.rs` |
 | Model mặc định `claude-sonnet-5` khi dùng `local-proxy` | `codex-rs/core/src/config/mod.rs` |
 | Branding `OpenAI Codex` → `hcodex` | `codex-rs/tui/...`, `codex-rs/exec/...` |
+| `/model` liệt kê model từ proxy (`GET {base_url}/models`) thay vì catalog OpenAI | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/models-manager/src/manager.rs` |
 
 Chỉ ~7 file, +39/−11 dòng → rebase lên upstream dễ.
 
@@ -108,8 +109,8 @@ cd codex-rs && cargo build --release --bin hcodex
 
 - `Model provider ... not found` / lỗi kết nối → proxy chưa chạy ở `:8181`,
   hoặc set `HCODEX_PROXY_URL` đúng.
-- `warning: Model metadata for claude-sonnet-5 not found` → chỉ là cảnh báo,
-  model không nằm trong catalog nội bộ của codex; không ảnh hưởng chạy.
+- `/model` hiện danh sách cũ → danh sách được cache 5 phút ở
+  `~/.hcodex/models_cache.json`; xoá file đó để buộc tải lại.
 - `hcodex exec` treo → stdin không phải TTY, thêm `</dev/null`.
 - Lỗi 401 tới `chatgpt.com/backend-api/plugins/featured` → do không login
   ChatGPT, vô hại.
