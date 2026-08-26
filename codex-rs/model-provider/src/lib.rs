@@ -1,6 +1,7 @@
 mod amazon_bedrock;
 mod auth;
 mod bearer_auth_provider;
+mod local_proxy_models;
 mod models_endpoint;
 mod provider;
 mod shared_state;

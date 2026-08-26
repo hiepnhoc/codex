@@ -1,0 +1,139 @@
+//! hcodex harness: model discovery for the built-in `local-proxy` provider.
+//!
+//! The proxy speaks the plain OpenAI `GET /v1/models` shape (`{"data":[{"id":..}]}`),
+//! not Codex's `ModelsResponse` catalog, so we map every model id onto a
+//! fallback `ModelInfo` and let the manager use that list as the whole catalog.
+
+use std::time::Duration;
+
+use codex_http_client::ClientRouteClass;
+use codex_http_client::HttpClientFactory;
+use codex_login::default_client::create_client_for_route_async;
+use codex_model_provider_info::ModelProviderInfo;
+use codex_models_manager::manager::ModelsEndpointClient;
+use codex_models_manager::manager::ModelsEndpointFuture;
+use codex_models_manager::model_info::model_info_from_slug;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CoreResult;
+use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelVisibility;
+use serde::Deserialize;
+use tokio::time::timeout;
+
+const MODELS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_CONTEXT_WINDOW: i64 = 200_000;
+
+#[derive(Debug)]
+pub(crate) struct LocalProxyModelsEndpoint {
+    provider_info: ModelProviderInfo,
+}
+
+#[derive(Deserialize)]
+struct OpenAiModelList {
+    data: Vec<OpenAiModel>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiModel {
+    id: String,
+    #[serde(default)]
+    owned_by: Option<String>,
+}
+
+impl LocalProxyModelsEndpoint {
+    pub(crate) fn new(provider_info: ModelProviderInfo) -> Self {
+        Self { provider_info }
+    }
+
+    fn models_url(&self) -> String {
+        let base = self
+            .provider_info
+            .base_url
+            .clone()
+            .unwrap_or_else(|| codex_model_provider_info::LOCAL_PROXY_DEFAULT_BASE_URL.to_string());
+        format!("{}/models", base.trim_end_matches('/'))
+    }
+
+    async fn fetch(&self, http_client_factory: HttpClientFactory) -> CoreResult<Vec<ModelInfo>> {
+        let url = self.models_url();
+        let client = create_client_for_route_async(http_client_factory, url.clone(), ClientRouteClass::Api)
+            .await
+            .map_err(|err| CodexErr::Stream(format!("local-proxy models client: {err}")))?;
+        let mut request = client.get(&url);
+        if let Some(key) = self.provider_info.api_key().ok().flatten() {
+            request = request.bearer_auth(key);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|err| CodexErr::Stream(format!("local-proxy GET {url}: {err}")))?;
+        if !response.status().is_success() {
+            return Err(CodexErr::Stream(format!(
+                "local-proxy GET {url} returned {}",
+                response.status()
+            )));
+        }
+        let list: OpenAiModelList = response
+            .json()
+            .await
+            .map_err(|err| CodexErr::Stream(format!("local-proxy models decode: {err}")))?;
+
+        let mut seen = std::collections::HashSet::new();
+        let models = list
+            .data
+            .into_iter()
+            .filter(|m| seen.insert(m.id.clone()))
+            .enumerate()
+            .map(|(index, m)| model_info_for(&m.id, m.owned_by.as_deref(), index as i32))
+            .collect();
+        Ok(models)
+    }
+}
+
+pub(crate) fn model_info_for(slug: &str, owned_by: Option<&str>, priority: i32) -> ModelInfo {
+    let mut info = model_info_from_slug(slug);
+    info.display_name = slug.to_string();
+    info.description = owned_by.map(|o| format!("via local proxy ({o})"));
+    info.visibility = ModelVisibility::List;
+    info.supported_in_api = true;
+    // The harness default model sorts first so the picker marks it as default.
+    info.priority = if slug == codex_model_provider_info::LOCAL_PROXY_DEFAULT_MODEL {
+        -1
+    } else {
+        priority
+    };
+    info.context_window = Some(DEFAULT_CONTEXT_WINDOW);
+    info.max_context_window = Some(DEFAULT_CONTEXT_WINDOW);
+    info.supports_parallel_tool_calls = true;
+    // These entries are authoritative for the proxy, not a guess.
+    info.used_fallback_model_metadata = false;
+    info
+}
+
+impl ModelsEndpointClient for LocalProxyModelsEndpoint {
+    /// Report "command auth" so the manager always refreshes; the proxy needs no auth.
+    fn has_command_auth(&self) -> bool {
+        true
+    }
+
+    fn uses_codex_backend(&self) -> ModelsEndpointFuture<'_, bool> {
+        Box::pin(async { false })
+    }
+
+    fn replaces_catalog(&self) -> bool {
+        true
+    }
+
+    fn list_models<'a>(
+        &'a self,
+        _client_version: &'a str,
+        http_client_factory: HttpClientFactory,
+    ) -> ModelsEndpointFuture<'a, CoreResult<(Vec<ModelInfo>, Option<String>)>> {
+        Box::pin(async move {
+            let models = timeout(MODELS_REFRESH_TIMEOUT, self.fetch(http_client_factory))
+                .await
+                .map_err(|_| CodexErr::Timeout)??;
+            Ok((models, None))
+        })
+    }
+}

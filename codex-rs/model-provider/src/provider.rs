@@ -16,6 +16,7 @@ use codex_login::default_client::ResidencyRequirement;
 use codex_login::default_client::read_default_client_residency_requirement;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::cache::ModelsCache;
+use codex_models_manager::manager::ModelsEndpointClient;
 use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::manager::StaticModelsManager;
@@ -30,6 +31,7 @@ use crate::auth::ResolvedProviderAuth;
 use crate::auth::auth_manager_for_provider;
 use crate::auth::resolve_provider_auth;
 use crate::auth::resolve_provider_auth_for_scope;
+use crate::local_proxy_models::LocalProxyModelsEndpoint;
 use crate::models_endpoint::OpenAiModelsEndpoint;
 
 pub(crate) fn enforce_managed_residency(provider: &mut Provider) {
@@ -336,6 +338,18 @@ struct ConfiguredModelProvider {
 }
 
 impl ConfiguredModelProvider {
+    /// hcodex: the built-in local proxy lists models via plain OpenAI `GET /models`.
+    fn models_endpoint(&self) -> Arc<dyn ModelsEndpointClient> {
+        if self.info.name == codex_model_provider_info::LOCAL_PROXY_PROVIDER_NAME {
+            Arc::new(LocalProxyModelsEndpoint::new(self.info.clone()))
+        } else {
+            Arc::new(OpenAiModelsEndpoint::new(
+                self.info.clone(),
+                self.auth_manager.clone(),
+            ))
+        }
+    }
+
     fn new(provider_info: ModelProviderInfo, auth_manager: Option<Arc<AuthManager>>) -> Self {
         let auth_manager = auth_manager_for_provider(auth_manager, &provider_info);
         Self {
@@ -452,10 +466,7 @@ impl ModelProvider for ConfiguredModelProvider {
                 model_catalog,
             )),
             None => {
-                let endpoint = Arc::new(OpenAiModelsEndpoint::new(
-                    self.info.clone(),
-                    self.auth_manager.clone(),
-                ));
+                let endpoint = self.models_endpoint();
                 Arc::new(OpenAiModelsManager::new(
                     codex_home,
                     endpoint,
@@ -475,10 +486,7 @@ impl ModelProvider for ConfiguredModelProvider {
                 model_catalog,
             )),
             None => {
-                let endpoint = Arc::new(OpenAiModelsEndpoint::new(
-                    self.info.clone(),
-                    self.auth_manager.clone(),
-                ));
+                let endpoint = self.models_endpoint();
                 Arc::new(OpenAiModelsManager::new_without_cache(
                     endpoint,
                     self.auth_manager.clone(),
@@ -498,10 +506,7 @@ impl ModelProvider for ConfiguredModelProvider {
                 model_catalog,
             )),
             None => {
-                let endpoint = Arc::new(OpenAiModelsEndpoint::new(
-                    self.info.clone(),
-                    self.auth_manager.clone(),
-                ));
+                let endpoint = self.models_endpoint();
                 Arc::new(OpenAiModelsManager::new_with_cache(
                     cache,
                     endpoint,

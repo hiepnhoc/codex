@@ -511,6 +511,7 @@ pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
 /// hcodex harness: built-in provider for the local Responses-API proxy.
 /// Override the endpoint with `HCODEX_PROXY_URL`; auth via `HCODEX_PROXY_API_KEY` if set.
 pub const LOCAL_PROXY_PROVIDER_ID: &str = "local-proxy";
+pub const LOCAL_PROXY_PROVIDER_NAME: &str = "Local Proxy";
 pub const LOCAL_PROXY_DEFAULT_BASE_URL: &str = "http://127.0.0.1:8181/v1";
 pub const LOCAL_PROXY_DEFAULT_MODEL: &str = "claude-sonnet-5";
 
@@ -523,7 +524,7 @@ pub fn create_local_proxy_provider() -> ModelProviderInfo {
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false);
     ModelProviderInfo {
-        name: "Local Proxy".into(),
+        name: LOCAL_PROXY_PROVIDER_NAME.into(),
         base_url: Some(base_url),
         env_key: has_key.then(|| "HCODEX_PROXY_API_KEY".to_string()),
         wire_api: WireApi::Responses,

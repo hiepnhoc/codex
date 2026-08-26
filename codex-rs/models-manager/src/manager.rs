@@ -41,6 +41,12 @@ pub trait ModelsEndpointClient: fmt::Debug + Send + Sync {
     /// Returns whether the currently resolved auth can use Codex backend-only models.
     fn uses_codex_backend(&self) -> ModelsEndpointFuture<'_, bool>;
 
+    /// hcodex: when true, a non-empty remote list replaces the bundled catalog
+    /// entirely instead of being merged into it.
+    fn replaces_catalog(&self) -> bool {
+        false
+    }
+
     /// Fetches the latest remote model catalog and optional ETag.
     fn list_models<'a>(
         &'a self,
@@ -450,11 +456,12 @@ impl OpenAiModelsManager {
             && models
                 .iter()
                 .any(|model| model.visibility == ModelVisibility::List)
-            && self.auth_manager.as_ref().is_some_and(|auth_manager| {
-                auth_manager
-                    .auth_mode()
-                    .is_some_and(AuthMode::has_chatgpt_account)
-            });
+            && (self.endpoint_client.replaces_catalog()
+                || self.auth_manager.as_ref().is_some_and(|auth_manager| {
+                    auth_manager
+                        .auth_mode()
+                        .is_some_and(AuthMode::has_chatgpt_account)
+                }));
         if should_use_remote_models_only {
             *self.remote_models.write().await = models;
             return;
