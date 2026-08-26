@@ -32,6 +32,19 @@ qua gateway nói được `/v1/responses` (proxy local ở dưới, LiteLLM, Ope
 ```bash
 cd ~/github/codex/codex-rs
 
+# V8 cho code-mode host: crate `v8` cần lib tĩnh prebuilt do OpenAI host
+# (asset trên denoland/rusty_v8 không có cho bản này -> 404). Tải 1 lần:
+D=~/.cargo/.rusty_v8/codex-v150.4.0; mkdir -p $D
+B=https://github.com/openai/codex/releases/download/rusty-v8-v150.4.0
+T=aarch64-apple-darwin; P=ptrcomp_sandbox_release
+( cd $D && curl -fsSL -O $B/librusty_v8_${P}_${T}.a.gz \
+        && curl -fsSL -O $B/src_binding_${P}_${T}.rs \
+        && curl -fsSL -O $B/rusty_v8_${P}_${T}.sha256 \
+        && shasum -a 256 -c rusty_v8_${P}_${T}.sha256 )
+export RUSTY_V8_ARCHIVE=$D/librusty_v8_${P}_${T}.a.gz
+export RUSTY_V8_SRC_BINDING_PATH=$D/src_binding_${P}_${T}.rs
+# (phiên bản v8 xem trong codex-rs/Cargo.lock; đổi tag/version khi upstream nâng cấp)
+
 # release (khuyên dùng; lần đầu 15–30 phút, sau đó incremental nhanh)
 cargo build --release --bin hcodex --bin codex-code-mode-host
 ln -sf ~/github/codex/codex-rs/target/release/hcodex ~/.cargo/bin/hcodex
