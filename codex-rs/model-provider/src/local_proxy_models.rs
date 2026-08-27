@@ -18,8 +18,8 @@ use codex_models_manager::model_info::model_info_from_slug;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CoreResult;
 use codex_protocol::openai_models::ModelInfo;
-use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ModelVisibility;
+use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use serde::Deserialize;
@@ -51,20 +51,20 @@ impl LocalProxyModelsEndpoint {
     }
 
     fn models_url(&self) -> String {
-        let base = self
-            .provider_info
-            .base_url
-            .clone()
-            .unwrap_or_else(|| codex_model_provider_info::LOCAL_PROXY_DEFAULT_BASE_URL.to_string());
+        let base =
+            self.provider_info.base_url.clone().unwrap_or_else(|| {
+                codex_model_provider_info::LOCAL_PROXY_DEFAULT_BASE_URL.to_string()
+            });
         // Fail fast on typos instead of guessing a URL.
         format!("{}/models", base.trim_end_matches('/'))
     }
 
     async fn fetch(&self, http_client_factory: HttpClientFactory) -> CoreResult<Vec<ModelInfo>> {
         let url = self.models_url();
-        let client = create_client_for_route_async(http_client_factory, url.clone(), ClientRouteClass::Api)
-            .await
-            .map_err(|err| CodexErr::Stream(format!("local-proxy models client: {err}")))?;
+        let client =
+            create_client_for_route_async(http_client_factory, url.clone(), ClientRouteClass::Api)
+                .await
+                .map_err(|err| CodexErr::Stream(format!("local-proxy models client: {err}")))?;
         let mut request = client.get(&url);
         let bearer = self
             .provider_info
@@ -107,7 +107,12 @@ impl LocalProxyModelsEndpoint {
             .filter(|m| seen.insert(m.id.clone()))
             .enumerate()
             .map(|(index, m)| {
-                model_info_for(&m.id, m.owned_by.as_deref(), index as i32, &self.provider_info.name)
+                model_info_for(
+                    &m.id,
+                    m.owned_by.as_deref(),
+                    index as i32,
+                    &self.provider_info.name,
+                )
             })
             .collect();
         Ok(models)

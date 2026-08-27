@@ -91,6 +91,18 @@ model_context_window = 200000
 trust_level = "trusted"             # bật project-local config/hooks/execpolicy
 ```
 
+### Dùng chung skills / prompts với codex gốc
+
+`hcodex` đọc `~/.hcodex/skills` (không phải `~/.codex/skills`). Để dùng chung bộ
+skill với codex-cli, symlink:
+
+```bash
+ln -sfn ~/.codex/skills ~/.hcodex/skills
+```
+
+Tương tự cho `~/.hcodex/AGENTS.md`, `~/.hcodex/prompts` nếu muốn dùng chung.
+Còn `config.toml`, `sessions`, `history` giữ riêng để không đụng ChatGPT app.
+
 Biến môi trường riêng của harness:
 
 | Biến | Ý nghĩa | Mặc định |

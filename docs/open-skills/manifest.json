@@ -1,0 +1,365 @@
+{
+  "name": "higa-codex-dev-skills",
+  "version": "0.2.0",
+  "created_for": "HiGa",
+  "purpose": "Versioned Codex developer skill pack with rollback-safe installation.",
+  "skill_count": 43,
+  "skills": [
+    {
+      "name": "api-and-interface-design",
+      "folder": "api-and-interface-design",
+      "description": "Use when designing or changing REST/GraphQL endpoints, SDKs, schemas, adapters, module boundaries, public contracts, error semantics, versioning, or frontend/backend interfaces.",
+      "path": "api-and-interface-design/SKILL.md",
+      "sha256": "75d07bf01dcb930adbf598ddf45fdf6262f4e3a3d14429619b9548c1e9620d31",
+      "lines": 294
+    },
+    {
+      "name": "brainstorming",
+      "folder": "brainstorming",
+      "description": "Use when a non-trivial feature, behavior change, architecture choice, or research result needs to become an approved project-specific design before implementation planning.",
+      "path": "brainstorming/SKILL.md",
+      "sha256": "c798c6c0d705aed862c6ea94105c4e1969426ad5202eda72b0c7a0e542a94100",
+      "lines": 217
+    },
+    {
+      "name": "browser-testing-with-devtools",
+      "folder": "browser-testing-with-devtools",
+      "description": "Use when building, debugging, or verifying browser-based behavior and you need real DOM, console, network, visual, accessibility, or performance evidence via DevTools, Playwright, or an equivalent runtime.",
+      "path": "browser-testing-with-devtools/SKILL.md",
+      "sha256": "e9c464dd91829de49bd29ffc14027c8d8f9351974eda9b38d67ed5d398acf49d",
+      "lines": 302
+    },
+    {
+      "name": "ci-cd-and-automation",
+      "folder": "ci-cd-and-automation",
+      "description": "Use when creating or changing CI/CD, build/test automation, quality gates, release workflows, deployment strategies, rollback paths, or pipeline security.",
+      "path": "ci-cd-and-automation/SKILL.md",
+      "sha256": "9eb45cd00ebb8bd15267af6296156930ec2f9363937b17c038cb7997c844a968",
+      "lines": 406
+    },
+    {
+      "name": "clonedeps",
+      "folder": "clonedeps",
+      "description": "Clone important dependency source into an ignored local workspace for Codex inspection. Use when asked to inspect dependency internals, understand SDK or framework behavior from source, debug library implementation details, or make core dependency repositories locally readable.",
+      "path": "clonedeps/SKILL.md",
+      "sha256": "99f494170f25944872d66da3aeaa5994c1385a84bae1c6b3755df83f2d9423af",
+      "lines": 239
+    },
+    {
+      "name": "codemap",
+      "folder": "codemap",
+      "description": "Use when starting on an unfamiliar repository or when user asks for repository documentation - creates/updates hierarchical codemaps and registers the root map for future agents.",
+      "path": "codemap/SKILL.md",
+      "sha256": "e40795645eab8c1ae93413dc321cd5b7f6190d5dcc7e156f23f43413c833d716",
+      "lines": 103
+    },
+    {
+      "name": "daily-dev",
+      "folder": "daily-dev",
+      "description": "Use when handling software engineering requests as the default first router, especially multi-domain or multi-phase work; classify the task, select domain specialists, preserve their gates, and optionally hand heavy execution to `deepwork` after routing.",
+      "path": "daily-dev/SKILL.md",
+      "sha256": "c1306384a79379659a3cccafacd217d9600569124b593210c07ff4980d78c821",
+      "lines": 239
+    },
+    {
+      "name": "deep-research",
+      "folder": "deep-research",
+      "description": "Use when a technical approach is new, high-risk, weakly understood, or current code may need refactor - gathers evidence, alternatives, tradeoffs, and failure modes before design.",
+      "path": "deep-research/SKILL.md",
+      "sha256": "426cae0e467beebbf0a5a86c44d113db8530780a674814b68ffc1666076ed6e6",
+      "lines": 143
+    },
+    {
+      "name": "deepwork",
+      "folder": "deepwork",
+      "description": "High-cost orchestrator workflow for large, high-risk, multi-phase coding efforts with meaningful dependencies and review gates. Do not activate for routine multi-file changes.",
+      "path": "deepwork/SKILL.md",
+      "sha256": "adb53864ea83b1e6211c800bfa63a7d3edee05c51ce6a3d547bbeee5a876f8c1",
+      "lines": 147
+    },
+    {
+      "name": "diagnose",
+      "folder": "diagnose",
+      "description": "Use when debugging hard bugs, failing tests, broken behavior, flaky issues, or performance regressions - builds a fast feedback loop before fixing.",
+      "path": "diagnose/SKILL.md",
+      "sha256": "3fd1f96a9a4f225facb60edd1d028bac494e84aec91dce7c8d80cc7cfa6d3416",
+      "lines": 128
+    },
+    {
+      "name": "documentation-and-adrs",
+      "folder": "documentation-and-adrs",
+      "description": "Use when a significant architecture decision, public API, migration, operational behavior, or repeated project context needs durable documentation or an ADR.",
+      "path": "documentation-and-adrs/SKILL.md",
+      "sha256": "c0fd361cf90b2ae7fea50887e5cdb5b32b08959ccb80fa2855d703fa498592bd",
+      "lines": 289
+    },
+    {
+      "name": "domain-context",
+      "folder": "domain-context",
+      "description": "Use when starting work in a repo, clarifying feature language, or before design/planning - reads or creates CONTEXT.md and ADRs, aligns domain vocabulary, and records durable decisions.",
+      "path": "domain-context/SKILL.md",
+      "sha256": "d05c1ce26a728e6135928d555d3aa0d3dc2964bd8280b19646dab0a9572f37f5",
+      "lines": 106
+    },
+    {
+      "name": "doubt-driven-development",
+      "folder": "doubt-driven-development",
+      "description": "Use when correctness matters more than speed, code is unfamiliar, stakes are high, an action is hard to reverse, or a confident decision needs fresh-context adversarial review.",
+      "path": "doubt-driven-development/SKILL.md",
+      "sha256": "0264efc352796a932b103814a3e591a8d8569c5f88d6aaf430ca8db4a4bccae5",
+      "lines": 243
+    },
+    {
+      "name": "executing-plans",
+      "folder": "executing-plans",
+      "description": "Use when executing implementation plans - works in isolation, validates plan assumptions against codebase reality, executes task-by-task, verifies, and performs a final quality gate.",
+      "path": "executing-plans/SKILL.md",
+      "sha256": "1c57f7ee1ca1b0414006a15b12fb7be0d4717c78c678f7186a177acbf94ce43f",
+      "lines": 187
+    },
+    {
+      "name": "frontend-ui-engineering",
+      "folder": "frontend-ui-engineering",
+      "description": "Use when building or changing user-facing pages, components, layouts, state, accessibility, responsive behavior, or production-quality frontend interactions.",
+      "path": "frontend-ui-engineering/SKILL.md",
+      "sha256": "a0dfb674acf4e72fa07ead6eaf1f42d8b395e4864a0e47ef05a9696fafb96274",
+      "lines": 328
+    },
+    {
+      "name": "grill-with-docs",
+      "folder": "grill-with-docs",
+      "description": "Use when requirements, product language, or design direction are ambiguous - interviews the user one decision at a time, checks code/docs, sharpens domain terms, and updates CONTEXT.md/ADRs inline.",
+      "path": "grill-with-docs/SKILL.md",
+      "sha256": "3e82fcc189ecbefeae0a9136c91e62a99dca83d95f795455f390973255431591",
+      "lines": 102
+    },
+    {
+      "name": "handoff",
+      "folder": "handoff",
+      "description": "Use when compacting the current task context, decisions, evidence, workspace state, and next steps so another agent or session can continue without rediscovery.",
+      "path": "handoff/SKILL.md",
+      "sha256": "82707da60d8caf20a32eebb8afcfbff8e9de1c0488ee86b835372881ea9c53ce",
+      "lines": 14
+    },
+    {
+      "name": "huashu-design",
+      "folder": "huashu-design",
+      "description": "花叔Design——用HTML做高保真原型、交互Demo、幻灯片、动画、设计变体探索+设计方向顾问+专家评审。根据任务embody对应专家（UX/动画师/幻灯片设计师/原型师），避免web design tropes。触发词：做原型、交互原型、HTML演示、动画Demo、设计变体、hi-fi设计、UI mockup、prototype、做个HTML页面、做个可视化、app原型、iOS原型、导出MP4/GIF、60fps视频、设计风格、设计方向、配色方案、推荐风格、选个风格、做个好看的、评审、好不好看、review this design、带解说的动画、解说视频、长视频科普、voiceover、narration、5分钟讲清楚什么是XX。需求模糊时进设计方向顾问（三套逻辑并行出3版真实视觉，HTML原生40种风格库网页20+PPT20为弹药）；另含品牌资产协议、反AI slop、Junior工作流、Tweaks变体、动画→MP4/GIF导出、带解说长视频pipeline、5维评审。",
+      "path": "huashu-design/SKILL.md",
+      "sha256": "6b05723ba7592bb2d62a453036644467cfae856106ce82100bdc5c054c2509ca",
+      "lines": 631
+    },
+    {
+      "name": "improve-codebase-architecture",
+      "folder": "improve-codebase-architecture",
+      "description": "Use when codebase feels tangled, hard to test, hard to navigate, or user asks for architecture/refactor opportunities - finds deepening opportunities using module depth, seams, adapters, locality, and leverage.",
+      "path": "improve-codebase-architecture/SKILL.md",
+      "sha256": "3c8850f843773de52b86a5f894f1b26945955cb902bee56ea743629ce8ecc978",
+      "lines": 146
+    },
+    {
+      "name": "observability-and-instrumentation",
+      "folder": "observability-and-instrumentation",
+      "description": "Use when adding or reviewing logs, metrics, traces, alerts, runbooks, or production diagnostics so runtime behavior is visible and failures can be explained.",
+      "path": "observability-and-instrumentation/SKILL.md",
+      "sha256": "9a40d68e26f91394b82cd34011830ccb597cd211be8fc3a224f3f0f5f63ae959",
+      "lines": 201
+    },
+    {
+      "name": "ocr-code-review",
+      "folder": "ocr-code-review",
+      "description": "Use when reviewing workspace changes, a commit, or a branch range with deterministic file selection and review rules from Alibaba Open Code Review while Codex performs the reasoning.",
+      "path": "ocr-code-review/SKILL.md",
+      "sha256": "5e02e0ff5593686fea62d59d6364ceb0584556ad637d63050efc83e5eb1777ac",
+      "lines": 326
+    },
+    {
+      "name": "oh-my-opencode-slim",
+      "folder": "oh-my-opencode-slim",
+      "description": "Configure and improve oh-my-opencode-slim for the current user. Use when users want to tune agents, models, prompts, custom agents, skills, MCPs, presets, or plugin behavior. Also use when recurring workflow friction suggests a safe config or prompt improvement.",
+      "path": "oh-my-opencode-slim/SKILL.md",
+      "sha256": "994fbdeba25410725bd265d7f051f766b7fa44715f4c96747f1af06e51b2e313",
+      "lines": 326
+    },
+    {
+      "name": "performance-optimization",
+      "folder": "performance-optimization",
+      "description": "Use when a measurable performance requirement, regression, bottleneck, Core Web Vitals issue, load-time problem, or profiling result needs evidence-driven optimization.",
+      "path": "performance-optimization/SKILL.md",
+      "sha256": "da0a04345b057294bc4408494b2efc3b273ec073817fe3e23ea96ab3db6c2faf",
+      "lines": 377
+    },
+    {
+      "name": "prototype",
+      "folder": "prototype",
+      "description": "Use when a design question needs throwaway code - builds a small runnable UI or logic prototype to learn before committing to production implementation.",
+      "path": "prototype/SKILL.md",
+      "sha256": "21e0b520ab366e0204ab90cc6111ce807979e324d1e95e7a0bf10434d1c7d8f9",
+      "lines": 87
+    },
+    {
+      "name": "reflect",
+      "folder": "reflect",
+      "description": "Review recent work, find repeated workflow patterns, and suggest reusable skills, agents, commands, config changes, or playbooks. Use when the user asks to learn from past sessions, improve recurring workflows, or identify what should be turned into reusable agent instructions.",
+      "path": "reflect/SKILL.md",
+      "sha256": "4ad6143d60d91d6e2117d7d9af7df16ad9f8edcb0b0e2238cd2b727c591edf7d",
+      "lines": 193
+    },
+    {
+      "name": "release-smoke-test",
+      "folder": "release-smoke-test",
+      "description": "Test an oh-my-opencode-slim release candidate or bugfix before publishing. Use when validating a packed plugin artifact, release branch, crash fix, OpenCode runtime compatibility, or model-specific smoke test such as OpenCode 1.17.11 message transform regressions.",
+      "path": "release-smoke-test/SKILL.md",
+      "sha256": "2a0797134ab04a1ffe05d57d7365e324a6dff381a69b2fdc7d5ef374b62e9972",
+      "lines": 159
+    },
+    {
+      "name": "security-and-hardening",
+      "folder": "security-and-hardening",
+      "description": "Use when code handles authentication, authorization, sessions, secrets, untrusted input, files, storage, dependencies, external integrations, or execution boundaries.",
+      "path": "security-and-hardening/SKILL.md",
+      "sha256": "5394f276879e6b289e905533574a33fa5433fe0864da04ec4d54c39070e7666f",
+      "lines": 462
+    },
+    {
+      "name": "setup-matt-pocock-skills",
+      "folder": "setup-matt-pocock-skills",
+      "description": "Use when setting up a repository before first use of PRD/issues/triage/domain-aware engineering skills, or when those skills lack issue-tracker, label, CONTEXT.md, or ADR layout configuration.",
+      "path": "setup-matt-pocock-skills/SKILL.md",
+      "sha256": "96fdb98095946cd03b8e5219c1317b5f34da62bdec7c38352f9f0943eb49ba8e",
+      "lines": 122
+    },
+    {
+      "name": "simplify",
+      "folder": "simplify",
+      "description": "Use when behavior works but code is harder than necessary, or during review cleanup - simplifies code for clarity while preserving exact behavior.",
+      "path": "simplify/SKILL.md",
+      "sha256": "92a306acef29895c13f53fdbfabcb6e9840aa25c4a864557759935ae137106f2",
+      "lines": 112
+    },
+    {
+      "name": "source-driven-development",
+      "folder": "source-driven-development",
+      "description": "Use when framework, library, API, platform, or tool behavior may be stale or uncertain and implementation decisions need official documentation or source evidence.",
+      "path": "source-driven-development/SKILL.md",
+      "sha256": "f57265b4ecd1acb11c86e3f2ea8bb92e8404c1dd4513ff79132357ab02b6791c",
+      "lines": 194
+    },
+    {
+      "name": "subagent-driven-development",
+      "folder": "subagent-driven-development",
+      "description": "Use when executing plans with independent tasks or needing fresh pattern validation - requires worktree isolation, dispatches implementation/review workers, fixes or documents issues, and runs final integration checks.",
+      "path": "subagent-driven-development/SKILL.md",
+      "sha256": "9eda4adf93c3a04577c62d5a1b0e3c8587688285d79bc31b2ccbed46efaf824f",
+      "lines": 182
+    },
+    {
+      "name": "tdd",
+      "folder": "tdd",
+      "description": "Use when implementing or fixing behavior test-first with a red-green-refactor loop, especially when the user requests TDD, integration tests, regression tests, or test-first development.",
+      "path": "tdd/SKILL.md",
+      "sha256": "f8f520984bfc16f641398a198618e599b436f2f1d0e00d9904218142710c442e",
+      "lines": 121
+    },
+    {
+      "name": "to-issues",
+      "folder": "to-issues",
+      "description": "Use when turning a PRD, plan, or design into issue-tracker tickets - breaks work into independently grabbable vertical-slice issues with acceptance criteria and dependencies.",
+      "path": "to-issues/SKILL.md",
+      "sha256": "363d456b17fa235e99a5f8a1724a3036c30a7b97ab3ede86414c7a5df5ee8744",
+      "lines": 129
+    },
+    {
+      "name": "to-prd",
+      "folder": "to-prd",
+      "description": "Use when turning the current conversation and codebase context into a PRD - writes a local draft by default and publishes to an issue tracker only after explicit approval.",
+      "path": "to-prd/SKILL.md",
+      "sha256": "cd105638c434323a4e985c164337da57be2f2a29b45dad070c59f335e6c6f5e0",
+      "lines": 76
+    },
+    {
+      "name": "triage",
+      "folder": "triage",
+      "description": "Use when reviewing, creating, classifying, or moving issues through the configured triage workflow, including preparing work for AFK agents or humans.",
+      "path": "triage/SKILL.md",
+      "sha256": "e190f3f374ce3014edea6e5653412e157547b33fd51fa2a287367033768708ef",
+      "lines": 103
+    },
+    {
+      "name": "using-git-worktrees",
+      "folder": "using-git-worktrees",
+      "description": "Use when starting feature work, bug fixes, risky edits, plan execution, or subagent file changes - creates disposable git worktrees with baseline checks and safe handoff.",
+      "path": "using-git-worktrees/SKILL.md",
+      "sha256": "7399dfab32eaa889f72b78db76973f232991ade3b0ecf792d2cc5bab56376783",
+      "lines": 128
+    },
+    {
+      "name": "verification-planning",
+      "folder": "verification-planning",
+      "description": "Verification planning for non-trivial coding work. Use before implementing a feature, bug fix, refactor, cross-system change, or high-confidence behavior change that needs a credible project-specific evidence path.",
+      "path": "verification-planning/SKILL.md",
+      "sha256": "a377f95d72c0953c19affb961525e900a86dd56ba73b098c25c1ec73acdc4f54",
+      "lines": 103
+    },
+    {
+      "name": "worktrees",
+      "folder": "worktrees",
+      "description": "Manage Git worktrees as safe isolated coding lanes for complex, risky, or parallel work in Codex.",
+      "path": "worktrees/SKILL.md",
+      "sha256": "feefb9c3de9691044cbaa8492c00c667cdcf928b5cc6e145b4e6a078350ba5c3",
+      "lines": 174
+    },
+    {
+      "name": "write-a-skill",
+      "folder": "write-a-skill",
+      "description": "Use when creating a small standalone agent skill or checking basic skill packaging; use `writing-skills` for project adaptation, pressure testing, or maintaining this full pack.",
+      "path": "write-a-skill/SKILL.md",
+      "sha256": "4ea8690bd35433157ec159231f7dcd4e94c325b2848c76b106ef6d183ae54526",
+      "lines": 117
+    },
+    {
+      "name": "writing-plans",
+      "folder": "writing-plans",
+      "description": "Use when design is ready or implementation needs planning - creates vertical-slice TDD plans with 100% requirement coverage, codebase-verified gap analysis, pattern quality assessment, test contracts, task graphs, and execution-ready tasks. Also use when tempted to skip requirements, assume test details are obvious, trust design/codebase claims without verification, reuse patterns without assessing quality, write horizontal layer tasks, or create a monolithic plan without dependency boundaries.",
+      "path": "writing-plans/SKILL.md",
+      "sha256": "ff40a40baf01a9c1a66f8b5d9e1e994a73381bf2515e8b95e9c996c7746a8d92",
+      "lines": 415
+    },
+    {
+      "name": "writing-skills",
+      "folder": "writing-skills",
+      "description": "Use when creating, updating, or adapting Codex skills for a project. Turns observed agent failures and project rules into lean SKILL.md resources, then verifies them with fresh workers when available.",
+      "path": "writing-skills/SKILL.md",
+      "sha256": "05f5bc031acc8ca4099f553616452e9336486c89202ffb6fbbd5d1cb0c160066",
+      "lines": 238
+    },
+    {
+      "name": "yolo",
+      "folder": "yolo",
+      "description": "Use when the user wants autonomous no-stop delivery - performs intake, asks one high-quality confirmation if needed, requires worktree isolation, then loops research/design/plan/execute/evaluate up to 3 times.",
+      "path": "yolo/SKILL.md",
+      "sha256": "c77f6eea61e63f1f5164413db6cf139bcd1d6fc86a1dfeee70d1a3912e531c39",
+      "lines": 135
+    },
+    {
+      "name": "zoom-out",
+      "folder": "zoom-out",
+      "description": "Use when a code area needs broader repository/system context, or when an effort is too large or uncertain for one session and needs a map of decisions before implementation tickets.",
+      "path": "zoom-out/SKILL.md",
+      "sha256": "858c8edf53936c4d374c3b1862092308592eea496e65767e7517e6577393954e",
+      "lines": 133
+    }
+  ],
+  "top_level_docs": [
+    "AGENTS.md",
+    "AGENTS-snippet.md",
+    "README.md",
+    "ROUTING.md",
+    "OPTIMIZATION.md",
+    "CHANGELOG.md",
+    "VERSION"
+  ],
+  "install_target_default": "${CODEX_HOME:-~/.codex}/skills",
+  "repository_target_default": ".agents/skills",
+  "backup_policy": "scripts/install.sh backs up managed target skills before replacement."
+}
