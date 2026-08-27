@@ -129,14 +129,32 @@ hcodex -c model_provider=myprovider -m some-model
 Built-in có sẵn: `local-proxy` (mặc định), `openai` (cần login/`OPENAI_API_KEY`),
 `ollama` (`localhost:11434`), `lmstudio` (`localhost:1234`), `amazon-bedrock`.
 
-## Cập nhật từ upstream
+## Cập nhật từ upstream (openai/codex)
+
+Mô hình branch:
+
+- `upstream` → `https://github.com/openai/codex` (nguồn), `origin` → fork của mày.
+- `main` chỉ theo `upstream/main`, **không commit** vào đây.
+- `my-harness` = `main` + các commit harness, luôn được **rebase** lên `main`
+  (diff nhỏ, ít conflict). Mọi phát triển riêng đều commit vào `my-harness`.
+
+Đồng bộ + rebuild bằng 1 lệnh:
 
 ```bash
-cd ~/github/codex
-git fetch origin
-git rebase origin/main            # branch my-harness, diff nhỏ nên ít conflict
-cd codex-rs && cargo build --release --bin hcodex
+scripts/sync-upstream.sh            # fetch upstream, ff main, rebase my-harness, build release, cài
+scripts/sync-upstream.sh --no-build # chỉ đồng bộ git
 ```
+
+Nếu rebase báo conflict: sửa file bị conflict (thường chỉ trong các file ở bảng
+"Khác gì so với codex gốc"), rồi `git add <file> && git rebase --continue`;
+bỏ dở thì `git rebase --abort`. Sau khi rebase, đẩy branch lên fork:
+
+```bash
+git push --force-with-lease origin my-harness
+```
+
+Muốn gửi thay đổi ngược lên upstream thì tách commit đó ra branch riêng từ `main`
+và mở PR — không PR từ `my-harness`.
 
 ## Sự cố thường gặp
 
