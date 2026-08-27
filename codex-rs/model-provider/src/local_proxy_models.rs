@@ -132,7 +132,6 @@ pub(crate) fn model_info_for(
     info.default_reasoning_level = Some(ReasoningEffort::Medium);
     info.context_window = Some(DEFAULT_CONTEXT_WINDOW);
     info.max_context_window = Some(DEFAULT_CONTEXT_WINDOW);
-    info.supports_parallel_tool_calls = true;
     // These entries are authoritative for the proxy, not a guess.
     info.used_fallback_model_metadata = false;
     info
