@@ -1,9 +1,10 @@
 //! hcodex harness: model discovery for OpenAI-compatible providers (local proxy,
 //! Ollama, LM Studio, custom `model_providers.*`).
 //!
-//! The proxy speaks the plain OpenAI `GET /v1/models` shape (`{"data":[{"id":..}]}`),
-//! not Codex's `ModelsResponse` catalog, so we map every model id onto a
-//! fallback `ModelInfo` and let the manager use that list as the whole catalog.
+//! Most such providers speak the plain OpenAI `GET /v1/models` shape
+//! (`{"data":[{"id":..}]}`); we map every id onto a fallback `ModelInfo` and let
+//! the manager use that list as the whole catalog. A provider that already
+//! returns Codex's `ModelsResponse` catalog (`{"models":[..]}`) is passed through.
 
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ use codex_models_manager::model_info::model_info_from_slug;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CoreResult;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
@@ -64,7 +66,13 @@ impl LocalProxyModelsEndpoint {
             .await
             .map_err(|err| CodexErr::Stream(format!("local-proxy models client: {err}")))?;
         let mut request = client.get(&url);
-        if let Some(key) = self.provider_info.api_key().ok().flatten() {
+        let bearer = self
+            .provider_info
+            .experimental_bearer_token
+            .clone()
+            .map(|token| token.into_inner())
+            .or_else(|| self.provider_info.api_key().ok().flatten());
+        if let Some(key) = bearer {
             request = request.bearer_auth(key);
         }
         let response = request
@@ -77,9 +85,19 @@ impl LocalProxyModelsEndpoint {
                 response.status()
             )));
         }
-        let list: OpenAiModelList = response
+        let body: serde_json::Value = response
             .json()
             .await
+            .map_err(|err| CodexErr::Stream(format!("local-proxy models decode: {err}")))?;
+
+        // Codex-native catalog: use as-is.
+        if body.get("models").is_some()
+            && let Ok(catalog) = serde_json::from_value::<ModelsResponse>(body.clone())
+        {
+            return Ok(catalog.models);
+        }
+
+        let list: OpenAiModelList = serde_json::from_value(body)
             .map_err(|err| CodexErr::Stream(format!("local-proxy models decode: {err}")))?;
 
         let mut seen = std::collections::HashSet::new();
