@@ -28,13 +28,18 @@ fn default_codex_bin() -> String {
     if let Ok(v) = std::env::var("CODEX_BIN") {
         return v;
     }
-    // Sibling checkout: ~/github/codex/codex-rs/target/debug/codex
+    // hcodex harness install (symlink kept fresh by its build scripts), then the
+    // sibling checkout's release build, then whatever is on PATH.
     let home = std::env::var("HOME").unwrap_or_default();
-    let candidate = format!("{home}/github/codex/codex-rs/target/debug/codex");
-    if std::path::Path::new(&candidate).exists() {
-        return candidate;
+    for candidate in [
+        format!("{home}/.cargo/bin/hcodex"),
+        format!("{home}/github/codex/codex-rs/target/release/hcodex"),
+    ] {
+        if std::path::Path::new(&candidate).exists() {
+            return candidate;
+        }
     }
-    "codex".to_string()
+    "hcodex".to_string()
 }
 
 fn default_codex_home() -> Option<String> {
@@ -42,7 +47,7 @@ fn default_codex_home() -> Option<String> {
         return Some(v);
     }
     let home = std::env::var("HOME").ok()?;
-    let candidate = format!("{home}/.codex-dev");
+    let candidate = format!("{home}/.hcodex");
     std::path::Path::new(&candidate).exists().then_some(candidate)
 }
 

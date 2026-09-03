@@ -6,8 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 
-const bin = process.env.CODEX_BIN ?? path.join(os.homedir(), "github/codex/codex-rs/target/debug/codex");
-const home = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex-dev");
+const bin = process.env.CODEX_BIN ?? path.join(os.homedir(), ".cargo/bin/hcodex");
+const home = process.env.CODEX_HOME ?? path.join(os.homedir(), ".hcodex");
 const dir = process.argv[2] ?? fs.mkdtempSync(path.join(os.tmpdir(), "codex-ide-smoke-"));
 
 const child = spawn(bin, ["app-server"], { env: { ...process.env, CODEX_HOME: home }, stdio: ["pipe", "pipe", "ignore"] });
