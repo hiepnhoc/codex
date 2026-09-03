@@ -5,8 +5,8 @@ import readline from "node:readline";
 import os from "node:os";
 import path from "node:path";
 
-const bin = process.env.CODEX_BIN ?? path.join(os.homedir(), "github/codex/codex-rs/target/debug/codex");
-const home = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex-dev");
+const bin = process.env.CODEX_BIN ?? path.join(os.homedir(), ".cargo/bin/hcodex");
+const home = process.env.CODEX_HOME ?? path.join(os.homedir(), ".hcodex");
 const cwd = process.argv[2] ?? os.tmpdir();
 const prompt = process.argv[3] ?? "Reply with exactly: pong";
 
