@@ -111,19 +111,59 @@ Biến môi trường riêng của harness:
 | `HCODEX_PROXY_API_KEY` | bearer token nếu proxy yêu cầu | (không gửi auth) |
 | `CODEX_HOME` | thư mục state/config | `~/.hcodex` |
 
-### Thêm provider khác
+### Đấu nối provider khác
 
-Khai như codex gốc (Azure, OpenRouter, vLLM, Ollama, LM Studio, proxy thứ hai…).
-`/model` sẽ tự lấy danh sách từ `GET {base_url}/models` của provider đó.
+Điều kiện cứng: provider phải nói được **OpenAI Responses API**
+(`POST {base_url}/responses`) — codex đã xoá `wire_api = "chat"`. Provider chỉ
+có `/chat/completions` hoặc API riêng (Anthropic, Gemini, Groq, DeepSeek…) thì
+đi qua gateway LiteLLM/OpenRouter. `/model` luôn tự lấy danh sách từ
+`GET {base_url}/models` của provider đang active.
+
+**Đã khai sẵn trong `~/.hcodex/config.toml`** — chỉ cần set key là dùng:
+
+| Provider | Cách bật | Ghi chú |
+|---|---|---|
+| `local-proxy` | (mặc định, không cần gì) | proxy `:8181`, 16 model claude/gpt |
+| `openrouter` | `export OPENROUTER_API_KEY=sk-or-...` | Responses API native (đã verify); ~427 model; list model không cần key, chạy turn mới cần |
+| `litellm` | chạy LiteLLM ở `:4000` (xem dưới) | gateway sang Anthropic/Gemini/Groq/DeepSeek… |
+| `azure` | bỏ comment trong config, điền resource + `AZURE_OPENAI_API_KEY` | có `query_params.api-version` |
+| `openai` | built-in; login hoặc `OPENAI_API_KEY` | |
+| `ollama` / `lmstudio` | built-in; `localhost:11434` / `:1234` | |
+| `amazon-bedrock` | built-in; cần AWS creds | |
+
+Chuyển provider tạm thời (không sửa config):
+
+```bash
+hcodex -c model_provider=openrouter -m anthropic/claude-fable-5.1
+```
+
+Đặt mặc định thì set `model_provider = "openrouter"` + `model = "..."` ở đầu
+config. Trong TUI đổi model bằng `/model` như thường.
+
+**LiteLLM gateway** — khi muốn cắm thẳng key Anthropic/Gemini/Groq/DeepSeek:
+
+```bash
+pip install 'litellm[proxy]'
+cat > ~/litellm.yaml <<'YAML'
+model_list:
+  - model_name: claude-fable-5.1
+    litellm_params: { model: anthropic/claude-fable-5.1, api_key: os.environ/ANTHROPIC_API_KEY }
+  - model_name: gemini-3.8-pro
+    litellm_params: { model: gemini/gemini-3.8-pro, api_key: os.environ/GEMINI_API_KEY }
+  - model_name: deepseek-v4
+    litellm_params: { model: deepseek/deepseek-chat, api_key: os.environ/DEEPSEEK_API_KEY }
+YAML
+litellm --config ~/litellm.yaml --port 4000
+# rồi: hcodex -c model_provider=litellm -m claude-fable-5.1
+```
+
+Khai provider mới hoàn toàn thì theo mẫu:
 
 ```toml
-model_provider = "myprovider"          # provider mặc định
-model = "some-model"                   # model mặc định cho provider này
-
 [model_providers.myprovider]
 name = "My Provider"
-base_url = "https://api.example.com/v1"   # phải có POST {base_url}/responses (Responses API)
-env_key = "MY_API_KEY"                    # đọc key từ biến môi trường; bỏ nếu không cần auth
+base_url = "https://api.example.com/v1"   # phải có POST {base_url}/responses
+env_key = "MY_API_KEY"                    # bỏ nếu không cần auth
 wire_api = "responses"
 # tuỳ chọn:
 # http_headers = { "X-Custom" = "value" }
@@ -131,15 +171,6 @@ wire_api = "responses"
 # request_max_retries = 4
 # stream_idle_timeout_ms = 300000
 ```
-
-Chuyển provider tạm thời không cần sửa config:
-
-```bash
-hcodex -c model_provider=myprovider -m some-model
-```
-
-Built-in có sẵn: `local-proxy` (mặc định), `openai` (cần login/`OPENAI_API_KEY`),
-`ollama` (`localhost:11434`), `lmstudio` (`localhost:1234`), `amazon-bedrock`.
 
 ## Cập nhật từ upstream (openai/codex)
 
@@ -183,5 +214,9 @@ và mở PR — không PR từ `my-harness`.
 
 ## Liên quan
 
-- `~/github/codex-ide` — thử nghiệm IDE desktop (Tauri + React) chạy trên
-  `codex app-server`; hiện tạm dừng, có thể quay lại sau.
+- `~/github/codex-ide` — IDE desktop (Tauri + React) chạy trên
+  `hcodex app-server`. Đã trỏ sang harness (commit `af4e65c` bên đó):
+  bin mặc định `~/.cargo/bin/hcodex`, home `~/.hcodex`, protocol types
+  regenerate từ hcodex. Chạy: `cd ~/github/codex-ide && pnpm tauri dev`.
+  Sau mỗi lần `scripts/sync-upstream.sh`, chạy lại bên IDE:
+  `hcodex app-server generate-ts --out src/protocol && pnpm exec tsc --noEmit`.
