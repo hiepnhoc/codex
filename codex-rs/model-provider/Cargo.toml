@@ -24,6 +24,7 @@ codex-models-manager = { workspace = true }
 codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-response-debug-context = { workspace = true }
+codex-utils-redacted-string = { workspace = true }
 http = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -31,7 +32,6 @@ tokio = { workspace = true, features = ["process", "sync", "time"] }
 tracing = { workspace = true, features = ["log"] }
 
 [dev-dependencies]
-codex-utils-redacted-string = { workspace = true }
 pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 wiremock = { workspace = true }

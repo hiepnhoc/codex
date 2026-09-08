@@ -22,6 +22,7 @@ use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_utils_redacted_string::RedactedString;
 use serde::Deserialize;
 use tokio::time::timeout;
 
@@ -70,7 +71,7 @@ impl LocalProxyModelsEndpoint {
             .provider_info
             .experimental_bearer_token
             .clone()
-            .map(|token| token.into_inner())
+            .map(RedactedString::into_inner)
             .or_else(|| self.provider_info.api_key().ok().flatten());
         if let Some(key) = bearer {
             request = request.bearer_auth(key);
@@ -158,6 +159,18 @@ pub(crate) fn model_info_for(
     // These entries are authoritative for the proxy, not a guess.
     info.used_fallback_model_metadata = false;
     info
+}
+
+/// hcodex: one-shot model listing for an ad-hoc provider definition (used by the
+/// TUI `/provider` setup flow to validate a base URL / key before saving it).
+pub async fn list_models_for_provider(
+    provider_info: ModelProviderInfo,
+    http_client_factory: HttpClientFactory,
+) -> CoreResult<Vec<ModelInfo>> {
+    let endpoint = LocalProxyModelsEndpoint::new(provider_info);
+    timeout(MODELS_REFRESH_TIMEOUT, endpoint.fetch(http_client_factory))
+        .await
+        .map_err(|_| CodexErr::Timeout)?
 }
 
 impl ModelsEndpointClient for LocalProxyModelsEndpoint {

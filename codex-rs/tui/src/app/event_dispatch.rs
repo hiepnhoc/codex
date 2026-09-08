@@ -1895,6 +1895,22 @@ impl App {
             AppEvent::OpenFeedbackConsent { category } => {
                 self.chat_widget.open_feedback_consent(category);
             }
+            AppEvent::ProviderSetupSubmitted { draft } => {
+                self.probe_provider_models(draft);
+            }
+            AppEvent::ProviderModelsFetched { draft, result } => {
+                self.handle_provider_models_fetched(draft, result);
+            }
+            AppEvent::ProviderModelChosen { draft, model } => {
+                self.chat_widget.open_provider_default_prompt(draft, model);
+            }
+            AppEvent::ProviderSave {
+                draft,
+                model,
+                make_default,
+            } => {
+                self.save_provider(draft, model, make_default).await;
+            }
             AppEvent::SubmitFeedback {
                 category,
                 reason,

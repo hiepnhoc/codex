@@ -13,8 +13,9 @@ Branch `my-harness` trong repo này. Binary tên `hcodex`, tách hoàn toàn kh�
 | Model mặc định `claude-sonnet-5` khi dùng `local-proxy` | `codex-rs/core/src/config/mod.rs` |
 | Branding `OpenAI Codex` → `hcodex` | `codex-rs/tui/...`, `codex-rs/exec/...` |
 | `/model` liệt kê model từ provider (`GET {base_url}/models`, mọi provider OpenAI-compatible) + effort low/medium/high/xhigh | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/models-manager/src/manager.rs` |
+| `/provider` trong TUI: thêm provider (id, base URL, key) → kiểm tra `/models` → chọn model → ghi config + profile | `codex-rs/tui/src/bottom_pane/provider_setup_view.rs`, `codex-rs/tui/src/chatwidget/provider_setup.rs`, `codex-rs/tui/src/app/provider_setup.rs` |
 
-Chỉ ~7 file, +39/−11 dòng → rebase lên upstream dễ.
+Diff code so với upstream nhỏ (≈15 file, phần lớn là file mới) → rebase lên upstream dễ.
 
 Lưu ý: codex chỉ hỗ trợ **OpenAI Responses API** (`wire_api = "chat"` đã bị
 xoá). Provider nào chỉ có `/chat/completions` (Anthropic, Gemini, Groq…) phải đi
@@ -130,6 +131,29 @@ có `/chat/completions` hoặc API riêng (Anthropic, Gemini, Groq, DeepSeek…)
 | `openai` | built-in; login hoặc `OPENAI_API_KEY` | |
 | `ollama` / `lmstudio` | built-in; `localhost:11434` / `:1234` | |
 | `amazon-bedrock` | built-in; cần AWS creds | |
+
+**Thêm provider ngay trong TUI: `/provider`** (tính năng riêng của hcodex)
+
+```
+hcodex
+> /provider                       # hỏi lần lượt: id → base URL → API key (Enter để bỏ qua)
+> /provider groq https://api.groq.com/openai/v1 gsk_...   # hoặc 1 dòng, khỏi hỏi
+```
+
+Sau khi nhập, hcodex gọi `GET {base_url}/models` để kiểm tra kết nối và hiện
+danh sách model cho mày chọn (gõ để lọc); nếu provider không có `/models` thì
+cho gõ tay tên model. Cuối cùng hỏi "chỉ lưu profile" hay "đặt làm mặc định".
+Kết quả ghi vào:
+
+- `~/.hcodex/config.toml` → `[model_providers.<id>]` (name, base_url,
+  `wire_api = "responses"`, `experimental_bearer_token = "<key>"` nếu có key)
+- `~/.hcodex/<id>.config.toml` → profile (`model_provider`, `model`)
+- nếu chọn "mặc định": thêm `model_provider`/`model` ở đầu `config.toml`
+
+Provider mới có hiệu lực ở phiên **tiếp theo**: `hcodex -p <id>` (hoặc `hcodex`
+nếu đã đặt mặc định). Chạy lại `/provider` với cùng id thì cập nhật đè.
+Key nằm trong `config.toml` (quyền 600) — muốn dùng biến môi trường thay vì ghi
+key ra file thì sửa tay: xoá `experimental_bearer_token`, thêm `env_key = "X"`.
 
 **Chuyển provider bằng profile** (khuyên dùng) — mỗi profile là 1 file
 `~/.hcodex/<tên>.config.toml` (format mới của codex; `[profiles.x]` trong
