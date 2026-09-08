@@ -131,14 +131,37 @@ có `/chat/completions` hoặc API riêng (Anthropic, Gemini, Groq, DeepSeek…)
 | `ollama` / `lmstudio` | built-in; `localhost:11434` / `:1234` | |
 | `amazon-bedrock` | built-in; cần AWS creds | |
 
-Chuyển provider tạm thời (không sửa config):
+**Chuyển provider bằng profile** (khuyên dùng) — mỗi profile là 1 file
+`~/.hcodex/<tên>.config.toml` (format mới của codex; `[profiles.x]` trong
+`config.toml` là legacy, để chung sẽ bị lỗi "cannot be used while ... legacy"):
+
+```bash
+hcodex -p proxy        # local-proxy, claude-opus-5-thinking, effort high (= mặc định)
+hcodex -p sonnet       # local-proxy, claude-sonnet-5, effort medium
+hcodex -p openrouter   # OpenRouter, anthropic/claude-fable-5.1 (cần OPENROUTER_API_KEY)
+hcodex -p litellm      # LiteLLM :4000, claude-fable-5.1
+hcodex -p openrouter exec "..." </dev/null   # profile dùng được cho mọi subcommand
+```
+
+Tạo profile mới: viết file `~/.hcodex/<tên>.config.toml` chứa các key thường
+(`model_provider`, `model`, `model_reasoning_effort`, `approval_policy`…), ví dụ:
+
+```toml
+# ~/.hcodex/gemini.config.toml
+model_provider = "openrouter"
+model = "google/gemini-3.8-pro"
+model_reasoning_effort = "medium"
+```
+
+Không dùng profile thì vẫn đổi tạm bằng flag:
 
 ```bash
 hcodex -c model_provider=openrouter -m anthropic/claude-fable-5.1
 ```
 
-Đặt mặc định thì set `model_provider = "openrouter"` + `model = "..."` ở đầu
-config. Trong TUI đổi model bằng `/model` như thường.
+Đặt mặc định thì set `model_provider` + `model` ở đầu `config.toml`. Trong TUI
+đổi model bằng `/model` như thường (danh sách theo provider đang active).
+Thiếu key sẽ báo rõ, ví dụ `ERROR: Missing environment variable: OPENROUTER_API_KEY`.
 
 **LiteLLM gateway** — khi muốn cắm thẳng key Anthropic/Gemini/Groq/DeepSeek:
 
