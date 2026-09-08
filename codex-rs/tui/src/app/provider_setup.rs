@@ -19,6 +19,7 @@ use crate::legacy_core::config::edit::ConfigEdit;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
 
 use super::App;
+use crate::app_server_session::AppServerSession;
 
 impl App {
     pub(super) fn probe_provider_models(&mut self, draft: ProviderSetupDraft) {
@@ -71,45 +72,63 @@ impl App {
 
     pub(super) async fn save_provider(
         &mut self,
+        tui: &mut crate::tui::Tui,
+        app_server: &mut AppServerSession,
         draft: ProviderSetupDraft,
         model: String,
         make_default: bool,
+        use_now: bool,
     ) {
         let codex_home = self.config.codex_home.clone();
-        match persist_provider(&codex_home, &draft, &model, make_default).await {
-            Ok(()) => {
-                let profile_path = codex_home.join(format!("{}.config.toml", draft.id));
-                let hint = if make_default {
-                    format!(
-                        "Restart hcodex to use it (already the default). Profile: {}",
-                        profile_path.display()
-                    )
-                } else {
-                    format!(
-                        "Run `hcodex -p {}` to use it. Profile: {}",
-                        draft.id,
-                        profile_path.display()
-                    )
-                };
-                self.chat_widget.add_info_message(
-                    format!(
-                        "Saved provider `{}` ({}) with model `{model}`{}.",
-                        draft.id,
-                        draft.base_url,
-                        if draft.api_key.is_some() {
-                            ", key stored in config.toml"
-                        } else {
-                            ", no key"
-                        }
-                    ),
-                    Some(hint),
-                );
-            }
-            Err(err) => {
-                self.chat_widget
-                    .add_error_message(format!("Failed to save provider `{}`: {err:#}", draft.id));
-            }
+        if let Err(err) = persist_provider(&codex_home, &draft, &model, make_default).await {
+            self.chat_widget
+                .add_error_message(format!("Failed to save provider `{}`: {err:#}", draft.id));
+            return;
         }
+        let profile_path = codex_home.join(format!("{}.config.toml", draft.id));
+        let key_note = if draft.api_key.is_some() {
+            ", key stored in config.toml"
+        } else {
+            ", no key"
+        };
+        let saved = format!(
+            "Saved provider `{}` ({}) with model `{model}`{key_note}.",
+            draft.id, draft.base_url
+        );
+        if !use_now {
+            let hint = if make_default {
+                format!(
+                    "It is now the default; new hcodex sessions use it. Profile: {}",
+                    profile_path.display()
+                )
+            } else {
+                format!(
+                    "Run `hcodex -p {}` to use it. Profile: {}",
+                    draft.id,
+                    profile_path.display()
+                )
+            };
+            self.chat_widget.add_info_message(saved, Some(hint));
+            return;
+        }
+        // Switch this process to the new provider the same way `-c model_provider=`
+        // does, then open a fresh thread on it. The overrides persist for later
+        // `/new` threads in this session too.
+        self.harness_overrides.model_provider = Some(draft.id.clone());
+        self.harness_overrides.model = Some(model.clone());
+        self.chat_widget.add_info_message(
+            saved,
+            Some(format!(
+                "Starting a new thread on `{}` / `{model}` (profile: {}).",
+                draft.id,
+                profile_path.display()
+            )),
+        );
+        self.start_fresh_session_with_summary_hint(
+            tui, app_server, /*session_start_source*/ None,
+            /*initial_user_message*/ None, /*new_thread_name*/ None,
+        )
+        .await;
     }
 }
 

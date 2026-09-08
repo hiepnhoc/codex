@@ -1908,8 +1908,10 @@ impl App {
                 draft,
                 model,
                 make_default,
+                use_now,
             } => {
-                self.save_provider(draft, model, make_default).await;
+                self.save_provider(tui, app_server, draft, model, make_default, use_now)
+                    .await;
             }
             AppEvent::SubmitFeedback {
                 category,

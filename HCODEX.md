@@ -142,7 +142,15 @@ hcodex
 
 Sau khi nhập, hcodex gọi `GET {base_url}/models` để kiểm tra kết nối và hiện
 danh sách model cho mày chọn (gõ để lọc); nếu provider không có `/models` thì
-cho gõ tay tên model. Cuối cùng hỏi "chỉ lưu profile" hay "đặt làm mặc định".
+cho gõ tay tên model. Cuối cùng chọn 1 trong 3:
+
+- **Use it now** — lưu profile và mở ngay thread mới trên provider/model đó
+  (mặc định trong `config.toml` giữ nguyên; các `/new` sau trong phiên này cũng
+  dùng provider mới)
+- **Make it the default and use it now** — như trên, thêm ghi `model_provider`/`model`
+  vào đầu `config.toml` để các phiên sau cũng dùng
+- **Save profile only** — giữ thread hiện tại, dùng sau bằng `hcodex -p <id>`
+
 Kết quả ghi vào:
 
 - `~/.hcodex/config.toml` → `[model_providers.<id>]` (name, base_url,
@@ -150,8 +158,7 @@ Kết quả ghi vào:
 - `~/.hcodex/<id>.config.toml` → profile (`model_provider`, `model`)
 - nếu chọn "mặc định": thêm `model_provider`/`model` ở đầu `config.toml`
 
-Provider mới có hiệu lực ở phiên **tiếp theo**: `hcodex -p <id>` (hoặc `hcodex`
-nếu đã đặt mặc định). Chạy lại `/provider` với cùng id thì cập nhật đè.
+Chạy lại `/provider` với cùng id thì cập nhật đè.
 Key nằm trong `config.toml` (quyền 600) — muốn dùng biến môi trường thay vì ghi
 key ra file thì sửa tay: xoá `experimental_bearer_token`, thêm `env_key = "X"`.
 

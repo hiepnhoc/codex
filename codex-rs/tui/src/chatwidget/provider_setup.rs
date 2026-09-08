@@ -94,7 +94,7 @@ impl ChatWidget {
         draft: ProviderSetupDraft,
         model: String,
     ) {
-        let make_item = |name: String, description: String, make_default: bool| {
+        let make_item = |name: String, description: String, make_default: bool, use_now: bool| {
             let draft = draft.clone();
             let model = model.clone();
             SelectionItem {
@@ -105,6 +105,7 @@ impl ChatWidget {
                         draft: draft.clone(),
                         model: model.clone(),
                         make_default,
+                        use_now,
                     });
                 })],
                 dismiss_on_select: true,
@@ -113,17 +114,29 @@ impl ChatWidget {
         };
         let items = vec![
             make_item(
-                "Save as profile only".to_string(),
+                "Use it now".to_string(),
                 format!(
-                    "use it with `hcodex -p {}`; current default stays unchanged",
+                    "save the `{}` profile and start a new thread on it; the default in config.toml stays unchanged",
                     draft.id
                 ),
                 false,
+                true,
             ),
             make_item(
-                "Save and make it the default".to_string(),
-                "sets model_provider + model at the top of config.toml".to_string(),
+                "Make it the default and use it now".to_string(),
+                "sets model_provider + model at the top of config.toml, then starts a new thread"
+                    .to_string(),
                 true,
+                true,
+            ),
+            make_item(
+                "Save profile only".to_string(),
+                format!(
+                    "keep this thread; use it later with `hcodex -p {}`",
+                    draft.id
+                ),
+                false,
+                false,
             ),
         ];
         self.bottom_pane.show_selection_view(SelectionViewParams {

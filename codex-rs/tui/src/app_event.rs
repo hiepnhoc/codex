@@ -1414,6 +1414,8 @@ pub(crate) enum AppEvent {
         draft: ProviderSetupDraft,
         model: String,
         make_default: bool,
+        /// Start a fresh thread on the new provider right away.
+        use_now: bool,
     },
 
     /// Open the feedback note entry overlay after the user selects a category.
