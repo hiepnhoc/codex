@@ -27,7 +27,7 @@ use serde::Deserialize;
 use tokio::time::timeout;
 
 const MODELS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
-const DEFAULT_CONTEXT_WINDOW: i64 = 200_000;
+const DEFAULT_CONTEXT_WINDOW: i64 = 1_000_000;
 
 #[derive(Debug)]
 pub(crate) struct LocalProxyModelsEndpoint {
@@ -155,7 +155,7 @@ pub(crate) fn model_info_for(
     .collect();
     info.default_reasoning_level = Some(ReasoningEffort::Medium);
     info.context_window = Some(DEFAULT_CONTEXT_WINDOW);
-    info.max_context_window = Some(DEFAULT_CONTEXT_WINDOW);
+    info.max_context_window = None;
     // These entries are authoritative for the proxy, not a guess.
     info.used_fallback_model_metadata = false;
     info
