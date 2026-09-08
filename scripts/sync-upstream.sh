@@ -22,7 +22,13 @@ cd "$(git rev-parse --show-toplevel)"
 ROOT="$PWD"
 BRANCH="${HARNESS_BRANCH:-my-harness}"
 BIN_DIR="$HOME/.cargo/bin"
-BACKUP_DIR="${CODEX_HOME:-$HOME/.hcodex}/backup"
+# hcodex state lives in ~/.hcodex regardless of a CODEX_HOME set by the calling
+# shell (some launchers export one); use it for backups and the models cache.
+HCODEX_HOME="$HOME/.hcodex"
+BACKUP_DIR="$HCODEX_HOME/backup"
+if [[ -n "${CODEX_HOME:-}" && "$CODEX_HOME" != "$HCODEX_HOME" ]]; then
+  echo "note: CODEX_HOME=$CODEX_HOME is set in this shell; backups/cache still use $HCODEX_HOME" >&2
+fi
 MODE="${1:-}"
 
 # Files the harness changes vs upstream; upstream commits touching these are
@@ -38,7 +44,7 @@ rollback() {
   say "rollback: restoring $BACKUP_DIR/* into $BIN_DIR"
   cp -f "$BACKUP_DIR/hcodex" "$BIN_DIR/hcodex"
   cp -f "$BACKUP_DIR/codex-code-mode-host" "$BIN_DIR/codex-code-mode-host"
-  rm -f "${CODEX_HOME:-$HOME/.hcodex}/models_cache.json"
+  rm -f "$HCODEX_HOME/models_cache.json"
   echo "restored: $("$BIN_DIR/hcodex" --version) (next sync re-links target/release)"
   exit 0
 }
@@ -136,7 +142,7 @@ build_gate_install() {
   say "install"
   ln -sf "$PWD/target/release/hcodex" "$BIN_DIR/hcodex"
   ln -sf "$PWD/target/release/codex-code-mode-host" "$BIN_DIR/codex-code-mode-host"
-  rm -f "${CODEX_HOME:-$HOME/.hcodex}/models_cache.json"
+  rm -f "$HCODEX_HOME/models_cache.json"
   echo "installed: $("$BIN_DIR/hcodex" --version)"
   echo "reminder: codex-ide types -> cd ~/github/codex-ide && hcodex app-server generate-ts --out src/protocol && pnpm exec tsc --noEmit"
 }

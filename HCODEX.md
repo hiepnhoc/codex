@@ -238,17 +238,39 @@ Mô hình branch:
 Đồng bộ + rebuild bằng 1 lệnh:
 
 ```bash
-scripts/sync-upstream.sh            # fetch upstream, ff main, rebase my-harness, build release, cài
-scripts/sync-upstream.sh --no-build # chỉ đồng bộ git
+scripts/sync-upstream.sh --dry-run   # xem main tụt bao nhiêu commit, upstream đụng file harness nào
+scripts/sync-upstream.sh             # fetch, ff main, rebase, build release, test gate, smoke, cài
+scripts/sync-upstream.sh --no-build  # chỉ đồng bộ git
+scripts/sync-upstream.sh --build-only  # sau khi tự sửa conflict: build + gate + cài
+scripts/sync-upstream.sh --rollback  # cài lại binary đã backup ở ~/.hcodex/backup (build mới bị lỗi)
+SKIP_TESTS=1 scripts/sync-upstream.sh  # bỏ qua cargo test (vẫn chạy smoke)
 ```
 
+Script bảo vệ mày thế nào:
+
+- Trước khi rebase: tag `harness-pre-sync-<UTC>` trên `my-harness`. Sync hỏng thì
+  `git rebase --abort && git reset --hard <tag>` là về y cũ.
+- `rerere` bật: conflict đã resolve một lần sẽ tự resolve lại lần sau.
+- Trước khi cài: backup binary đang dùng vào `~/.hcodex/backup/`, chạy unit test
+  harness (`codex-model-provider`, `provider_setup`, `command_popup`), build release,
+  rồi `scripts/harness-smoke.sh` trên binary **mới build** (version, `/model` phải
+  lấy list từ proxy, 1 turn `exec` qua proxy). Fail ở bước nào thì binary cũ vẫn
+  nguyên, không symlink đè.
+- Cảnh báo nếu `Cargo.lock` nâng `v8` khác với artifact V8 đang cache.
+- File untracked (như `docs/open-skills/scripts/`) không chặn sync; chỉ file đã
+  sửa chưa commit mới chặn.
+
 Nếu rebase báo conflict: sửa file bị conflict (thường chỉ trong các file ở bảng
-"Khác gì so với codex gốc"), rồi `git add <file> && git rebase --continue`;
-bỏ dở thì `git rebase --abort`. Sau khi rebase, đẩy branch lên fork:
+"Khác gì so với codex gốc" — kiểu "cả hai bên cùng thêm dòng" thì giữ cả hai),
+rồi `git add <file> && git rebase --continue`, sau đó `scripts/sync-upstream.sh --build-only`.
+Sau khi rebase, đẩy branch lên fork:
 
 ```bash
 git push --force-with-lease origin my-harness
 ```
+
+Chạy smoke test lẻ bất cứ lúc nào: `scripts/harness-smoke.sh` (mặc định test
+`hcodex` trên PATH).
 
 Muốn gửi thay đổi ngược lên upstream thì tách commit đó ra branch riêng từ `main`
 và mở PR — không PR từ `my-harness`.
