@@ -14,6 +14,7 @@ Branch `my-harness` trong repo này. Binary tên `hcodex`, tách hoàn toàn kh�
 | Branding `OpenAI Codex` → `hcodex` | `codex-rs/tui/...`, `codex-rs/exec/...` |
 | `/model` liệt kê model từ provider (`GET {base_url}/models`, mọi provider OpenAI-compatible) + effort low/medium/high/xhigh | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/models-manager/src/manager.rs` |
 | `/provider` trong TUI: thêm provider (id, base URL, key) → kiểm tra `/models` → chọn model → ghi config + profile | `codex-rs/tui/src/bottom_pane/provider_setup_view.rs`, `codex-rs/tui/src/chatwidget/provider_setup.rs`, `codex-rs/tui/src/app/provider_setup.rs` |
+| Lỗi `server_is_overloaded` trong stream từ provider **không phải OpenAI** được retry (2s→30s/lần, tối đa `stream_max_retries`) thay vì kết thúc turn với "Selected model is at capacity" | `codex-rs/core/src/session/turn.rs`, `codex-rs/core/src/responses_retry.rs` (+ test `core/tests/suite/hcodex_overload_retry.rs`) |
 
 Diff code so với upstream nhỏ (≈15 file, phần lớn là file mới) → rebase lên upstream dễ.
 
@@ -281,6 +282,16 @@ và mở PR — không PR từ `my-harness`.
   hoặc set `HCODEX_PROXY_URL` đúng.
 - `Code Mode is unavailable ... codex-code-mode-host: host executable was not found`
   → chưa symlink `codex-code-mode-host` cạnh `hcodex` (xem Build & cài).
+- `Selected model is at capacity. Please try a different model.` → proxy/gateway
+  báo `server_is_overloaded` giữa stream. hcodex tự retry với status
+  "Model at capacity, retrying... n/m" (chờ 2s, 4s, 8s, 16s, 30s…); chỉ khi hết
+  lượt mới báo lỗi. Mặc định 5 lượt (~60s); proxy hay nghẽn lâu thì tăng trong
+  `config.toml`:
+  ```toml
+  [model_providers.cliproxy]
+  stream_max_retries = 10        # ~3.5 phút chờ tổng cộng
+  ```
+  (Provider `openai` giữ hành vi upstream: không retry, để mày đổi model.)
 - `/model` hiện danh sách cũ → danh sách được cache 5 phút ở
   `~/.hcodex/models_cache.json`; xoá file đó để buộc tải lại.
 - `hcodex exec` treo → stdin không phải TTY, thêm `</dev/null`.

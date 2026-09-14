@@ -1507,7 +1507,12 @@ async fn run_sampling_request(
             original_input = Some(prompt.input);
         }
 
-        if !err.is_retryable() {
+        // hcodex: a streamed "server_is_overloaded" from a non-OpenAI provider
+        // (local proxy / gateway) is transient capacity, not a reason to end the
+        // turn with "Selected model is at capacity"; retry it like a dropped stream.
+        let retry_overload = matches!(err.details(), CodexErrorDetails::ServerOverloaded)
+            && !turn_context.provider.info().requires_openai_auth;
+        if !err.is_retryable() && !retry_overload {
             return Err(err);
         }
 

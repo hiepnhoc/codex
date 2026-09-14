@@ -102,7 +102,16 @@ pub(crate) async fn handle_retryable_response_stream_error(
     if retry_state.retries < max_retries {
         retry_state.retries += 1;
         let retry_count = retry_state.retries;
-        let delay = err.retry_delay().unwrap_or_else(|| backoff(retry_count));
+        // hcodex: capacity errors clear in seconds, not the ~200ms the generic
+        // backoff starts at; wait 2s, 4s, 8s, ... capped at 30s per attempt.
+        let overloaded = matches!(err.details(), CodexErrorDetails::ServerOverloaded);
+        let delay = err.retry_delay().unwrap_or_else(|| {
+            if overloaded {
+                overload_backoff(retry_count)
+            } else {
+                backoff(retry_count)
+            }
+        });
         log_retry(request, turn_context, &err, retry_count, max_retries, delay);
 
         // In release builds, hide the first websocket retry notification to reduce noisy
@@ -113,12 +122,12 @@ pub(crate) async fn handle_retryable_response_stream_error(
         if report_error {
             // Surface retry information to any UI/front-end so the user understands what is
             // happening instead of staring at a seemingly frozen screen.
-            sess.notify_stream_error(
-                turn_context,
-                format!("Reconnecting... {retry_count}/{max_retries}"),
-                err,
-            )
-            .await;
+            let status = if overloaded {
+                format!("Model at capacity, retrying... {retry_count}/{max_retries}")
+            } else {
+                format!("Reconnecting... {retry_count}/{max_retries}")
+            };
+            sess.notify_stream_error(turn_context, status, err).await;
         }
         codex_client::record_retry!(retry_count, delay, operation);
         tokio::time::sleep(delay).await;
@@ -126,6 +135,14 @@ pub(crate) async fn handle_retryable_response_stream_error(
     }
 
     Err(err)
+}
+
+/// hcodex: retry delay for provider capacity errors (see `overloaded` above).
+fn overload_backoff(attempt: u64) -> Duration {
+    const BASE: Duration = Duration::from_secs(2);
+    const MAX: Duration = Duration::from_secs(30);
+    BASE.saturating_mul(1u32 << attempt.saturating_sub(1).min(4) as u32)
+        .min(MAX)
 }
 
 fn log_retry(
