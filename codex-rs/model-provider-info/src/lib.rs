@@ -314,7 +314,9 @@ impl ModelProviderInfo {
         let retry = ApiRetryConfig {
             max_attempts: self.request_max_retries(),
             base_delay: Duration::from_millis(200),
-            retry_429: false,
+            // hcodex: proxies/gateways use 429 as a transient rate limit (often
+            // with Retry-After); OpenAI's 429 means usage limits, so keep it terminal.
+            retry_429: !self.requires_openai_auth,
             retry_5xx: true,
             retry_transport: true,
         };
