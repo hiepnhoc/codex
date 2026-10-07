@@ -93,9 +93,10 @@ pub(crate) async fn resolve_review_model(
     let available_models = session
         .services
         .models_manager
-        .list_models(
+        .list_models_with_config(
             codex_models_manager::manager::RefreshStrategy::Offline,
             turn.config.http_client_factory(),
+            &turn.config.to_models_manager_config(),
         )
         .await;
     let default_review_model_id = turn.provider.approval_review_preferred_model();

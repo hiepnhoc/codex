@@ -17,8 +17,10 @@ use codex_login::ExternalAuthRefreshContext;
 use codex_login::TokenData;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::error::CodexErr;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelAccessPrograms;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::turn_input::CyberAccessProgram;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -1698,5 +1700,65 @@ fn bundled_models_json_roundtrips() {
     assert!(
         !response.models.is_empty(),
         "bundled models.json should contain at least one model"
+    );
+}
+
+#[tokio::test]
+async fn model_overrides_are_shared_by_picker_and_runtime_with_explicit_config_winning() {
+    let directory = tempdir().expect("temp dir");
+    let overrides_path = directory.path().join(crate::MODEL_OVERRIDES_FILE);
+    std::fs::write(
+        &overrides_path,
+        r#"
+[models."model-a"]
+context_window = 180000
+default_reasoning_effort = "high"
+supported_reasoning_efforts = ["high", "xhigh"]
+input_modalities = ["text"]
+instructions = "Model-specific prompt"
+"#,
+    )
+    .expect("write model overrides");
+    let config = ModelsManagerConfig {
+        model_context_window: Some(220_000),
+        base_instructions: Some("Explicit prompt".to_string()),
+        model_provider_id: Some("cliproxy".to_string()),
+        model_overrides: crate::ModelOverrides::load_optional(&overrides_path)
+            .expect("load model overrides"),
+        ..Default::default()
+    };
+    let manager = static_manager_for_tests(ModelsResponse {
+        models: vec![remote_model("model-a", "Model A", /*priority*/ 0)],
+    });
+
+    let picker_models = manager
+        .list_models_with_config(
+            RefreshStrategy::Offline,
+            DEFAULT_HTTP_CLIENT_FACTORY,
+            &config,
+        )
+        .await;
+    let picker_model = picker_models.first().expect("picker model");
+    assert_eq!(picker_model.default_reasoning_effort, ReasoningEffort::High);
+    assert_eq!(
+        picker_model
+            .supported_reasoning_efforts
+            .iter()
+            .map(|preset| preset.effort.clone())
+            .collect::<Vec<_>>(),
+        vec![ReasoningEffort::High, ReasoningEffort::XHigh]
+    );
+    assert_eq!(picker_model.input_modalities, vec![InputModality::Text]);
+
+    let runtime_model = manager.get_model_info("model-a", &config).await;
+    assert_eq!(runtime_model.context_window, Some(220_000));
+    assert_eq!(
+        runtime_model.default_reasoning_level,
+        Some(ReasoningEffort::High)
+    );
+    assert_eq!(runtime_model.input_modalities, vec![InputModality::Text]);
+    assert_eq!(
+        codex_prompts::render_model_instructions(&runtime_model),
+        "Explicit prompt"
     );
 }

@@ -14,6 +14,7 @@ pub enum SlashCommand {
     // more frequently used commands should be listed first.
     Model,
     Daybreak,
+    Provider,
     Ide,
     Permissions,
     Keymap,
@@ -133,6 +134,9 @@ impl SlashCommand {
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Daybreak => "turn Daybreak on or off",
+            SlashCommand::Provider => {
+                "add an OpenAI-compatible provider (id, base URL, API key) and save a profile"
+            }
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
             }
@@ -171,6 +175,7 @@ impl SlashCommand {
         matches!(
             self,
             SlashCommand::Review
+                | SlashCommand::Provider
                 | SlashCommand::Rename
                 | SlashCommand::New
                 | SlashCommand::Clear
@@ -269,6 +274,7 @@ impl SlashCommand {
             | SlashCommand::Resume
             | SlashCommand::Model
             | SlashCommand::Daybreak
+            | SlashCommand::Provider
             | SlashCommand::Permissions
             | SlashCommand::Copy
             | SlashCommand::Raw

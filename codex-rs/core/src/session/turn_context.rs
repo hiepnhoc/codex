@@ -800,9 +800,10 @@ impl TurnContext {
         config.model_reasoning_effort = reasoning_effort.clone();
 
         let available_models = models_manager
-            .list_models(
+            .list_models_with_config(
                 RefreshStrategy::OnlineIfUncached,
                 config.http_client_factory(),
+                &config.to_models_manager_config(),
             )
             .await;
         let model_info = Arc::new(model_info);
@@ -1031,7 +1032,9 @@ impl Session {
         let model_info = &step_settings.model_info;
         let session_telemetry_for_context = step_settings.telemetry(session_telemetry);
         let session_source = session_configuration.session_source.clone();
-        let available_models = models_manager.try_list_models().unwrap_or_default();
+        let available_models = models_manager
+            .try_list_models_with_config(&per_turn_config.to_models_manager_config())
+            .unwrap_or_default();
 
         let mut per_turn_config = per_turn_config;
         let configured_token_budget = per_turn_config.token_budget.clone();

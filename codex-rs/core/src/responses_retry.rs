@@ -35,6 +35,23 @@ pub(crate) struct ResponsesStreamRetryState {
     connection_retry_delay: Duration,
 }
 
+pub(crate) fn is_transient_provider_capacity_error(
+    err: &CodexErr,
+    turn_context: &TurnContext,
+) -> bool {
+    let provider = turn_context.provider.info();
+    if provider.requires_openai_auth || provider.aws.is_some() || err.is_from_http_response() {
+        return false;
+    }
+
+    match err.details() {
+        CodexErrorDetails::ServerOverloaded
+        | CodexErrorDetails::RateLimitExceeded(_)
+        | CodexErrorDetails::UsageLimitReached(_) => true,
+        _ => false,
+    }
+}
+
 impl Default for ResponsesStreamRetryState {
     fn default() -> Self {
         Self {
@@ -85,10 +102,18 @@ pub(crate) async fn handle_response_stream_error(
         ResponsesStreamRequest::RemoteCompactionV2 => RetryOperation::RemoteCompactionV2,
     };
     let retry_count = retry_state.retries.saturating_add(1);
-    let Some(delay) = err.retry_delay(retry_count) else {
-        return Err(err);
-    };
+    // hcodex: proxy/gateway overload and quota-probe responses are transient for
+    // non-OpenAI providers; they clear in seconds, not the ~200ms generic backoff.
+    let provider_capacity = is_transient_provider_capacity_error(&err, turn_context);
     let retry_after = err.retry_after();
+    let delay = match err.retry_delay(retry_count) {
+        Some(delay) if provider_capacity && retry_after.is_none() => {
+            delay.max(provider_capacity_backoff(retry_count))
+        }
+        Some(delay) => delay,
+        None if provider_capacity => provider_capacity_backoff(retry_count),
+        None => return Err(err),
+    };
 
     if turn_context
         .config
@@ -150,12 +175,19 @@ pub(crate) async fn handle_response_stream_error(
         if report_error {
             // Surface retry information to any UI/front-end so the user understands what is
             // happening instead of staring at a seemingly frozen screen.
-            sess.notify_stream_error(
-                turn_context,
-                format!("Reconnecting... {retry_count}/{max_retries}"),
-                err,
-            )
-            .await;
+            let status = match err.details() {
+                CodexErrorDetails::ServerOverloaded if provider_capacity => {
+                    format!("Model at capacity, retrying... {retry_count}/{max_retries}")
+                }
+                CodexErrorDetails::RateLimitExceeded(_)
+                | CodexErrorDetails::UsageLimitReached(_)
+                    if provider_capacity =>
+                {
+                    format!("Provider rate limit, retrying... {retry_count}/{max_retries}")
+                }
+                _ => format!("Reconnecting... {retry_count}/{max_retries}"),
+            };
+            sess.notify_stream_error(turn_context, status, err).await;
         }
         // Use one clock sample so local backoff telemetry retains the selected delay.
         let now = Instant::now();
@@ -173,6 +205,14 @@ pub(crate) async fn handle_response_stream_error(
             retry_at: retry_after.map(RetryAfter::deadline),
         });
     Err(err)
+}
+
+/// hcodex: retry delay for provider capacity and quota-probe responses.
+fn provider_capacity_backoff(attempt: u64) -> Duration {
+    const BASE: Duration = Duration::from_secs(2);
+    const MAX: Duration = Duration::from_secs(30);
+    BASE.saturating_mul(1u32 << attempt.saturating_sub(1).min(4) as u32)
+        .min(MAX)
 }
 
 fn log_retry(

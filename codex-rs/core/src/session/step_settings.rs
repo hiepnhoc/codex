@@ -5,6 +5,7 @@ use crate::config::ConstraintError;
 use crate::config::ConstraintResult;
 use codex_config::ConfigRequirements;
 use codex_features::Features;
+use codex_models_manager::ModelOverrides;
 use codex_models_manager::ModelsManagerConfig;
 use codex_models_manager::manager::ModelsManager;
 use codex_otel::SessionTelemetry;
@@ -180,6 +181,8 @@ pub(crate) struct ModelInfoOverrides {
     pub(crate) auto_compact_token_limit: Option<i64>,
     pub(crate) tool_output_token_limit: Option<usize>,
     pub(crate) base_instructions: Option<String>,
+    pub(crate) model_provider_id: Option<String>,
+    pub(crate) model_overrides: ModelOverrides,
 }
 
 impl From<ModelsManagerConfig> for ModelInfoOverrides {
@@ -189,6 +192,8 @@ impl From<ModelsManagerConfig> for ModelInfoOverrides {
             auto_compact_token_limit: config.model_auto_compact_token_limit,
             tool_output_token_limit: config.tool_output_token_limit,
             base_instructions: config.base_instructions,
+            model_provider_id: config.model_provider_id,
+            model_overrides: config.model_overrides,
         }
     }
 }
@@ -206,6 +211,8 @@ impl ModelInfoOverrides {
             personality,
             // The models manager already owns its catalog.
             model_catalog: None,
+            model_provider_id: self.model_provider_id.clone(),
+            model_overrides: self.model_overrides.clone(),
         }
     }
 }
