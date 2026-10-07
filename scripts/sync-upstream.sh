@@ -130,7 +130,7 @@ build_gate_install() {
   if [[ "${SKIP_TESTS:-}" != "1" ]]; then
     say "test gate (harness unit tests)"
     export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"   # core/tui tests overflow the default stack (see justfile)
-    RUST_MIN_STACK="$RUST_MIN_STACK" cargo test -q -p codex-core --test all -- hcodex_overload_retry 2>&1 | tail -3
+    RUST_MIN_STACK="$RUST_MIN_STACK" cargo test -q -p codex-core --test all -- hcodex_overload_retry model_overrides first_turn_model_change 2>&1 | tail -3
     cargo test -q -p codex-models-manager -p codex-model-provider -p codex-model-provider-info 2>&1 | tail -5
     cargo test -q -p codex-tui -- provider_setup command_popup 2>&1 | tail -5
   fi
