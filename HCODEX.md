@@ -322,6 +322,14 @@ Import chạy nền (tóm tắt từng file/thư mục bằng haiku qua proxy); 
 memory liên quan và tóm tắt module liên quan; cuối turn transcript được ghi về
 server để trích memory. Debug: `OPENVIKING_DEBUG=1` → `~/.openviking/logs/codex-hooks.log`.
 
+**Lưu ý proxy Kiro-Go**: bản trước 07/10 **bỏ rơi message role `developer`** (OpenAI)
+→ context của OpenViking (và `<skills_instructions>`, context per-turn của codex)
+không tới model. Đã fix trong `~/github/Kiro-go` (branch `hcodex-model-metadata`,
+commit "fold OpenAI developer messages"): developer ở đầu → system prompt, giữa/cuối →
+ghép vào user turn gần nhất trong `<developer_instructions>`. Binary cũ giữ ở
+`kiro-go.bak-20260909`; restart proxy: `launchctl kickstart -k gui/$(id -u)/com.hiepln.kiro-go`.
+Kiểm tra nhanh: gửi `/v1/responses` có item role `developer` chứa 1 từ bí mật rồi hỏi lại.
+
 Gỡ: `hcodex plugin remove openviking-memory@openviking && hcodex plugin marketplace remove openviking`,
 `launchctl bootout gui/$(id -u)/ai.openviking.server`, xoá `~/.openviking`.
 
