@@ -19,6 +19,11 @@ Branch `my-harness` trong repo này. Binary tên `hcodex`, tách hoàn toàn kh�
 | `server_is_overloaded`, SSE rate-limit và HTTP `usage_limit_reached` từ proxy được retry cấp turn (2s→30s/lần, tối đa `stream_max_retries`) thay vì kết thúc turn giả; OpenAI chính chủ giữ semantics upstream | `codex-rs/core/src/session/turn.rs`, `codex-rs/core/src/responses_retry.rs` (+ test `core/tests/suite/hcodex_overload_retry.rs`) |
 
 Diff code so với upstream nhỏ (≈15 file, phần lớn là file mới) → rebase lên upstream dễ.
+Sau sync 07/10/2026 nhiều hook harness đã được thay bằng cơ chế upstream: cache catalog
+theo identity provider+auth, `with_provider_catalog()` (không trộn catalog OpenAI),
+`Retry-After` native ở lớp HTTP, `[model_providers.x.capabilities]` của upstream
+(`external_web_access`, `remote_compaction`) — cấp provider, bổ sung chứ không trùng
+`model_overrides.toml` (cấp model).
 
 Lưu ý: codex chỉ hỗ trợ **OpenAI Responses API** (`wire_api = "chat"` đã bị
 xoá). Provider nào chỉ có `/chat/completions` (Anthropic, Gemini, Groq…) phải đi
@@ -305,6 +310,27 @@ Script bảo vệ mày thế nào:
 - Cảnh báo nếu `Cargo.lock` nâng `v8` khác với artifact V8 đang cache.
 - File untracked (như `docs/open-skills/scripts/`) không chặn sync; chỉ file đã
   sửa chưa commit mới chặn.
+
+**Khi upstream nhảy xa** (hàng trăm → nghìn commit) rebase từng commit harness sẽ
+conflict lặp ở cùng file. Cách đã dùng ngày 07/10/2026 (1.530 commit): gộp toàn bộ
+harness thành 1 commit rồi merge lên upstream, resolve 1 lần ở trạng thái cuối:
+
+```bash
+git tag harness-pre-sync-<date> my-harness          # giữ lịch sử cũ
+git checkout -B harness-sync upstream/main
+git merge --squash my-harness                        # resolve conflict 1 lần
+git commit -m "hcodex harness: squash onto upstream <sha>"
+# check/test như gate, rồi:
+git branch -f my-harness harness-sync && git checkout my-harness
+git push --force-with-lease origin my-harness
+```
+
+Từ đó `my-harness` = upstream + vài commit harness; các lần sync sau lại rebase
+bình thường. Lịch sử chi tiết trước đó nằm ở tag `harness-pre-sync-*`.
+
+Test upstream **tự fail trên macOS** (không liên quan harness, đã kiểm chứng trên
+upstream nguyên bản): `retry_after::connection_failures_increment_retry_telemetry_without_consuming_retry_budget`
+— gate của script không chạy test này.
 
 Nếu rebase báo conflict: sửa file bị conflict (thường chỉ trong các file ở bảng
 "Khác gì so với codex gốc" — kiểu "cả hai bên cùng thêm dòng" thì giữ cả hai),
