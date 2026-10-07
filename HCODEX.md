@@ -277,6 +277,54 @@ wire_api = "responses"
 # stream_idle_timeout_ms = 300000
 ```
 
+## Memory + RAG cho repo lớn: OpenViking (07/10/2026)
+
+Vấn đề: mỗi session mới lại phải quét các module trong `digital-monorepo` → tốn
+token/thời gian. Giải pháp: [OpenViking](https://github.com/volcengine/OpenViking)
+(context DB: memory + RAG + skills, AGPL-3.0) chạy local, gắn vào **hcodex qua
+plugin hooks + MCP**; `~/.codex` không bị đụng.
+
+Thành phần đã cài:
+
+| Thành phần | Ở đâu | Chạy bằng |
+|---|---|---|
+| OpenViking server v0.4.23 | `uv tool install openviking`; config `~/.openviking/ov.conf`; data `~/.openviking/data` | launchd `ai.openviking.server` (port 1933, auth `dev`) |
+| Embedding | Ollama `nomic-embed-text` (768d), binary `~/.local/bin/ollama` + `~/.local/lib/ollama` (tarball GitHub, brew fail) | launchd `com.ollama.serve` (127.0.0.1:11434) |
+| VLM (tóm tắt L0/L1) + query planner | `claude-haiku-4.5` qua proxy `http://127.0.0.1:8181/v1` | — |
+| Plugin cho hcodex | `openviking-memory@openviking` (marketplace trong `~/.hcodex/config.toml`) | hooks: SessionStart / UserPromptSubmit / Stop / PreCompact / SessionEnd |
+| CLI | `ov` (`~/.openviking/ovcli.conf` → `http://127.0.0.1:1933`) | |
+
+Lệnh hay dùng:
+
+```bash
+openviking-server doctor                 # kiểm tra config/model/embedding
+ov status                                # server + hàng đợi task
+ov tree viking://~/resources/            # cây resource đã index
+ov find "esign callback flow"            # tìm ngữ nghĩa
+ov task status <task_id>                 # tiến độ import
+launchctl kickstart -k gui/$(id -u)/ai.openviking.server   # restart server
+```
+
+Index repo: CLI zip cả thư mục (kể cả `node_modules`) nên vượt giới hạn 512 MB —
+dùng `git archive` lấy đúng file được track:
+
+```bash
+cd ~/github/digital-monorepo
+git archive --format=zip -o /tmp/dm.zip HEAD
+ov add-resource /tmp/dm.zip --to viking://~/resources/digital-monorepo \
+  --ignore-dirs "node_modules,dist,build,server-build,.idea,.cache,.next,target,coverage,lib,public" \
+  --exclude "*.lock,package-lock.json,*.min.js,*.map,*.png,*.jpg,*.svg,*.pdf,*.jar,*.wasm"
+```
+
+Import chạy nền (tóm tắt từng file/thư mục bằng haiku qua proxy); import lại cùng
+`--to` sẽ refresh. Trong hcodex, lần đầu mở sẽ hỏi **trust hooks** → chọn "Trust all"
+(`/hooks` để xem). Mỗi prompt sau đó được bơm `<openviking-context>` gồm profile,
+memory liên quan và tóm tắt module liên quan; cuối turn transcript được ghi về
+server để trích memory. Debug: `OPENVIKING_DEBUG=1` → `~/.openviking/logs/codex-hooks.log`.
+
+Gỡ: `hcodex plugin remove openviking-memory@openviking && hcodex plugin marketplace remove openviking`,
+`launchctl bootout gui/$(id -u)/ai.openviking.server`, xoá `~/.openviking`.
+
 ## Cập nhật từ upstream (openai/codex)
 
 Mô hình branch:
