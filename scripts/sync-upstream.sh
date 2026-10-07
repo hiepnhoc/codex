@@ -12,6 +12,7 @@
 #   scripts/sync-upstream.sh --build-only skip git, just build + gate + install
 #   scripts/sync-upstream.sh --rollback   reinstall the binaries backed up by the last run
 #   env SKIP_TESTS=1                      skip the cargo test gate (still smoke-tests)
+#   env BUILD_JOBS=4 BUILD_NICE=15         parallelism / niceness for cargo (keeps the machine usable)
 #   env HARNESS_BRANCH=<name>             harness branch (default my-harness)
 #
 # Every run tags the pre-sync harness commit as harness-pre-sync-<UTC>; undo a
@@ -130,13 +131,16 @@ build_gate_install() {
   if [[ "${SKIP_TESTS:-}" != "1" ]]; then
     say "test gate (harness unit tests)"
     export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"   # core/tui tests overflow the default stack (see justfile)
-    RUST_MIN_STACK="$RUST_MIN_STACK" cargo test -q -p codex-core --test all -- hcodex_overload_retry model_overrides first_turn_model_change 2>&1 | tail -3
-    cargo test -q -p codex-models-manager -p codex-model-provider -p codex-model-provider-info 2>&1 | tail -5
-    cargo test -q -p codex-tui -- provider_setup command_popup 2>&1 | tail -5
+    RUST_MIN_STACK="$RUST_MIN_STACK" nice -n "${BUILD_NICE:-15}" cargo test -q -j "${BUILD_JOBS:-4}" -p codex-core --test all -- hcodex_overload_retry model_overrides first_turn_model_change 2>&1 | tail -3
+    nice -n "${BUILD_NICE:-15}" cargo test -q -j "${BUILD_JOBS:-4}" -p codex-models-manager -p codex-model-provider -p codex-model-provider-info 2>&1 | tail -5
+    nice -n "${BUILD_NICE:-15}" cargo test -q -j "${BUILD_JOBS:-4}" -p codex-tui -- provider_setup command_popup 2>&1 | tail -5
   fi
 
-  say "release build"
-  cargo build --release --bin hcodex --bin codex-code-mode-host
+  # Keep the machine usable while building: low priority and a bounded job count
+  # (override with BUILD_JOBS / BUILD_NICE).
+  local jobs="${BUILD_JOBS:-4}" nice_level="${BUILD_NICE:-15}"
+  say "release build (nice $nice_level, -j $jobs)"
+  nice -n "$nice_level" cargo build --release -j "$jobs" --bin hcodex --bin codex-code-mode-host
 
   say "smoke test (built binary, not yet installed)"
   "$ROOT/scripts/harness-smoke.sh" "$PWD/target/release/hcodex"
