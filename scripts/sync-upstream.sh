@@ -146,6 +146,10 @@ build_gate_install() {
   ln -sf "$PWD/target/release/codex-code-mode-host" "$BIN_DIR/codex-code-mode-host"
   rm -f "$HCODEX_HOME"/models_cache*.json
   echo "installed: $("$BIN_DIR/hcodex" --version)"
+  # Incremental caches from the test/check gate grow by tens of GB per sync and
+  # are never reused across dependency bumps; drop them (deps/ stay for speed).
+  rm -rf target/debug/incremental
+  echo "cleaned target/debug/incremental (disk free: $(df -h . | awk 'NR==2{print $4}'))"
   echo "reminder: codex-ide types -> cd ~/github/codex-ide && hcodex app-server generate-ts --out src/protocol && pnpm exec tsc --noEmit"
 }
 
