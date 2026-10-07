@@ -79,6 +79,7 @@ pub struct CodexErr {
     details: CodexErrorDetails,
     retry_after: Option<RetryAfter>,
     agent_context: Option<AgentErrorContext>,
+    from_http_response: bool,
 }
 
 /// A terminal response that stopped before the model finished, with any reported usage.
@@ -262,6 +263,7 @@ impl From<CodexErrorDetails> for CodexErr {
             details,
             retry_after: None,
             agent_context: None,
+            from_http_response: false,
         }
     }
 }
@@ -327,6 +329,7 @@ macro_rules! codex_err_unit_constructors {
                 details: CodexErrorDetails::$variant,
                 retry_after: None,
                 agent_context: None,
+                from_http_response: false,
             };
         )*
     };
@@ -478,6 +481,18 @@ impl CodexErr {
     pub fn with_retry_after(mut self, retry_after: RetryAfter) -> Self {
         self.retry_after = Some(retry_after);
         self
+    }
+
+    /// Marks an error decoded from a completed HTTP response rather than from
+    /// the response stream. The request retry layer owns retries for these
+    /// errors, so stream-level retry loops must not spend a second budget.
+    pub fn with_http_response_origin(mut self) -> Self {
+        self.from_http_response = true;
+        self
+    }
+
+    pub fn is_from_http_response(&self) -> bool {
+        self.from_http_response
     }
 
     /// Minimal shim so that existing `e.downcast_ref::<CodexErr>()` checks continue to compile
