@@ -15,6 +15,7 @@ use codex_login::WorkspaceRoutingRequest;
 use codex_login::default_client::ClientRedirectPolicy;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::cache::ModelsCache;
+use codex_models_manager::manager::ModelsEndpointClient;
 use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::manager::StaticModelsManager;
@@ -33,6 +34,8 @@ use crate::auth::auth_manager_for_provider;
 use crate::auth::resolve_provider_auth;
 use crate::auth::resolve_provider_auth_for_scope;
 use crate::combined_auth::compose_auth;
+use crate::local_proxy_models::LocalProxyModelsEndpoint;
+use crate::local_proxy_models::normalize_proxy_model_catalog;
 use crate::models_endpoint::OpenAiModelsEndpoint;
 use crate::workspace_routing::WorkspaceRoutingContext;
 
@@ -390,17 +393,34 @@ impl ConfiguredModelProvider {
         config_model_catalog: Option<ModelsResponse>,
         cache: ModelsCacheConfig,
     ) -> SharedModelsManager {
+        // hcodex: OpenAI-compatible providers (local proxy, Ollama, LM Studio, custom
+        // `model_providers.*`) list models via plain `GET {base_url}/models` and get
+        // a provider-neutral prompt. Only OpenAI itself and Bedrock keep the Codex
+        // catalog endpoint.
+        let openai_compatible = !self.info.requires_openai_auth && self.info.aws.is_none();
         if let Some(model_catalog) = config_model_catalog {
+            let model_catalog = if openai_compatible {
+                normalize_proxy_model_catalog(model_catalog)
+            } else {
+                model_catalog
+            };
             return Arc::new(StaticModelsManager::new(
                 self.auth_manager.clone(),
                 model_catalog,
             ));
         }
-        let endpoint = Arc::new(OpenAiModelsEndpoint::new(
-            self.info.clone(),
-            self.auth_manager.clone(),
-            self.gateway_auth_manager.clone(),
-        ));
+        let endpoint: Arc<dyn ModelsEndpointClient> = if openai_compatible {
+            Arc::new(LocalProxyModelsEndpoint::new(
+                self.info.clone(),
+                self.auth_manager.clone(),
+            ))
+        } else {
+            Arc::new(OpenAiModelsEndpoint::new(
+                self.info.clone(),
+                self.auth_manager.clone(),
+                self.gateway_auth_manager.clone(),
+            ))
+        };
         let auth_manager = self.auth_manager.clone();
         let manager = match cache {
             ModelsCacheConfig::Disk { codex_home } => {
@@ -413,10 +433,24 @@ impl ConfiguredModelProvider {
                 OpenAiModelsManager::new_with_cache(cache, endpoint, auth_manager)
             }
         };
-        match &self.info.model_catalog_url {
-            Some(_) => Arc::new(manager.with_provider_catalog()),
-            None => Arc::new(manager),
+        // The proxy's list is the whole catalog: never merge the bundled OpenAI models in.
+        if openai_compatible || self.info.model_catalog_url.is_some() {
+            Arc::new(manager.with_provider_catalog())
+        } else {
+            Arc::new(manager)
         }
+    }
+
+    fn static_models_manager(&self, model_catalog: ModelsResponse) -> SharedModelsManager {
+        let model_catalog = if !self.info.requires_openai_auth && self.info.aws.is_none() {
+            normalize_proxy_model_catalog(model_catalog)
+        } else {
+            model_catalog
+        };
+        Arc::new(StaticModelsManager::new(
+            self.auth_manager.clone(),
+            model_catalog,
+        ))
     }
 }
 
@@ -1178,6 +1212,46 @@ printf '%s\n' '{"AccessKeyId":"exported","SecretAccessKey":"secret"}'
                 account: None,
                 requires_openai_auth: false,
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_provider_normalizes_static_model_catalog_instructions() {
+        let provider = create_model_provider(
+            ModelProviderInfo {
+                name: "Proxy".to_string(),
+                base_url: Some("http://localhost:1234/v1".to_string()),
+                wire_api: WireApi::Responses,
+                requires_openai_auth: false,
+                ..Default::default()
+            },
+            /*auth_manager*/ None,
+        );
+        let mut model = codex_models_manager::model_info::model_info_from_slug("qwen3-coder");
+        model
+            .model_messages
+            .as_mut()
+            .expect("fallback model messages")
+            .instructions_template = Some(
+            "You are Codex, a coding agent based on GPT-5.\n\nKeep proxy guidance.".to_string(),
+        );
+
+        let manager = provider.models_manager_without_cache(Some(ModelsResponse {
+            models: vec![model],
+        }));
+        let catalog = manager
+            .raw_model_catalog(
+                RefreshStrategy::Offline,
+                HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            )
+            .await;
+        let instructions = codex_prompts::render_model_instructions(&catalog.models[0]);
+        assert_eq!(
+            instructions,
+            format!(
+                "{}\n\nKeep proxy guidance.",
+                crate::local_proxy_models::HCODEX_INSTRUCTIONS_OPENING
+            )
         );
     }
 

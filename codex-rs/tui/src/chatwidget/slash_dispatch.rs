@@ -378,6 +378,9 @@ impl ChatWidget {
                 self.open_model_popup();
                 self.defer_input_until_settings_applied();
             }
+            SlashCommand::Provider => {
+                self.open_provider_setup(/*inline_args*/ None);
+            }
             SlashCommand::Plan => {
                 self.apply_plan_slash_command();
             }
@@ -811,6 +814,7 @@ impl ChatWidget {
                 });
             }
             SlashCommand::Cd => self.request_working_directory_change(trimmed),
+            SlashCommand::Provider => self.open_provider_setup(Some(trimmed)),
             SlashCommand::Pwd => {
                 self.add_error_message("Usage: /pwd".to_string());
             }
@@ -1312,6 +1316,7 @@ impl ChatWidget {
             | SlashCommand::Compact
             | SlashCommand::Review
             | SlashCommand::Model
+            | SlashCommand::Provider
             | SlashCommand::Plan
             | SlashCommand::Goal
             | SlashCommand::Side

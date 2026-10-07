@@ -95,6 +95,8 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use codex_model_provider_info::built_in_model_providers;
 use codex_model_provider_info::merge_configured_model_providers;
+use codex_models_manager::MODEL_OVERRIDES_FILE;
+use codex_models_manager::ModelOverrides;
 use codex_models_manager::ModelsManagerConfig;
 use codex_prompts::ResolvedModelMessages;
 use codex_protocol::config_types::AltScreenMode;
@@ -1029,6 +1031,9 @@ pub struct Config {
     /// When set, this replaces the bundled catalog for the current process.
     pub model_catalog: Option<ModelsResponse>,
 
+    /// Per-provider and per-model metadata loaded from `model_overrides.toml`.
+    pub model_overrides: ModelOverrides,
+
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
 
@@ -1696,6 +1701,8 @@ impl Config {
             }),
             personality: self.personality,
             model_catalog: self.model_catalog.clone(),
+            model_provider_id: Some(self.model_provider_id.clone()),
+            model_overrides: self.model_overrides.clone(),
         }
     }
 
@@ -3843,7 +3850,7 @@ impl Config {
         let model_provider_id = config_layer_stack.required_model_provider().map(str::to_string)
             .or(model_provider)
             .or(cfg.model_provider)
-            .unwrap_or_else(|| "openai".to_string());
+            .unwrap_or_else(|| codex_model_provider_info::LOCAL_PROXY_PROVIDER_ID.to_string());
         let model_provider = model_providers
             .get(&model_provider_id)
             .ok_or_else(|| {
@@ -3987,7 +3994,11 @@ impl Config {
 
         let forced_login_method = cfg.forced_login_method;
 
-        let model = model.or(cfg.model);
+        let model = model.or(cfg.model).or_else(|| {
+            // hcodex harness: sensible default for the built-in local proxy.
+            (model_provider_id == codex_model_provider_info::LOCAL_PROXY_PROVIDER_ID)
+                .then(|| codex_model_provider_info::LOCAL_PROXY_DEFAULT_MODEL.to_string())
+        });
         let notices = cfg.notice.unwrap_or_default();
         let service_tier = match service_tier_override {
             Some(Some(service_tier)) => Some(service_tier),
@@ -4111,6 +4122,8 @@ impl Config {
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
         let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
+        let model_overrides =
+            ModelOverrides::load_optional(&codex_home.join(MODEL_OVERRIDES_FILE))?;
 
         let log_dir = cfg
             .log_dir
@@ -4457,6 +4470,7 @@ impl Config {
             plan_mode_reasoning_effort: cfg.plan_mode_reasoning_effort,
             model_reasoning_summary: cfg.model_reasoning_summary,
             model_catalog,
+            model_overrides,
             model_verbosity: cfg.model_verbosity,
             chatgpt_base_url: cfg
                 .chatgpt_base_url

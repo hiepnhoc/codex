@@ -65,6 +65,7 @@ use codex_login::default_client::originator;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_models_manager::ModelsManagerConfig;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::ThreadId;
@@ -421,6 +422,7 @@ pub(crate) struct ThreadManagerState {
     agent_control_factory: Option<AgentControlFactory>,
     auth_manager: Arc<AuthManager>,
     models_manager: SharedModelsManager,
+    models_manager_config: ModelsManagerConfig,
     git_root_discovery: Arc<GitRootDiscovery>,
     environment_manager: Arc<EnvironmentManager>,
     starting_mcp_runtimes: std::sync::Mutex<Vec<std::sync::Weak<AtomicBool>>>,
@@ -583,6 +585,7 @@ impl ThreadManager {
                 thread_id_generator: default_thread_id_generator(),
                 agent_control_factory: None,
                 models_manager,
+                models_manager_config: config.to_models_manager_config(),
                 git_root_discovery: Arc::default(),
                 environment_manager,
                 starting_mcp_runtimes: std::sync::Mutex::new(Vec::new()),
@@ -756,6 +759,7 @@ impl ThreadManager {
                 agent_control_factory: None,
                 models_manager: create_model_provider(provider, Some(auth_manager.clone()))
                     .models_manager(codex_home, /*config_model_catalog*/ None),
+                models_manager_config: ModelsManagerConfig::default(),
                 git_root_discovery: Arc::default(),
                 environment_manager,
                 starting_mcp_runtimes: std::sync::Mutex::new(Vec::new()),
@@ -906,7 +910,11 @@ impl ThreadManager {
     ) -> Vec<ModelPreset> {
         self.state
             .models_manager
-            .list_models(refresh_strategy, http_client_factory)
+            .list_models_with_config(
+                refresh_strategy,
+                http_client_factory,
+                &self.state.models_manager_config,
+            )
             .await
     }
 

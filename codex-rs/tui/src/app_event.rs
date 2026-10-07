@@ -1544,6 +1544,31 @@ pub(crate) enum AppEvent {
     FullScreenUserVerificationRequest(
         crate::bottom_pane::user_verification::UserVerificationRequest,
     ),
+    /// hcodex `/provider`: id / base URL / key collected; go fetch the model list.
+    ProviderSetupSubmitted {
+        draft: ProviderSetupDraft,
+    },
+
+    /// hcodex `/provider`: model list fetched for the draft provider.
+    ProviderModelsFetched {
+        draft: ProviderSetupDraft,
+        result: Result<Vec<String>, String>,
+    },
+
+    /// hcodex `/provider`: a model was picked; ask whether to make it the default.
+    ProviderModelChosen {
+        draft: ProviderSetupDraft,
+        model: String,
+    },
+
+    /// hcodex `/provider`: persist the provider table and its profile file.
+    ProviderSave {
+        draft: ProviderSetupDraft,
+        model: String,
+        make_default: bool,
+        /// Start a fresh thread on the new provider right away.
+        use_now: bool,
+    },
 
     /// Open the feedback note entry overlay after the user selects a category.
     OpenFeedbackNote {
@@ -1728,6 +1753,25 @@ pub(crate) enum RunningTaskExitAction {
     CancelTask,
     RunInBackground,
     Exit,
+}
+
+/// hcodex: provider being added through `/provider` (id is the
+/// `[model_providers.<id>]` key and the profile name).
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ProviderSetupDraft {
+    pub id: String,
+    pub base_url: String,
+    pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for ProviderSetupDraft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderSetupDraft")
+            .field("id", &self.id)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

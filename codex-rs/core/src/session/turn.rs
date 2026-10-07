@@ -1690,11 +1690,14 @@ async fn run_sampling_request(
                     return Err(err);
                 }
                 CodexErrorDetails::UsageLimitReached(e) => {
-                    let rate_limits = e.rate_limits.clone();
-                    if let Some(rate_limits) = rate_limits {
-                        sess.update_rate_limits(&turn_context, *rate_limits).await;
+                    if turn_context.provider.info().requires_openai_auth {
+                        let rate_limits = e.rate_limits.clone();
+                        if let Some(rate_limits) = rate_limits {
+                            sess.update_rate_limits(&turn_context, *rate_limits).await;
+                        }
+                        return Err(err);
                     }
-                    return Err(err);
+                    err
                 }
                 _ => err,
             },

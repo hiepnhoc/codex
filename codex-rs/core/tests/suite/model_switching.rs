@@ -7,6 +7,7 @@ use codex_core::config::Constrained;
 use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_login::CodexAuth;
+use codex_models_manager::ModelOverrides;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_prompts::render_model_instructions;
@@ -217,6 +218,41 @@ async fn first_turn_model_change_appends_model_instructions_developer_message(
             .iter()
             .all(|text| !text.contains("<personality_spec>")),
         "model switch should not emit a personality update"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_turn_model_change_uses_model_override_instructions() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let directory = tempfile::tempdir()?;
+    let overrides_path = directory.path().join("model_overrides.toml");
+    std::fs::write(
+        &overrides_path,
+        r#"
+[models."gpt-5.4"]
+instructions = "Target model override prompt"
+"#,
+    )?;
+    let model_overrides = ModelOverrides::load_optional(&overrides_path)?;
+    let server = MockServer::start().await;
+    let response_mock = mount_sse_once(&server, sse_completed("resp-override")).await;
+    let mut builder = test_codex()
+        .with_model("gpt-5.2")
+        .with_config(move |config| config.model_overrides = model_overrides);
+    let test = builder.build_with_auto_env(&server).await?;
+
+    submit_model_turn(&test.codex, "gpt-5.4", ThreadSettingsOverrides::default()).await?;
+
+    let request = response_mock.single_request();
+    assert!(
+        request
+            .message_input_texts("developer")
+            .iter()
+            .any(|text| text.contains("Target model override prompt")),
+        "model switch should inject the target model's overridden prompt"
     );
 
     Ok(())

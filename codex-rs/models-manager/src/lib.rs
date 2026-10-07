@@ -7,6 +7,8 @@ pub mod model_presets;
 pub mod test_support;
 
 pub use codex_protocol::auth::AuthMode;
+pub use config::MODEL_OVERRIDES_FILE;
+pub use config::ModelOverrides;
 pub use config::ModelsManagerConfig;
 
 /// Load the bundled model catalog shipped with `codex-models-manager`.
