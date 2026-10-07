@@ -397,7 +397,12 @@ impl ConfiguredModelProvider {
         // `model_providers.*`) list models via plain `GET {base_url}/models` and get
         // a provider-neutral prompt. Only OpenAI itself and Bedrock keep the Codex
         // catalog endpoint.
-        let openai_compatible = !self.info.requires_openai_auth && self.info.aws.is_none();
+        // Providers that publish an explicit Codex catalog (`model_catalog_url`) go
+        // through upstream's endpoint, which already handles bearer tokens, identity
+        // and the API-key discovery toggle for that shape.
+        let openai_compatible = !self.info.requires_openai_auth
+            && self.info.aws.is_none()
+            && self.info.model_catalog_url.is_none();
         if let Some(model_catalog) = config_model_catalog {
             let model_catalog = if openai_compatible {
                 normalize_proxy_model_catalog(model_catalog)
@@ -439,18 +444,6 @@ impl ConfiguredModelProvider {
         } else {
             Arc::new(manager)
         }
-    }
-
-    fn static_models_manager(&self, model_catalog: ModelsResponse) -> SharedModelsManager {
-        let model_catalog = if !self.info.requires_openai_auth && self.info.aws.is_none() {
-            normalize_proxy_model_catalog(model_catalog)
-        } else {
-            model_catalog
-        };
-        Arc::new(StaticModelsManager::new(
-            self.auth_manager.clone(),
-            model_catalog,
-        ))
     }
 }
 
