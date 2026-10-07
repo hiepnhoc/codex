@@ -126,7 +126,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                         Some("policy_capacity_unavailable") => {
                             return CodexErr::new(CodexErrorDetails::PolicyCapacityUnavailable);
                         }
-                        Some("server_is_overloaded") => return CodexErr::ServerOverloaded,
+                        Some("server_is_overloaded") => {
+                            return CodexErr::ServerOverloaded.with_http_response_origin();
+                        }
                         Some("slow_down") => {
                             return CodexErr::new(CodexErrorDetails::RateLimitExceeded(
                                 error
@@ -134,7 +136,8 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                                     .and_then(Value::as_str)
                                     .unwrap_or_default()
                                     .to_owned(),
-                            ));
+                            ))
+                            .with_http_response_origin();
                         }
                         _ => {}
                     }
@@ -231,7 +234,8 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                                 rate_limits: rate_limits.map(Box::new),
                                 promo_message,
                                 rate_limit_reached_type,
-                            });
+                            })
+                            .with_http_response_origin();
                         } else if err.error.error_type.as_deref() == Some("usage_not_included") {
                             return CodexErr::UsageNotIncluded;
                         } else if err.error.error_type.as_deref() == Some("insufficient_quota")
@@ -254,6 +258,7 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                         status,
                         request_id: extract_request_tracking_id(headers.as_ref()),
                     })
+                    .with_http_response_origin()
                 } else {
                     CodexErr::UnexpectedStatus(UnexpectedResponseError {
                         status,

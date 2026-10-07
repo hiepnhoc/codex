@@ -165,6 +165,30 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
         )
     }
 
+    /// List picker models after applying local per-model metadata overrides.
+    fn list_models_with_config<'a>(
+        &'a self,
+        refresh_strategy: RefreshStrategy,
+        http_client_factory: HttpClientFactory,
+        config: &'a ModelsManagerConfig,
+    ) -> ModelsManagerFuture<'a, Vec<ModelPreset>> {
+        Box::pin(
+            async move {
+                let catalog = self
+                    .raw_model_catalog(refresh_strategy, http_client_factory)
+                    .await;
+                let models = config
+                    .model_overrides
+                    .apply_to_models(config.model_provider_id.as_deref(), catalog.models);
+                self.build_available_models(models)
+            }
+            .instrument(tracing::info_span!(
+                "list_models_with_config",
+                refresh_strategy = %refresh_strategy
+            )),
+        )
+    }
+
     /// Project model metadata from the source-aware read, using its refresh and fallback policy.
     fn raw_model_catalog(
         &self,
@@ -237,6 +261,18 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
     fn try_list_models(&self) -> Result<Vec<ModelPreset>, TryLockError> {
         let remote_models = self.try_get_remote_models()?;
         Ok(self.build_available_models(remote_models))
+    }
+
+    /// Attempt to list picker models with local metadata overrides without blocking.
+    fn try_list_models_with_config(
+        &self,
+        config: &ModelsManagerConfig,
+    ) -> Result<Vec<ModelPreset>, TryLockError> {
+        let remote_models = self.try_get_remote_models()?;
+        let models = config
+            .model_overrides
+            .apply_to_models(config.model_provider_id.as_deref(), remote_models);
+        Ok(self.build_available_models(models))
     }
 
     // todo(aibrahim): should be visible to core only and sent on session_configured event
@@ -1037,6 +1073,12 @@ fn construct_model_info(
     });
     let mut metadata = Arc::unwrap_or_clone(resolved.model);
     metadata.slug = model.to_owned();
+    // hcodex: per-model metadata/prompt overrides from config, keyed by provider.
+    let metadata = config.model_overrides.apply_to_model(
+        config.model_provider_id.as_deref(),
+        model,
+        metadata,
+    );
     resolved.model = model_info::with_config_overrides(metadata, config).into();
     resolved
 }

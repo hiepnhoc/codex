@@ -136,19 +136,24 @@ async fn resolve_review_model_from_catalog(
     let catalog = models_manager
         .model_catalog_with_origins(RefreshStrategy::InMemory, turn.config.http_client_factory())
         .await;
+    // hcodex: apply local per-model metadata overrides before building presets.
+    let models_config = turn.config.to_models_manager_config();
+    let catalog_models: Vec<_> = catalog
+        .into_iter()
+        .filter(|entry| {
+            context.model_info.auto_review_model_override.is_some()
+                || matches!(
+                    entry.origin,
+                    codex_models_manager::ModelOrigin::Provider
+                        | codex_models_manager::ModelOrigin::ExplicitConfig
+                )
+        })
+        .map(|entry| Arc::unwrap_or_clone(entry.model))
+        .collect();
     let available_models = models_manager.build_available_models(
-        catalog
-            .into_iter()
-            .filter(|entry| {
-                context.model_info.auto_review_model_override.is_some()
-                    || matches!(
-                        entry.origin,
-                        codex_models_manager::ModelOrigin::Provider
-                            | codex_models_manager::ModelOrigin::ExplicitConfig
-                    )
-            })
-            .map(|entry| Arc::unwrap_or_clone(entry.model))
-            .collect(),
+        models_config
+            .model_overrides
+            .apply_to_models(models_config.model_provider_id.as_deref(), catalog_models),
     );
     let default_review_model_id = turn.provider.approval_review_preferred_model();
     let review_model = codex_guardian_reviewer::select_review_model(
