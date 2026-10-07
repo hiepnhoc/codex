@@ -226,7 +226,6 @@ impl ModelMetadataOverride {
                 .model_messages
                 .get_or_insert_with(empty_model_messages);
             messages.instructions_template = Some(instructions);
-            messages.instructions_variables = None;
         }
     }
 }
@@ -236,7 +235,6 @@ fn empty_model_messages() -> ModelMessages {
         persistent_instructions: None,
         tools: None,
         instructions_template: None,
-        instructions_variables: None,
         approvals: None,
         collaboration_modes: None,
         auto_review: None,
