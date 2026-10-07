@@ -11,6 +11,8 @@ pub mod test_support;
 pub use catalog::CatalogModel;
 pub use catalog::ModelOrigin;
 pub use codex_protocol::auth::AuthMode;
+pub use config::MODEL_OVERRIDES_FILE;
+pub use config::ModelOverrides;
 pub use config::ModelsManagerConfig;
 pub use originator::ModelCatalogOriginator;
 

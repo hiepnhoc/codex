@@ -220,7 +220,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         workspace_roots: &[PathUri],
     ) {
         const VERSION: &str = env!("CARGO_PKG_VERSION");
-        eprintln!("OpenAI Codex v{VERSION}\n--------");
+        eprintln!("hcodex v{VERSION} (codex harness)\n--------");
         for (key, value) in
             config_summary_entries(config, session_configured_event, workspace_roots)
         {
