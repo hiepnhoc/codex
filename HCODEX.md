@@ -356,6 +356,24 @@ ov ls viking://~/memories/                    # memory dài hạn của mày (id
 ov rm viking://~/resources/<repo>             # bỏ 1 repo
 ```
 
+**Ảnh hưởng tốc độ** (đo 08/10/2026 trên máy này):
+
+| Hook | Khi nào | Thời gian |
+|---|---|---|
+| SessionStart | mở session | ~0,2s |
+| UserPromptSubmit (recall) | mỗi prompt, trước khi model chạy | **0,2–0,5s** (lần đầu sau restart server ~3,5s vì Ollama nạp model) |
+| Stop (capture) | sau khi model trả lời | ~2s, không chặn |
+| SessionEnd | thoát | ~0,3s |
+
+Cộng ~900–1.600 token context/prompt (thường rẻ hơn nhiều so với để agent quét lại).
+Hai knob đã chỉnh để đạt số trên:
+- `~/.openviking/ovcli.conf` → `"plugin": {"recallCompress": "off", "recallTimeoutMs": 8000}`:
+  tắt bước nén context bằng LLM (tốn ~12s/prompt, lợi không đáng), và trần 8s để server
+  chậm không bao giờ treo prompt.
+- `~/.openviking/ov.conf` → `"retrieval": {"enable_intent": false}`: tắt query planner
+  (1 lượt gọi haiku ~3s/prompt). Bật lại nếu thấy recall kém với câu hỏi mơ hồ.
+Tắt hẳn recall tạm thời: `OPENVIKING_AUTO_RECALL=0 hcodex`; tắt ghi transcript: `OPENVIKING_AUTO_CAPTURE=0`.
+
 **4. Khi có vấn đề**: trong hcodex gõ `$ov-memory-doctor` (skill của plugin), hoặc
 `openviking-server doctor`; log hook: `OPENVIKING_DEBUG=1` → `~/.openviking/logs/codex-hooks.log`.
 Không thấy block `<openviking-context>` trong câu trả lời ⇒ xem mục proxy bên dưới.
