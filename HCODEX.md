@@ -372,6 +372,11 @@ Hai knob đã chỉnh để đạt số trên:
   chậm không bao giờ treo prompt.
 - `~/.openviking/ov.conf` → `"retrieval": {"enable_intent": false}`: tắt query planner
   (1 lượt gọi haiku ~3s/prompt). Bật lại nếu thấy recall kém với câu hỏi mơ hồ.
+- `~/.hcodex/config.toml` → `[hooks.state."openviking-memory@openviking:hooks/hooks.json:<event>:<i>:0"]`:
+  đã tắt 3 hook chạy **mỗi lần gọi tool** (`pre_tool_use` uri-guard, `post_tool_use`
+  usage/track-lookup, `stop:1` usage/report; mỗi cái ~0,1s Node startup → turn có 30
+  tool call mất thêm ~6s), và `trusted_hash` cho các hook còn lại để khỏi hỏi trust.
+  Xem/đổi trong TUI bằng `/hooks`. Khi plugin cập nhật, hash đổi → TUI hỏi trust lại.
 Tắt hẳn recall tạm thời: `OPENVIKING_AUTO_RECALL=0 hcodex`; tắt ghi transcript: `OPENVIKING_AUTO_CAPTURE=0`.
 
 **4. Khi có vấn đề**: trong hcodex gõ `$ov-memory-doctor` (skill của plugin), hoặc
