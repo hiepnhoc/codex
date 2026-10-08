@@ -322,6 +322,44 @@ Import chạy nền (tóm tắt từng file/thư mục bằng haiku qua proxy); 
 memory liên quan và tóm tắt module liên quan; cuối turn transcript được ghi về
 server để trích memory. Debug: `OPENVIKING_DEBUG=1` → `~/.openviking/logs/codex-hooks.log`.
 
+### Cách dùng hằng ngày
+
+**1. Index một repo bất kỳ (1 lệnh)** — làm 1 lần, và làm lại khi repo đổi nhiều:
+
+```bash
+scripts/ov-index-repo.sh ~/github/<repo>          # tên resource = tên thư mục
+scripts/ov-index-repo.sh ~/github/<repo> ten-khac  # hoặc đặt tên
+scripts/ov-index-repo.sh ~/github/<repo> --wait    # chờ tới khi tóm tắt xong
+```
+
+Script zip đúng file git track (bỏ `node_modules`, ảnh, jar, lock…), đẩy lên
+`viking://~/resources/<tên>`; chạy lại cùng tên = refresh. Theo dõi: `ov status`
+(Pending/In progress về 0 là xong). Repo lớn (20k file) mất ~15–20 phút.
+
+**2. Dùng trong hcodex** — không cần làm gì thêm: mở `hcodex` trong thư mục repo,
+hỏi như bình thường. Mỗi prompt, hook tự tìm memory + tóm tắt module liên quan và
+bơm vào context; cuối turn transcript được lưu để lần sau nhớ. Mẹo:
+- Muốn nó trả lời từ memory thay vì quét: hỏi thẳng, ví dụ *"Module nào xử lý X,
+  dùng framework gì? Trả lời từ memory nếu đã có."*
+- Muốn nó đào sâu một thư mục đã index: bảo nó dùng MCP tool `search`/`read` với
+  URI `viking://~/resources/<repo>/<path>` (hook cũng gợi ý URI trong context).
+- Memory theo **repo** (peer = git remote), nên clone/worktree khác cùng repo vẫn
+  chung memory; repo chưa index vẫn có memory hội thoại (preferences, quyết định).
+
+**3. Xem/tìm bằng CLI** (ngoài hcodex):
+
+```bash
+ov tree viking://~/resources/<repo> -L 2      # cây + tóm tắt từng thư mục
+ov read viking://~/resources/<repo>/<dir>/.overview.md
+ov find "luồng callback esign"                # tìm ngữ nghĩa trên mọi thứ đã index
+ov ls viking://~/memories/                    # memory dài hạn của mày (identity, preferences…)
+ov rm viking://~/resources/<repo>             # bỏ 1 repo
+```
+
+**4. Khi có vấn đề**: trong hcodex gõ `$ov-memory-doctor` (skill của plugin), hoặc
+`openviking-server doctor`; log hook: `OPENVIKING_DEBUG=1` → `~/.openviking/logs/codex-hooks.log`.
+Không thấy block `<openviking-context>` trong câu trả lời ⇒ xem mục proxy bên dưới.
+
 **Lưu ý proxy Kiro-Go**: bản trước 07/10 **bỏ rơi message role `developer`** (OpenAI)
 → context của OpenViking (và `<skills_instructions>`, context per-turn của codex)
 không tới model. Đã fix trong `~/github/Kiro-go` (branch `hcodex-model-metadata`,
