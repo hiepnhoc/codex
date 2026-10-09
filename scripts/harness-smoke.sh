@@ -46,8 +46,9 @@ got="$(grep -c . "$TMP/list.txt" || true)"
 if grep -q "TIMEOUT\|ERROR" "$TMP/list.txt" || [[ "$got" -lt 1 ]]; then
   echo "FAIL: model/list returned nothing usable:"; cat "$TMP/list.txt"; exit 1
 fi
-if ! grep -qx "claude-sonnet-5" "$TMP/list.txt"; then
-  echo "FAIL: proxy default model claude-sonnet-5 missing from model/list (got $got models):"; head "$TMP/list.txt"; exit 1
+DEFAULT_MODEL="${HCODEX_DEFAULT_MODEL:-claude-sonnet-5.5}"   # LOCAL_PROXY_DEFAULT_MODEL in model-provider-info
+if ! grep -qx "$DEFAULT_MODEL" "$TMP/list.txt"; then
+  echo "FAIL: proxy default model $DEFAULT_MODEL missing from model/list (got $got models):"; head "$TMP/list.txt"; exit 1
 fi
 echo "model/list: $got models from provider (proxy reports $want)"
 
