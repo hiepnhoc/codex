@@ -277,6 +277,31 @@ wire_api = "responses"
 # stream_idle_timeout_ms = 300000
 ```
 
+## Multi-agent (bật v2 ngày 09/10/2026)
+
+Codex có sẵn multi-agent: tool `spawn_agent` / `send_message` / `wait_agent` /
+`list_agents` / `resume_agent` / `interrupt_agent` / `close_agent`; TUI có
+`/agents` (command center), `/subagents` (chuyển giữa subagent), `/side` (hội
+thoại phụ). Chỉ cần bảo model tách việc ("tách thành 3 subagent…"), nó tự spawn.
+
+Đã bật trong `~/.hcodex/config.toml`:
+
+```toml
+[features]
+multi_agent_v2 = true            # v1 bật sẵn; v2: roster/vai trò, mailbox, wait/resume
+
+[agents]
+default_subagent_model = "claude-sonnet-5"      # subagent dùng model rẻ hơn cha
+default_subagent_reasoning_effort = "medium"
+max_concurrent_threads_per_session = 3          # mỗi subagent = 1 luồng request tới proxy
+```
+
+Flag còn ở trạng thái under-development, chưa bật: `multi_agent_v2_dynamic_tools`,
+`agent_message_board`, `model_catalog_in_context`, `defer_mailbox_preemption`.
+Lưu ý: qua cliproxy/Kiro mỗi subagent nhân thêm tải (3–6s/request, quota tài
+khoản); giữ `max_concurrent_threads_per_session` ≤ 3. OpenViking hooks chỉ chạy
+trên thread chính; subagent vẫn có MCP `search`/`read` của OpenViking.
+
 ## Memory + RAG cho repo lớn: OpenViking (07/10/2026)
 
 Vấn đề: mỗi session mới lại phải quét các module trong `digital-monorepo` → tốn
