@@ -132,6 +132,7 @@ build_gate_install() {
     say "test gate (harness unit tests)"
     export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"   # core/tui tests overflow the default stack (see justfile)
     RUST_MIN_STACK="$RUST_MIN_STACK" nice -n "${BUILD_NICE:-15}" cargo test -q -j "${BUILD_JOBS:-4}" -p codex-core --test all -- hcodex_overload_retry model_overrides first_turn_model_change 2>&1 | tail -3
+    RUST_MIN_STACK="$RUST_MIN_STACK" nice -n "${BUILD_NICE:-15}" cargo test -q -j "${BUILD_JOBS:-4}" -p codex-core --lib -- flat_namespaces hcodex_namespace spec_plan::tests::multi_agent 2>&1 | tail -3
     nice -n "${BUILD_NICE:-15}" cargo test -q -j "${BUILD_JOBS:-4}" -p codex-models-manager -p codex-model-provider -p codex-model-provider-info 2>&1 | tail -5
     nice -n "${BUILD_NICE:-15}" cargo test -q -j "${BUILD_JOBS:-4}" -p codex-tui -- provider_setup command_popup 2>&1 | tail -5
   fi

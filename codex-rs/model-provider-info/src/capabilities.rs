@@ -15,6 +15,12 @@ pub struct ModelProviderCapabilities {
     pub external_web_access: Option<bool>,
     /// Remote context-compaction protocol; omission preserves provider defaults.
     pub remote_compaction: Option<RemoteCompactionSupport>,
+    /// hcodex: whether the provider understands the OpenAI-only parts of the
+    /// Responses API (`namespace` tool specs, `agent_message` input items).
+    /// Proxies that translate to other vendors drop them, so non-OpenAI
+    /// providers default to flat function tools and plain-text agent messages;
+    /// set `true` for a provider that speaks the full dialect.
+    pub responses_extensions: Option<bool>,
 }
 
 /// Remote context-compaction protocols supported by a model provider.

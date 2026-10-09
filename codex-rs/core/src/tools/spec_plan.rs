@@ -6,6 +6,7 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::effective_tool_mode;
+use crate::tools::flat_namespaces;
 use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
@@ -542,14 +543,52 @@ pub(crate) fn finalize_tool_router(
         .filter(|info| !info.is_empty());
     let child_management_tools = required_child_management_tool_names(turn_context, model_info);
 
-    Ok(ToolRouter::from_parts(
+    // hcodex: non-OpenAI providers do not understand `namespace` tool specs;
+    // advertise their nested tools as flat functions instead.
+    let (model_visible_specs, flat_tool_names) = if turn_context
+        .config
+        .model_provider
+        .flattens_tool_namespaces()
+    {
+        let flattened = flat_namespaces::flatten_namespace_specs(model_visible_specs);
+        (flattened.specs, Some(flattened.flat_tool_names))
+    } else {
+        (model_visible_specs, None)
+    };
+
+    let router = ToolRouter::from_parts(
         registry,
         model_visible_specs,
         tool_mode,
         code_mode_tool_names,
         tool_namespaces_info,
         &child_management_tools,
-    ))
+    );
+    let router = match flat_tool_names {
+        Some(flat_tool_names) => {
+            router.with_flat_tool_names(flat_tool_names, &child_management_tools)
+        }
+        None => router,
+    };
+    // Internal workers can inherit MAv2 configuration without using the board.
+    if multi_agent_v2_enabled(turn_context)
+        && collab_tools_enabled(turn_context, model_info)
+        && turn_context.config.multi_agent_v2.disable_direct_message
+        && !turn_context.session_source.is_internal()
+    {
+        let post_tool = ToolName::new(
+            turn_context.config.multi_agent_v2.tool_namespace.clone(),
+            "post",
+        );
+        if !router.exposes_tool(&post_tool) {
+            return Err(CodexErrorDetails::InvalidRequest(
+                "disable_direct_message requires an available agent message board in this session"
+                    .to_owned(),
+            )
+            .into());
+        }
+    }
+    Ok(router)
 }
 
 fn apply_direct_model_only_namespace_overrides(

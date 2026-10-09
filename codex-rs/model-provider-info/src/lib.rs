@@ -615,6 +615,27 @@ other non-default provider fields are not supported"
         provider
     }
 
+    /// hcodex: whether requests may use the OpenAI-only parts of the Responses
+    /// API (`namespace` tool specs, `agent_message` items). Providers that are
+    /// not OpenAI (local proxies, gateways translating to Anthropic or Gemini
+    /// APIs) drop those silently, so they default to `false` unless
+    /// `capabilities.responses_extensions = true`.
+    pub fn supports_responses_extensions(&self) -> bool {
+        match self
+            .capabilities
+            .and_then(|capabilities| capabilities.responses_extensions)
+        {
+            Some(supported) => supported,
+            None => self.requires_openai_auth || self.aws.is_some(),
+        }
+    }
+
+    /// hcodex: `namespace` tool specs get flattened into plain function tools
+    /// for providers without Responses extensions.
+    pub fn flattens_tool_namespaces(&self) -> bool {
+        !self.supports_responses_extensions()
+    }
+
     pub fn is_openai(&self) -> bool {
         self.name == OPENAI_PROVIDER_NAME
     }
@@ -663,7 +684,7 @@ pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
 pub const LOCAL_PROXY_PROVIDER_ID: &str = "local-proxy";
 pub const LOCAL_PROXY_PROVIDER_NAME: &str = "Local Proxy";
 pub const LOCAL_PROXY_DEFAULT_BASE_URL: &str = "http://127.0.0.1:8181/v1";
-pub const LOCAL_PROXY_DEFAULT_MODEL: &str = "claude-sonnet-5";
+pub const LOCAL_PROXY_DEFAULT_MODEL: &str = "claude-sonnet-5.5";
 
 pub fn create_local_proxy_provider() -> ModelProviderInfo {
     let base_url = std::env::var("HCODEX_PROXY_URL")
