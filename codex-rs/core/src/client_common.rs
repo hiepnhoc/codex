@@ -1,5 +1,6 @@
 pub use codex_api::ResponseEvent;
 use codex_protocol::error::Result;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
@@ -63,6 +64,35 @@ impl Prompt {
         let mut input = self.input.clone();
         normalize_image_details(&mut input, model_info);
         input
+    }
+}
+
+/// hcodex: `agent_message` is an OpenAI-only input item. Proxies that translate
+/// to Anthropic/Gemini APIs drop it, so a subagent never sees its task and the
+/// parent never sees the final answer. Render each one as a plain user message
+/// carrying the same text. Without a server-side encryption config the
+/// "encrypted" part holds the plaintext payload, so it is included verbatim.
+pub(crate) fn render_agent_messages_as_plain_text(items: &mut [ResponseItem]) {
+    for item in items.iter_mut() {
+        let ResponseItem::AgentMessage { content, .. } = item else {
+            continue;
+        };
+        let text = content
+            .iter()
+            .map(|part| match part {
+                AgentMessageInputContent::InputText { text } => text.as_str(),
+                AgentMessageInputContent::EncryptedContent { encrypted_content } => {
+                    encrypted_content.as_str()
+                }
+            })
+            .collect::<String>();
+        *item = ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText { text }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        };
     }
 }
 

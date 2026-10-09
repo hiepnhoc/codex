@@ -905,6 +905,11 @@ impl ModelClient {
             input.retain(|item| !matches!(item, ResponseItem::ConfigurationUpdate { .. }));
         }
         let is_openai = self.state.provider.info().is_openai();
+        // hcodex: providers without Responses extensions get agent messages as
+        // plain user messages (see `render_agent_messages_as_plain_text`).
+        if !self.state.provider.info().supports_responses_extensions() {
+            crate::client_common::render_agent_messages_as_plain_text(&mut input);
+        }
         // These prompt-only items are rebuilt on every request. Hash their visible payloads
         // within the thread so retries and resumed sessions preserve their identity.
         let prefix_namespace = Uuid::new_v5(

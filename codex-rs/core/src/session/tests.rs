@@ -4931,7 +4931,7 @@ fn text_block(s: &str) -> serde_json::Value {
 }
 
 async fn build_test_config(codex_home: &Path) -> Config {
-    ConfigBuilder::without_managed_config_for_tests()
+    let mut config = ConfigBuilder::without_managed_config_for_tests()
         .codex_home(codex_home.to_path_buf())
         .harness_overrides(ConfigOverrides {
             model: Some("gpt-5.5".to_string()),
@@ -4939,7 +4939,12 @@ async fn build_test_config(codex_home: &Path) -> Config {
         })
         .build()
         .await
-        .expect("load default test config")
+        .expect("load default test config");
+    // hcodex: the default provider is `local-proxy`, which flattens namespace
+    // tools; upstream unit tests assume the OpenAI provider.
+    config.model_provider_id = "openai".to_string();
+    config.model_provider = built_in_model_providers(/*openai_base_url*/ None)["openai"].clone();
+    config
 }
 
 fn session_telemetry(

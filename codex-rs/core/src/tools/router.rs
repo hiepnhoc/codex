@@ -78,6 +78,9 @@ pub struct ToolRouter {
     code_mode_tool_names: BTreeMap<String, ToolName>,
     tool_namespaces_info: Option<TurnToolNamespacesInfo>,
     can_manage_children: bool,
+    /// hcodex: flat function name -> namespaced tool, for providers that got
+    /// namespace tool specs flattened (see `flat_namespaces`).
+    flat_tool_names: BTreeMap<String, ToolName>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,12 +129,39 @@ impl ToolRouter {
             code_mode_tool_names,
             tool_namespaces_info,
             can_manage_children: false,
+            flat_tool_names: BTreeMap::new(),
         };
         router.can_manage_children = !child_management_tools.is_empty()
             && child_management_tools
                 .iter()
                 .all(|name| router.exposes_tool(name));
         router
+    }
+
+    /// hcodex: records the flat-name map produced by namespace flattening and
+    /// re-evaluates child management, which the flattened specs now satisfy.
+    pub(crate) fn with_flat_tool_names(
+        mut self,
+        flat_tool_names: BTreeMap<String, ToolName>,
+        child_management_tools: &[ToolName],
+    ) -> Self {
+        self.flat_tool_names = flat_tool_names;
+        self.can_manage_children = !child_management_tools.is_empty()
+            && child_management_tools
+                .iter()
+                .all(|name| self.exposes_tool(name));
+        self
+    }
+
+    /// hcodex: maps a call that arrived under a flattened name back to the
+    /// namespaced tool it was registered as.
+    pub(crate) fn canonicalize_flat_call(&self, mut call: ToolCall) -> ToolCall {
+        if let Some(tool_name) =
+            super::flat_namespaces::canonical_tool_name(&self.flat_tool_names, &call.tool_name)
+        {
+            call.tool_name = tool_name;
+        }
+        call
     }
 
     pub(crate) fn model_visible_specs(&self) -> Arc<[ToolSpec]> {
@@ -177,6 +207,10 @@ impl ToolRouter {
             .code_mode_tool_names
             .values()
             .any(|nested| nested.clone().with_default_namespace() == name)
+            || self
+                .flat_tool_names
+                .values()
+                .any(|flattened| flattened.clone().with_default_namespace() == name)
             || self.model_visible_specs.iter().any(|spec| match spec {
                 ToolSpec::Function(_) | ToolSpec::Freeform(_) => {
                     name.is_default_namespace() && spec.name() == name.name

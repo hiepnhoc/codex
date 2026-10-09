@@ -6,6 +6,7 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::effective_tool_mode;
+use crate::tools::flat_namespaces;
 use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
@@ -510,6 +511,19 @@ pub(crate) fn finalize_tool_router(
         .filter(|info| !info.is_empty());
     let child_management_tools = required_child_management_tool_names(turn_context, model_info);
 
+    // hcodex: non-OpenAI providers do not understand `namespace` tool specs;
+    // advertise their nested tools as flat functions instead.
+    let (model_visible_specs, flat_tool_names) = if turn_context
+        .config
+        .model_provider
+        .flattens_tool_namespaces()
+    {
+        let flattened = flat_namespaces::flatten_namespace_specs(model_visible_specs);
+        (flattened.specs, Some(flattened.flat_tool_names))
+    } else {
+        (model_visible_specs, None)
+    };
+
     let router = ToolRouter::from_parts(
         registry,
         model_visible_specs,
@@ -518,6 +532,12 @@ pub(crate) fn finalize_tool_router(
         tool_namespaces_info,
         &child_management_tools,
     );
+    let router = match flat_tool_names {
+        Some(flat_tool_names) => {
+            router.with_flat_tool_names(flat_tool_names, &child_management_tools)
+        }
+        None => router,
+    };
     // Internal workers can inherit MAv2 configuration without using the board.
     if multi_agent_v2_enabled(turn_context)
         && collab_tools_enabled(turn_context, model_info)

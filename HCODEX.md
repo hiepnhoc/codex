@@ -10,20 +10,22 @@ Branch `my-harness` trong repo này. Binary tên `hcodex`, tách hoàn toàn kh�
 | Binary `hcodex` (thay vì `codex`) | `codex-rs/cli/Cargo.toml` |
 | Home mặc định `~/.hcodex` (vẫn tôn trọng `CODEX_HOME`) | `codex-rs/utils/home-dir/src/lib.rs` |
 | Provider built-in `local-proxy` và là provider **mặc định** | `codex-rs/model-provider-info/src/lib.rs` |
-| Model mặc định `claude-sonnet-5` khi dùng `local-proxy` | `codex-rs/core/src/config/mod.rs` |
+| Model mặc định `claude-sonnet-5.5` khi dùng `local-proxy` (đổi từ `claude-sonnet-5` ngày 09/10/2026 vì Kiro bỏ model cũ) | `codex-rs/model-provider-info/src/lib.rs` (`LOCAL_PROXY_DEFAULT_MODEL`), `codex-rs/core/src/config/mod.rs` |
 | Branding `OpenAI Codex` → `hcodex` | `codex-rs/tui/...`, `codex-rs/exec/...` |
 | `/model` liệt kê model từ provider (`GET {base_url}/models`, mọi provider OpenAI-compatible) + effort low/medium/high/xhigh | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/models-manager/src/manager.rs` |
 | Catalog của proxy được chuẩn hoá thành prompt harness trung lập cho mọi model (GPT, Claude, Gemini, Qwen, GLM…), kể cả catalog file; cache model gắn identity provider+auth (cơ chế upstream) và không trộn catalog OpenAI bundled vào | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/model-provider/src/provider.rs`, `codex-rs/models-manager/src/manager.rs` |
 | `/provider` trong TUI: thêm provider (id, base URL, key) → kiểm tra `/models` → chọn model → ghi config + profile | `codex-rs/tui/src/bottom_pane/provider_setup_view.rs`, `codex-rs/tui/src/chatwidget/provider_setup.rs`, `codex-rs/tui/src/app/provider_setup.rs` |
 | HTTP 429 từ provider **không phải OpenAI** được retry ở lớp HTTP, tôn trọng `Retry-After` (codex gốc không retry 429) | `codex-rs/model-provider-info/src/lib.rs` (`retry_429`), `codex-rs/codex-client/src/retry.rs` |
 | `server_is_overloaded`, SSE rate-limit và HTTP `usage_limit_reached` từ proxy được retry cấp turn (2s→30s/lần, tối đa `stream_max_retries`) thay vì kết thúc turn giả; OpenAI chính chủ giữ semantics upstream | `codex-rs/core/src/session/turn.rs`, `codex-rs/core/src/responses_retry.rs` (+ test `core/tests/suite/hcodex_overload_retry.rs`) |
+| Tool kiểu `namespace` (multi-agent v2 `collaboration`, MCP `mcp__<server>`) được **trải phẳng** thành function `<namespace>__<tool>` cho provider không phải OpenAI (proxy/gateway bỏ qua tool type lạ → model mất tool); call trả về được map lại đúng handler | `codex-rs/core/src/tools/flat_namespaces.rs`, `codex-rs/core/src/tools/router.rs`, `codex-rs/model-provider-info/src/capabilities.rs` (`responses_extensions`) |
+| Item `agent_message` (task gửi cho subagent, final answer gửi về cha) được render thành message `user` thuần cho provider không phải OpenAI (proxy bỏ item lạ → subagent không nhận task) | `codex-rs/core/src/client_common.rs` (`render_agent_messages_as_plain_text`), `codex-rs/core/src/client.rs` |
 
 Diff code so với upstream nhỏ (≈15 file, phần lớn là file mới) → rebase lên upstream dễ.
 Sau sync 07/10/2026 nhiều hook harness đã được thay bằng cơ chế upstream: cache catalog
 theo identity provider+auth, `with_provider_catalog()` (không trộn catalog OpenAI),
 `Retry-After` native ở lớp HTTP, `[model_providers.x.capabilities]` của upstream
-(`external_web_access`, `remote_compaction`) — cấp provider, bổ sung chứ không trùng
-`model_overrides.toml` (cấp model).
+(`external_web_access`, `remote_compaction`; hcodex thêm `responses_extensions`) — cấp
+provider, bổ sung chứ không trùng `model_overrides.toml` (cấp model).
 
 Lưu ý: codex chỉ hỗ trợ **OpenAI Responses API** (`wire_api = "chat"` đã bị
 xoá). Provider nào chỉ có `/chat/completions` (Anthropic, Gemini, Groq…) phải đi
@@ -219,7 +221,7 @@ trường thay cho credential file thì sửa provider: xoá bảng `auth`, thê
 
 ```bash
 hcodex -p proxy        # local-proxy, claude-opus-5-thinking, effort high (= mặc định)
-hcodex -p sonnet       # local-proxy, claude-sonnet-5, effort medium
+hcodex -p sonnet       # local-proxy, claude-sonnet-5.5, effort medium
 hcodex -p openrouter   # OpenRouter, anthropic/claude-fable-5.1 (cần OPENROUTER_API_KEY)
 hcodex -p litellm      # LiteLLM :4000, claude-fable-5.1
 hcodex -p openrouter exec "..." </dev/null   # profile dùng được cho mọi subcommand
@@ -291,7 +293,7 @@ thoại phụ). Chỉ cần bảo model tách việc ("tách thành 3 subagent�
 multi_agent_v2 = true            # v1 bật sẵn; v2: roster/vai trò, mailbox, wait/resume
 
 [agents]
-default_subagent_model = "claude-sonnet-5"      # subagent dùng model rẻ hơn cha
+default_subagent_model = "claude-sonnet-5.5"    # subagent dùng model rẻ hơn cha (phải có trong /models của provider)
 default_subagent_reasoning_effort = "medium"
 max_concurrent_threads_per_session = 3          # mỗi subagent = 1 luồng request tới proxy
 ```
@@ -301,6 +303,43 @@ Flag còn ở trạng thái under-development, chưa bật: `multi_agent_v2_dyna
 Lưu ý: qua cliproxy/Kiro mỗi subagent nhân thêm tải (3–6s/request, quota tài
 khoản); giữ `max_concurrent_threads_per_session` ≤ 3. OpenViking hooks chỉ chạy
 trên thread chính; subagent vẫn có MCP `search`/`read` của OpenViking.
+
+### Vì sao cần sửa core: tool `namespace` và item `agent_message` bị proxy bỏ rơi
+
+Upstream gửi tool multi-agent v2 (và tool MCP) dưới dạng **một** tool
+`{"type":"namespace","name":"collaboration","tools":[spawn_agent, send_message,
+wait_agent, …]}` — tool type chỉ OpenAI hiểu. Kiro-Go, cliproxy, LiteLLM… chỉ
+dịch `type = "function"` nên âm thầm bỏ cả namespace → model trả lời
+"không có tool spawn_agent" dù flag đã bật (đã kiểm chứng bằng cách bắt request
+body: `collaboration` và `mcp__openviking_memory` đều là `namespace`).
+
+hcodex xử lý ở core (`core/src/tools/flat_namespaces.rs`):
+
+- Provider **không phải OpenAI** (`requires_openai_auth = false`, không phải
+  Bedrock): mỗi tool con được quảng cáo như function phẳng
+  `<namespace>__<tool>` — cùng cách đặt tên code mode của upstream — ví dụ
+  `collaboration__spawn_agent`, `collaboration__wait_agent`,
+  `mcp__openviking_memory__search`. Marker `encrypted` (chỉ OpenAI) bị bỏ.
+- Khi model gọi `collaboration__spawn_agent`, router map lại thành tool
+  `collaboration/spawn_agent` trước khi dispatch → handler, hook, lịch sử
+  giữ nguyên như upstream.
+- Task cho subagent và final answer gửi về cha đi bằng item
+  `{"type":"agent_message","author":"/root","recipient":"/root/x","content":[…]}`
+  — cũng chỉ OpenAI hiểu; proxy bỏ → subagent chào "Hi! What can I help…" thay
+  vì làm việc (đã gặp). hcodex render item này thành message `user` thuần
+  (`core/src/client_common.rs`), giữ nguyên text "Message Type: NEW_TASK /
+  Sender / Payload". Phần `encrypted_content` thực chất là plaintext (không có
+  cấu hình mã hoá phía server) nên được ghép vào nguyên văn.
+- Provider OpenAI / Bedrock: không đổi gì (vẫn gửi `namespace` + `agent_message`).
+- Ép thủ công:
+
+```toml
+[model_providers.<id>.capabilities]
+responses_extensions = true   # provider hiểu đủ dialect OpenAI; false = ép trải phẳng + text
+```
+
+Kiểm tra nhanh: `hcodex exec "dùng spawn_agent tạo 1 subagent trả lời pong,
+wait_agent rồi báo kết quả"` phải thấy subagent chạy thay vì "không có tool".
 
 ## Memory + RAG cho repo lớn: OpenViking (07/10/2026)
 

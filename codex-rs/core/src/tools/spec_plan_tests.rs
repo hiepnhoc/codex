@@ -11,6 +11,7 @@ use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_5_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_6_LUNA_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_6_SOL_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
+use codex_model_provider_info::ModelProviderCapabilities;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -3062,6 +3063,54 @@ async fn multi_agent_v2_can_use_configured_tool_namespace() {
             "expected {tool_name} in agents namespace"
         );
     }
+}
+
+/// hcodex: proxies that translate to Anthropic/Gemini APIs drop `namespace`
+/// tool specs, so non-OpenAI providers get flat `<namespace>__<tool>` functions
+/// and calls under those names route to the namespaced handlers.
+#[tokio::test]
+async fn hcodex_namespace_tools_are_flattened_for_non_openai_provider() {
+    let plan = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        update_config(turn, |config| {
+            config.model_provider.requires_openai_auth = false;
+            config.model_provider.aws = None;
+            config.model_provider.capabilities = None;
+        });
+    })
+    .await;
+
+    plan.assert_visible_lacks(&["collaboration"]);
+    plan.assert_visible_contains(&[
+        "collaboration__spawn_agent",
+        "collaboration__send_message",
+        "collaboration__list_agents",
+    ]);
+    assert!(plan.namespace_functions.is_empty());
+    assert!(plan.can_manage_children);
+    assert!(
+        plan.registered_names
+            .contains(&ToolName::namespaced("collaboration", "spawn_agent").to_string())
+    );
+}
+
+#[tokio::test]
+async fn hcodex_namespace_tools_stay_namespaced_when_capability_says_so() {
+    let plan = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        update_config(turn, |config| {
+            config.model_provider.requires_openai_auth = false;
+            config.model_provider.capabilities = Some(ModelProviderCapabilities {
+                responses_extensions: Some(true),
+                ..Default::default()
+            });
+        });
+    })
+    .await;
+
+    plan.assert_visible_contains(&["collaboration"]);
+    plan.assert_visible_lacks(&["collaboration__spawn_agent"]);
+    assert!(plan.can_manage_children);
 }
 
 #[tokio::test]
