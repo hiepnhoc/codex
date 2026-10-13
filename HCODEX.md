@@ -504,6 +504,7 @@ TUI nên lỗi biên dịch vẫn lòi ra), và chạy script **tách khỏi ses
 |---|---|---|---|
 | 07/10/2026 | `18e28fe1b9` | 1.530 | squash-sync, 19 file conflict (xem dưới) |
 | 12/10/2026 | `2351d9e1b6` | 111 | rebase thường, 1 conflict `core/src/session/turn_context.rs` (upstream bỏ backend zsh vá → bỏ khối `UnifiedExecShellMode`); diff harness trước/sau sync giống hệt nhau (interdiff 0 dòng); 2 test Bedrock `credential_export` flaky dưới tải, chạy riêng pass |
+| 13/10/2026 | `f82e365922` | 85 | rebase do agent hcodex (model `gpt-6-sol` qua cliproxy, chạy trong terminal khác) tự làm; upstream thêm field `encrypted_content`/`status` vào `Message` và `annotations`/`logprobs` vào `OutputText` → `render_agent_messages_as_plain_text` + test được cập nhật theo; smoke + spawn test pass; merge dở `origin/my-harness` bị abort, thay bằng cherry-pick commit docs |
 
 **Khi upstream nhảy xa** (hàng trăm → nghìn commit) rebase từng commit harness sẽ
 conflict lặp ở cùng file. Cách đã dùng ngày 07/10/2026 (1.530 commit): gộp toàn bộ
