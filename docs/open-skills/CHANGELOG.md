@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased — hcodex OCR integration
+
+- Added an automatic adversarial OCR delegation pass after non-trivial
+  implementation, with direct-diff fallback and mandatory manual coverage of
+  tests, docs, configuration, and other OCR exclusions.
+- Made `ocr-code-review` helper discovery portable across Codex, hcodex, and
+  repository/global agent skill roots.
+
+## 0.2.1 — Matt Pocock selective refresh
+
+Reviewed `mattpocock/skills` at `49dd158d1076134a641b33efb035946536778336`
+against the previous reviewed revision
+`ed37663cc5fbef691ddfecd080dff42f7e7e350d`.
+
+- Strengthened `diagnose` with redacted artifacts, an executed,
+  symptom-specific reproduction gate, and proof of temporary RED mutations.
+- Clarified `tdd` seam selection with explicit coverage and blind spots.
+- Clarified `daily-dev` route precedence, reduced routine routing chatter,
+  scoped setup preflight to tracker-dependent work, and added a direct-diff
+  fallback with manual coverage for OCR exclusions.
+- Deferred upstream's `implement-spec` and `retro`: local
+  `executing-plans`/`subagent-driven-development` and `reflect` already own
+  those routes. Deferred `pr` and `wizard` pending repeated use and a complete
+  tested wizard template; importing lightweight wrappers would add noise rather
+  than capability. Did not import Claude plugin wiring or in-progress skills.
+
 ## 0.2.0 — Codex conversion
 
 - Changed the host runtime from OpenCode to Codex.

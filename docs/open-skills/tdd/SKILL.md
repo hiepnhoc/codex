@@ -69,6 +69,11 @@ Before writing any code:
 
 Ask: "What should the public interface look like? Which behaviors are most important to test?"
 
+For each proposed seam, record one line describing what it catches and what it
+does not catch. If the interface or module boundary is still in question,
+resolve that design decision before writing tests rather than locking in an
+accidental seam.
+
 **You can't test everything.** Confirm with the user exactly which behaviors matter most. Focus testing effort on critical paths and complex logic, not every possible edge case.
 
 ### 2. Tracer Bullet
