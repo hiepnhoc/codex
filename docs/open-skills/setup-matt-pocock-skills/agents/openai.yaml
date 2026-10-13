@@ -1,0 +1,6 @@
+interface:
+  display_name: "Set Up Engineering Skills"
+  short_description: "Configure repository context and issue workflows"
+  default_prompt: "Use $setup-matt-pocock-skills to configure this repository for the domain, PRD, issue, and triage workflows."
+policy:
+  allow_implicit_invocation: false

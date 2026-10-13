@@ -5,6 +5,14 @@ description: Use when debugging hard bugs, failing tests, broken behavior, flaky
 
 # Diagnose
 
+## Redact First
+
+This workflow may show commands, output, logs, and captured artifacts. Redact
+secrets, tokens, cookies, authorization headers, and personal data as
+`<REDACTED>` before sharing them. Prefer environment variables over inline
+credentials. If redaction removes the signal needed for diagnosis, say so and
+ask for a safer artifact or access path.
+
 ## Core Rule
 
 Do not fix before you have a feedback loop.
@@ -34,6 +42,11 @@ Improve the loop until it is:
 - deterministic or high-probability for flakes
 - specific to the user-reported symptom
 - runnable by the agent
+
+Phase 1 is complete only after one concrete command has been run at least once
+and is red-capable: it drives the affected path and asserts the exact symptom,
+not merely that a process exits successfully. A flaky bug needs a pinned,
+high-reproduction loop before hypothesis work begins.
 
 For non-deterministic bugs, the goal is to raise reproduction probability enough to debug: loop, parallelize, stress, pin time, seed randomness, isolate filesystem/network.
 
@@ -97,6 +110,8 @@ If a correct test seam exists:
 
 1. turn the minimized repro into a failing test
 2. watch it fail for the expected reason
+   - if a temporary code or fixture mutation forces RED, diff it against the
+     pristine version first to prove the mutation actually took effect
 3. apply the smallest fix
 4. watch it pass
 5. rerun the original feedback loop

@@ -1,6 +1,6 @@
 # HiGa Codex Dev Skills
 
-Version: `0.2.0`
+Version: `0.2.1`
 
 A curated engineering skill pack adapted for Codex. It combines workflow
 routing, repository discovery, design and planning, implementation discipline,
@@ -52,7 +52,7 @@ workflow. High-signal routes include:
 | User-facing UI | `frontend-ui-engineering` |
 | Current framework/library facts | `source-driven-development` |
 | Large unresolved effort | `zoom-out` |
-| Review changes, commit, or range | `ocr-code-review` |
+| Review changes, commit, or range | `ocr-code-review` when usable; otherwise direct diff review |
 | Create or adapt skills | `writing-skills` |
 
 See `ROUTING.md` for the complete map and runtime adaptation rules.

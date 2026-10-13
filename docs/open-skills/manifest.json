@@ -1,6 +1,6 @@
 {
   "name": "higa-codex-dev-skills",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "created_for": "HiGa",
   "purpose": "Versioned Codex developer skill pack with rollback-safe installation.",
   "skill_count": 43,
@@ -58,8 +58,8 @@
       "folder": "daily-dev",
       "description": "Use when handling software engineering requests as the default first router, especially multi-domain or multi-phase work; classify the task, select domain specialists, preserve their gates, and optionally hand heavy execution to `deepwork` after routing.",
       "path": "daily-dev/SKILL.md",
-      "sha256": "c1306384a79379659a3cccafacd217d9600569124b593210c07ff4980d78c821",
-      "lines": 239
+      "sha256": "26964c9aa4c992a10d009db9f6254ea8cb958cf3e5bec7eed25036d392333619",
+      "lines": 270
     },
     {
       "name": "deep-research",
@@ -82,8 +82,8 @@
       "folder": "diagnose",
       "description": "Use when debugging hard bugs, failing tests, broken behavior, flaky issues, or performance regressions - builds a fast feedback loop before fixing.",
       "path": "diagnose/SKILL.md",
-      "sha256": "3fd1f96a9a4f225facb60edd1d028bac494e84aec91dce7c8d80cc7cfa6d3416",
-      "lines": 128
+      "sha256": "b5a66036604197f391aab313f9bed4a0160f4328a980a80f6da28d1c2a0e7835",
+      "lines": 143
     },
     {
       "name": "documentation-and-adrs",
@@ -170,8 +170,8 @@
       "folder": "ocr-code-review",
       "description": "Use when reviewing workspace changes, a commit, or a branch range with deterministic file selection and review rules from Alibaba Open Code Review while Codex performs the reasoning.",
       "path": "ocr-code-review/SKILL.md",
-      "sha256": "5e02e0ff5593686fea62d59d6364ceb0584556ad637d63050efc83e5eb1777ac",
-      "lines": 326
+      "sha256": "a6bbdae0fa744dff3defbab0196540d95539b4ffab0da11e77c834ca6cc3a438",
+      "lines": 351
     },
     {
       "name": "oh-my-opencode-slim",
@@ -258,8 +258,8 @@
       "folder": "tdd",
       "description": "Use when implementing or fixing behavior test-first with a red-green-refactor loop, especially when the user requests TDD, integration tests, regression tests, or test-first development.",
       "path": "tdd/SKILL.md",
-      "sha256": "f8f520984bfc16f641398a198618e599b436f2f1d0e00d9904218142710c442e",
-      "lines": 121
+      "sha256": "91b2f44d8840f3ef5f846d75034f79ea2d5a923d5137802b9d85dca9034eb184",
+      "lines": 126
     },
     {
       "name": "to-issues",

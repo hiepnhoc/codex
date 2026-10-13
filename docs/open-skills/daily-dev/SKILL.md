@@ -13,7 +13,9 @@ Do not load the whole pack. Pick one primary workflow, then add only overlays wh
 
 ## Start-of-Run Contract
 
-Before acting, classify the request and announce the route briefly:
+Before acting, classify the request. For routine work, announce the primary
+route and immediate next step in one sentence. Use the fuller contract below
+only when the work spans phases, domains, or approval boundaries:
 
 ```text
 Daily-dev route:
@@ -25,12 +27,34 @@ Daily-dev route:
 - First action: [what happens now]
 ```
 
+Do not make the route announcement longer than the task itself.
+Set the approval gate from actions actually needed, not from task size: an
+ordinary local bug fix does not itself require protected-action approval.
+
+## Route Precedence
+
+1. Honor explicit intent first: review-only stays read-only; a named skill or
+   requested workflow wins unless it would bypass a safety gate.
+2. For an unexplained failure, start with `diagnose` even if the affected code
+   is UI, API, or security-sensitive. For an existing approved design/plan,
+   resume its next phase rather than restarting discovery.
+3. Otherwise choose one primary lifecycle route (investigate, design, plan,
+   implement, or review). API/UI/security/CI concerns are specialist overlays
+   on that route when the task crosses multiple concerns; they do not silently
+   waive its design, isolation, or verification gates.
+4. Prefer direct execution for a small, clear, low-risk change. Add a specialist
+   only if it changes the concrete decisions or checks required for that work.
+   A spelling fix in documentation does not trigger `documentation-and-adrs`.
+
+If two rows below match, apply this precedence instead of loading both
+workflows as coequal primaries.
+
 ## Classification First
 
 | Request shape | Primary route | Common overlays |
 |---|---|---|
 | Bug, failing test, regression, flaky behavior | `diagnose` → `tdd` when a regression seam exists | `browser-testing-with-devtools`, `performance-optimization` |
-| Review workspace changes, a commit, or a branch range | `ocr-code-review` | relevant API/UI/security/performance overlays for finding validation |
+| Review workspace changes, a commit, or a branch range | `ocr-code-review` only when its preview works; otherwise direct diff review without the OCR skill | relevant API/UI/security/performance overlays for finding validation |
 | Measured or suspected slowness | `diagnose` → `performance-optimization` | browser/runtime profiling, `observability-and-instrumentation` |
 | Non-trivial feature or behavior change | `domain-context` if domain meaning matters → `grill-with-docs` if ambiguous → `brainstorming` | API/UI/security/source overlays as applicable |
 | Tiny mechanical edit with clear acceptance criteria | direct edit after repository inspection | project-native verification; no ceremonial design |
@@ -71,7 +95,8 @@ Daily-dev route:
 8. **No behavior change without an appropriate test strategy.** Prefer a regression/behavior test at the highest stable seam; explain when no useful seam exists.
 9. **No completion without evidence.** Run project-native tests/build/typecheck/lint/runtime/browser checks, or report the exact blocker.
 10. **No protected external action without explicit approval.** This includes merge, push, deploy, production/data deletion, external ticket publication, account changes, paid actions, and credential/security decisions.
-11. **Review-only means read-only.** Use `ocr-code-review` delegation mode for code-review requests; do not fix findings unless the user explicitly requests review-and-fix, and never silently switch to OCR-managed LLM review.
+11. **Review-only means read-only.** Prefer `ocr-code-review` delegation mode when it works for the requested scope; otherwise review the diff directly and disclose the fallback. Do not fix findings unless the user explicitly requests review-and-fix, and never silently switch to OCR-managed LLM review.
+12. **Non-trivial implementation gets an adversarial final review.** After project-native verification passes, run `ocr-code-review` delegation against the resulting workspace diff for behavior, API/schema, migration, dependency, security-sensitive, generated-output, or multi-file changes. Manually inspect tests, docs, configuration, and other files OCR excludes. Skip this extra pass for a tiny mechanical or documentation-only edit unless risk or user intent warrants it. OCR failure falls back to direct diff review; it never replaces tests or blocks completion by itself.
 
 ## Specialist Gates Win
 
@@ -89,7 +114,7 @@ Preserve at least these gates:
 ## Capability and Setup Preflight
 
 - If a browser/MCP/reviewer/subagent capability is unavailable, use the documented fallback and report degraded verification; do not claim the unavailable check passed.
-- If a Matt-style route needs `docs/agents/` issue/domain configuration and it is absent, tell the user to run `/setup-matt-pocock-skills` or continue read-only with the limitation stated. Do not pretend the disabled setup skill auto-loaded.
+- If a tracker-dependent route needs `docs/agents/` issue configuration and it is absent, tell the user to run `/setup-matt-pocock-skills` or continue with local drafts/read-only work and state the limitation. Domain docs are optional inputs, not a prerequisite for debugging or coding.
 - `subagent-driven-development` requires an implementation plan and independent, non-overlapping tasks. For coupled high-risk work, prefer `executing-plans` plus `doubt-driven-development` or explicit review checkpoints.
 - If optional `deepwork` is installed, use it only after `daily-dev` has classified the work and selected specialist workflows. `deepwork` coordinates progress/delegation; it does not replace domain design, approval, isolation, or verification gates.
 
@@ -103,7 +128,7 @@ Project-native tests are necessary but not always sufficient:
 - telemetry: inspect emitted logs/metrics/traces or a realistic capture, not code review alone
 - API/public contract: verify schema/error behavior, compatibility, and consumer impact
 - CI/CD: validate configuration syntax and dry-run/sandbox behavior; protected deployment mutations remain approval-gated
-- code review: preview the exact target first, resolve OCR rules, validate every finding against repository context, and run project-native verification separately
+- code review: establish the exact diff including tests, docs, configuration, and untracked files; when OCR is usable, inspect its preview and exclusions, resolve rules, then manually cover omitted files; validate findings against repository context and report checks that were not run
 
 ## Workspace Write Policy
 
@@ -131,6 +156,7 @@ Exceptions:
 - read-only analysis: no worktree
 - disposable experiment outside the repository: use a temp directory
 - tiny edit explicitly requested on the current branch: state the exception before writing. “Tiny” means one narrowly scoped file, no behavior/API/schema/dependency/migration/generated-output change, and immediate project verification; otherwise isolate it.
+- user explicitly requests the existing checkout: respect that location after checking for unrelated changes and explaining the isolation risk; do not create a branch or worktree against that instruction.
 
 ## Core Recipes
 
@@ -147,6 +173,7 @@ read-only repo/domain scan
 → executing-plans or subagent-driven-development
 → tdd per behavior slice
 → browser/security/perf/observability verification as applicable
+→ OCR delegation self-review of the resulting diff, with manual coverage of exclusions
 → simplify
 → documentation-and-adrs when the decision should persist
 ```
@@ -163,20 +190,21 @@ diagnose in read-only or throwaway mode where possible
 → minimal fix
 → rerun the original feedback loop
 → broader project-native checks
+→ OCR delegation self-review of the resulting diff, with direct-review fallback
 → simplify only if behavior remains unchanged
 ```
 
 ### Code Review
 
 ```text
-ocr-code-review preview in delegation mode
-→ confirm files, refs, exclusions, and untracked scope
-→ resolve review rules
+establish the requested diff, refs, changed-file list, and untracked scope
+→ OCR delegation preview and rules if available; otherwise direct diff review
+→ manually inspect files OCR excludes, especially tests, docs, and configuration
 → inspect exact diff plus only necessary repository context
 → verify line positions and concrete failure scenarios
 → report high-confidence findings first
 → fix only when explicitly requested
-→ run project-native checks and re-review the resulting diff
+→ report project-native checks actually run (or not run); if fixing, re-review the resulting diff
 ```
 
 ### API / UI Change
@@ -226,6 +254,9 @@ Use `zoom-out` before `to-issues` when the destination is known but the decision
 Use direct execution only for small, clear, low-risk work that does not benefit from a design/plan ceremony. Direct does not mean unverified.
 
 ## Completion Report
+
+For small changes, report only the change and the check that proved it. For
+multi-phase work or protected actions, use the fuller handoff:
 
 ```markdown
 Daily-dev result:
