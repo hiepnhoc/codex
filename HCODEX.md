@@ -492,6 +492,19 @@ Script bảo vệ mày thế nào:
 - File untracked (như `docs/open-skills/scripts/`) không chặn sync; chỉ file đã
   sửa chưa commit mới chặn.
 
+**Máy thiếu RAM khi build**: supervisor của session (và macOS) kill cargo ở bước
+link test TUI hoặc link binary release. Cách đã dùng ngày 12/10/2026: chạy gate
+với `BUILD_JOBS=2`, bỏ test TUI (`SKIP_TESTS=1`, release build vẫn compile crate
+TUI nên lỗi biên dịch vẫn lòi ra), và chạy script **tách khỏi session**
+(`nohup … &` rồi poll log) thay vì background task của session.
+
+**Lịch sử sync**
+
+| Ngày | upstream/main | Số commit | Ghi chú |
+|---|---|---|---|
+| 07/10/2026 | `18e28fe1b9` | 1.530 | squash-sync, 19 file conflict (xem dưới) |
+| 12/10/2026 | `2351d9e1b6` | 111 | rebase thường, 1 conflict `core/src/session/turn_context.rs` (upstream bỏ backend zsh vá → bỏ khối `UnifiedExecShellMode`); diff harness trước/sau sync giống hệt nhau (interdiff 0 dòng); 2 test Bedrock `credential_export` flaky dưới tải, chạy riêng pass |
+
 **Khi upstream nhảy xa** (hàng trăm → nghìn commit) rebase từng commit harness sẽ
 conflict lặp ở cùng file. Cách đã dùng ngày 07/10/2026 (1.530 commit): gộp toàn bộ
 harness thành 1 commit rồi merge lên upstream, resolve 1 lần ở trạng thái cuối:
