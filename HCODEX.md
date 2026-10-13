@@ -102,16 +102,53 @@ model_context_window = 200000
 trust_level = "trusted"             # bật project-local config/hooks/execpolicy
 ```
 
-### Dùng chung skills / prompts với codex gốc
+### Dùng chung skills / prompts với codex gốc (sửa lại 13/10/2026)
 
-`hcodex` đọc `~/.hcodex/skills` (không phải `~/.codex/skills`). Để dùng chung bộ
-skill với codex-cli, symlink:
+`hcodex` đọc 4 root skill: `~/.hcodex/skills` (r0), `~/.agents/skills` (r1, dùng
+chung với Claude Code), `~/.hcodex/skills/.system` (r2) và skill của plugin
+(r3, OpenViking). Bảng mô tả skill được chèn vào **mọi** request, nên số skill
+và độ dài mô tả ảnh hưởng trực tiếp tới token và độ trễ.
+
+Cách wiring hiện tại: `~/.hcodex/skills` là thư mục thật, mỗi skill là một
+symlink sang `~/.codex/skills/<tên>` (bộ skill live của mày, `docs/open-skills`
+trong repo chỉ là bản tham khảo có version). **Không** symlink nguyên thư mục
+(`ln -sfn ~/.codex/skills ~/.hcodex/skills` khi thư mục đã tồn tại sẽ tạo link
+lồng `~/.hcodex/skills/skills`, vẫn chạy nhưng path hiện ra là `r0/skills/...`).
+Bỏ 11 skill đã có ở `~/.agents/skills` (`hyperframes*`, `media-use`,
+`motion-graphics`, `gpt-image-2-style-library`) để không bị liệt kê 2 lần.
+
+Kết quả đo trên rollout thật:
+
+| | Trước | Sau |
+|---|---|---|
+| Skill trong bảng | 68 (11 trùng) | 57 (0 trùng) |
+| Kích thước bảng mỗi request | ~47k ký tự ≈ 11,7k token | ~22k ký tự ≈ 5,5k token |
+
+Dựng lại khi `~/.codex/skills` có skill mới:
 
 ```bash
-ln -sfn ~/.codex/skills ~/.hcodex/skills
+cd ~/.hcodex/skills && for d in ~/.codex/skills/*/; do n=$(basename "$d"); [ -f "$d/SKILL.md" ] || continue
+  case " gpt-image-2-style-library hyperframes hyperframes-animation hyperframes-audio hyperframes-cli hyperframes-core hyperframes-creative hyperframes-keyframes hyperframes-registry media-use motion-graphics " in *" $n "*) continue;; esac
+  ln -sfn "$HOME/.codex/skills/$n" "$n"; done
 ```
 
-Tương tự cho `~/.hcodex/AGENTS.md`, `~/.hcodex/prompts` nếu muốn dùng chung.
+**`daily-dev` làm router mặc định**: với codex, SKILL.md chỉ là mô tả "use when",
+model tự quyết có đọc hay không; trong bảng 57 skill, một router chung không tự
+được chọn (đã probe: không có dòng route). Fix: `~/.hcodex/AGENTS.md` chép từ
+`docs/open-skills/AGENTS-snippet.md` ("Default to `daily-dev`…"). Sau đó probe
+cùng task thấy model tự `sed` đọc `daily-dev/SKILL.md` rồi route (task nhỏ →
+test-first, không design/worktree). Gọi tường minh `$daily-dev …` vẫn là cách
+chắc nhất: model nêu rõ "đi theo daily-dev rồi tdd", áp cả rule worktree và
+bước review OCR của pack. Skill có `agents/openai.yaml` với
+`allow_implicit_invocation: false` (`zoom-out`, `setup-matt-pocock-skills`)
+không hiện trong bảng, chỉ gọi được bằng `$tên`.
+
+Trần token của bảng skill: `[skills] max_context_tokens = N` (tối đa 10.000),
+mặc định 2% context window. Vượt trần thì codex **cắt mô tả rồi bỏ bớt skill**
+kèm cảnh báo, nên không đặt thêm; 57 skill hiện nằm trong mức chấp nhận được.
+Muốn tắt hẳn bảng skill cho một phiên: `-c skills.include_instructions=false`.
+
+`~/.hcodex/prompts` có thể symlink sang `~/.codex/prompts` nếu muốn dùng chung.
 Còn `config.toml`, `sessions`, `history` giữ riêng để không đụng ChatGPT app.
 
 ### Metadata và prompt riêng theo model
