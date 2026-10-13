@@ -27,7 +27,7 @@ Start with one primary workflow. Add only overlays whose trigger is present.
 | Current library/framework facts | `source-driven-development` | `deep-research` |
 | Throwaway experiment | `prototype` | Record decision evidence |
 | PRD, issues, triage | `to-prd`, `to-issues`, `triage` | Local drafts before publication |
-| Review changes/commit/range | `ocr-code-review` | Relevant discipline overlays |
+| Review changes/commit/range | `ocr-code-review` when usable; otherwise direct diff review | Manually cover OCR exclusions and disclose fallback |
 | Create or adapt skills | `writing-skills` | `write-a-skill` for small standalone work |
 
 ## Discipline overlays
