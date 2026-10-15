@@ -21,6 +21,9 @@ pub struct ModelProviderCapabilities {
     /// providers default to flat function tools and plain-text agent messages;
     /// set `true` for a provider that speaks the full dialect.
     pub responses_extensions: Option<bool>,
+    /// hcodex: whether this provider's models are listed in the merged `/model`
+    /// picker (default true). Set `false` to keep a provider out of the list.
+    pub list_models: Option<bool>,
 }
 
 /// Remote context-compaction protocols supported by a model provider.
