@@ -1627,6 +1627,26 @@ pub(crate) enum AppEvent {
         model: String,
     },
 
+    /// hcodex `/provider use <id> [model]`: continue this conversation on another
+    /// configured provider. The thread is forked with the new provider/model so
+    /// the whole history carries over.
+    ProviderSwitch {
+        provider_id: String,
+        model: Option<String>,
+    },
+
+    /// hcodex `/model`: model lists of the other configured providers arrived.
+    OtherProviderModelsFetched {
+        request_id: uuid::Uuid,
+        entries: Vec<OtherProviderModels>,
+    },
+
+    /// hcodex `/provider use <id>` without a model: the provider's model list.
+    ProviderSwitchModelsFetched {
+        provider_id: String,
+        result: Result<Vec<String>, String>,
+    },
+
     /// hcodex `/provider`: persist the provider table and its profile file.
     ProviderSave {
         draft: ProviderSetupDraft,
@@ -1833,6 +1853,15 @@ pub(crate) enum RunningTaskExitAction {
     CancelTask,
     RunInBackground,
     Exit,
+}
+
+/// hcodex: one provider's catalog for the merged `/model` picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OtherProviderModels {
+    pub(crate) provider_id: String,
+    pub(crate) models: Vec<String>,
+    /// Set when the provider could not be listed (offline, no key, timeout).
+    pub(crate) error: Option<String>,
 }
 
 /// hcodex: provider being added through `/provider` (id is the

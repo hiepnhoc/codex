@@ -2506,6 +2506,23 @@ impl App {
             AppEvent::ProviderModelChosen { draft, model } => {
                 self.chat_widget.open_provider_default_prompt(draft, model);
             }
+            AppEvent::ProviderSwitch { provider_id, model } => {
+                self.handle_provider_switch(tui, app_server, provider_id, model)
+                    .await;
+            }
+            AppEvent::OtherProviderModelsFetched {
+                request_id,
+                entries,
+            } => {
+                self.chat_widget
+                    .on_other_provider_models_fetched(request_id, entries);
+            }
+            AppEvent::ProviderSwitchModelsFetched {
+                provider_id,
+                result,
+            } => {
+                self.handle_provider_switch_models_fetched(provider_id, result);
+            }
             AppEvent::ProviderSave {
                 draft,
                 model,

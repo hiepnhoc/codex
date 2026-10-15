@@ -329,6 +329,7 @@ mod model_popup_state;
 mod model_popups;
 mod notifications;
 pub(crate) mod quick_dials;
+mod provider_models;
 mod provider_setup;
 mod session_model_selection;
 use self::notifications::Notification;
@@ -549,6 +550,10 @@ pub(crate) struct ChatWidget {
     model_popup_request_id: Option<uuid::Uuid>,
     /// An app event has been queued to open the permissions picker, but no view exists yet.
     pub(crate) permission_popup_pending: bool,
+    /// hcodex: catalogs of the other configured providers for the merged `/model` picker.
+    other_provider_models: Vec<crate::app_event::OtherProviderModels>,
+    other_provider_models_fetched_at: Option<std::time::Instant>,
+    other_provider_models_request_id: Option<uuid::Uuid>,
     permission_popup_request_id: Option<uuid::Uuid>,
     permission_discovery: Option<crate::permission_discovery::PermissionDiscovery>,
     inline_permission_profile_selection:
