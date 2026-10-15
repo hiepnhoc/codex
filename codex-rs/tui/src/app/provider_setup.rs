@@ -5,6 +5,10 @@
 //! 2. `ProviderModelsFetched`: hand the list (or the failure) back to the widget.
 //! 3. `ProviderSave`: write `[model_providers.<id>]` into config.toml, write the
 //!    `<id>.config.toml` profile, optionally flip the top-level default.
+//! 4. `ProviderSwitch`: continue the current conversation on another configured
+//!    provider by forking the thread with the new provider/model (`thread/fork`
+//!    carries the whole history). "Use it now" after setup goes through the
+//!    same path, so switching providers no longer means a new session.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -23,7 +27,9 @@ use crate::legacy_core::config::edit::ConfigEdit;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
 
 use super::App;
+use super::session_lifecycle::ThreadAttachPresentation;
 use crate::app_server_session::AppServerSession;
+use crate::app_server_session::ForkGoalContinuation;
 
 impl App {
     pub(super) fn probe_provider_models(&mut self, draft: ProviderSetupDraft) {
@@ -115,24 +121,201 @@ impl App {
             self.chat_widget.add_info_message(saved, Some(hint));
             return;
         }
-        // Switch this process to the new provider the same way `-c model_provider=`
-        // does, then open a fresh thread on it. The overrides persist for later
-        // `/new` threads in this session too.
-        self.harness_overrides.model_provider = Some(draft.id.clone());
-        self.harness_overrides.model = Some(model.clone());
         self.chat_widget.add_info_message(
             saved,
-            Some(format!(
-                "Starting a new thread on `{}` / `{model}` (profile: {}).",
-                draft.id,
-                profile_path.display()
-            )),
+            Some(format!("Profile: {}", profile_path.display())),
         );
-        self.start_fresh_session(
-            tui, app_server, /*session_start_source*/ None,
-            /*initial_user_message*/ None, /*new_thread_name*/ None,
-        )
-        .await;
+        // The provider table was just written; reload so the switch sees it.
+        self.refresh_in_memory_config_from_disk_best_effort("switching provider")
+            .await;
+        let info = self
+            .config
+            .model_providers
+            .get(&draft.id)
+            .cloned()
+            .unwrap_or_else(|| ModelProviderInfo {
+                name: draft.id.clone(),
+                base_url: Some(draft.base_url.clone()),
+                experimental_bearer_token: draft.api_key.clone().map(RedactedString::from),
+                wire_api: WireApi::Responses,
+                ..ModelProviderInfo::default()
+            });
+        self.switch_provider_in_place(tui, app_server, draft.id, info, model)
+            .await;
+    }
+
+    /// `/provider use <id> [model]`: validate the provider, pick a model if
+    /// none was given, then fork this conversation onto it.
+    pub(super) async fn handle_provider_switch(
+        &mut self,
+        tui: &mut crate::tui::Tui,
+        app_server: &mut AppServerSession,
+        provider_id: String,
+        model: Option<String>,
+    ) {
+        let Some(info) = self.config.model_providers.get(&provider_id).cloned() else {
+            let mut known: Vec<&String> = self.config.model_providers.keys().collect();
+            known.sort();
+            let known = known
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.chat_widget.add_error_message(format!(
+                "Unknown provider `{provider_id}`. Configured providers: {known}. Add one with /provider <id> <base_url>."
+            ));
+            return;
+        };
+        let Some(model) = model else {
+            self.chat_widget.add_info_message(
+                format!("Listing models from `{provider_id}` …"),
+                /*hint*/ None,
+            );
+            let app_event_tx = self.app_event_tx.clone();
+            let http_client_factory = self.config.http_client_factory();
+            tokio::spawn(async move {
+                let result =
+                    codex_model_provider::list_models_for_provider(info, http_client_factory)
+                        .await
+                        .map(|models| models.into_iter().map(|m| m.slug).collect::<Vec<_>>())
+                        .map_err(|err| err.to_string());
+                app_event_tx.send(AppEvent::ProviderSwitchModelsFetched {
+                    provider_id,
+                    result,
+                });
+            });
+            return;
+        };
+        self.switch_provider_in_place(tui, app_server, provider_id, info, model)
+            .await;
+    }
+
+    pub(super) fn handle_provider_switch_models_fetched(
+        &mut self,
+        provider_id: String,
+        result: Result<Vec<String>, String>,
+    ) {
+        match result {
+            Ok(models) if !models.is_empty() => {
+                self.chat_widget
+                    .open_provider_switch_model_picker(provider_id, models);
+            }
+            Ok(_) => self.chat_widget.add_error_message(format!(
+                "`{provider_id}` returned no models; pass one explicitly: /provider use {provider_id} <model>"
+            )),
+            Err(err) => self.chat_widget.add_error_message(format!(
+                "Could not list models from `{provider_id}`: {err}. Pass one explicitly: /provider use {provider_id} <model>"
+            )),
+        }
+    }
+
+    /// Forks the current thread with a new provider/model so the conversation
+    /// continues there (same history, new thread id). Without a thread yet,
+    /// a fresh one is started on the provider instead. Later `/new` threads in
+    /// this process keep the provider too.
+    pub(super) async fn switch_provider_in_place(
+        &mut self,
+        tui: &mut crate::tui::Tui,
+        app_server: &mut AppServerSession,
+        provider_id: String,
+        info: ModelProviderInfo,
+        model: String,
+    ) {
+        self.harness_overrides.model_provider = Some(provider_id.clone());
+        self.harness_overrides.model = Some(model.clone());
+        app_server.model_provider_override = Some(provider_id.clone());
+
+        let Some(thread_id) = self.chat_widget.thread_id() else {
+            self.start_fresh_session(
+                tui, app_server, /*session_start_source*/ None,
+                /*initial_user_message*/ None, /*new_thread_name*/ None,
+            )
+            .await;
+            return;
+        };
+        if self.pending_server_profiles.contains_key(&thread_id) {
+            self.chat_widget.add_error_message(
+                "Wait for permissions to update before switching provider.".into(),
+            );
+            return;
+        }
+        self.chat_widget.fork_in_progress = true;
+        let screen_size = tui.terminal.last_known_screen_size;
+        if let Err(err) = self.handle_draw_pre_render(tui, screen_size) {
+            tracing::warn!(%err, "pre-render before provider switch failed");
+        }
+        self.chat_widget.pre_draw_tick();
+        if let Err(err) = self.render_chat_widget_frame(tui, screen_size) {
+            tracing::warn!(%err, "render before provider switch failed");
+        }
+
+        let mut fork_config = self.config.clone();
+        fork_config.daybreak_enabled = self.chat_widget.daybreak_enabled;
+        if app_server.uses_remote_workspace() {
+            fork_config
+                .workspace_roots
+                .clone_from(&self.chat_widget.config_ref().workspace_roots);
+        }
+        fork_config.model_provider_id = provider_id.clone();
+        fork_config.model_provider = info;
+        fork_config.model = Some(model.clone());
+        // The new model picks its own default effort; `/model` can adjust it.
+        fork_config.model_reasoning_effort = None;
+        let selected_profile = self.selected_server_profile(thread_id);
+        match app_server
+            .fork_thread_at(
+                &self.local_settings,
+                fork_config.clone(),
+                thread_id,
+                /*last_turn_id*/ None,
+                /*before_turn_id*/ None,
+                ForkGoalContinuation::StartIfIdle,
+                selected_profile.as_ref(),
+            )
+            .await
+        {
+            Ok(forked) => {
+                self.detach_current_thread_for_navigation(
+                    app_server,
+                    Some(forked.session.thread_id),
+                )
+                .await;
+                self.config = fork_config;
+                match self
+                    .replace_chat_widget_with_app_server_thread(
+                        tui,
+                        forked,
+                        ThreadAttachPresentation::SessionLineage,
+                        /*initial_user_message*/ None,
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        if selected_profile.is_some() {
+                            self.adopt_inherited_server_selection();
+                        }
+                        self.chat_widget.add_info_message(
+                            format!("Now using `{model}` via `{provider_id}`; the conversation continues with its full history."),
+                            /*hint*/ None,
+                        );
+                    }
+                    Err(err) => {
+                        self.chat_widget
+                            .add_error_message(format!("Failed to attach after provider switch: {err}"));
+                    }
+                }
+            }
+            Err(err) => {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to switch to `{provider_id}`: {err}"
+                ));
+            }
+        }
+        // The replacement widget inherits `fork_in_progress`; clear it so the
+        // composer accepts input again (mirrors the upstream /fork handler).
+        self.chat_widget.fork_in_progress = false;
+        self.chat_widget.maybe_send_next_queued_input();
+        tui.frame_requester().schedule_frame();
     }
 }
 
