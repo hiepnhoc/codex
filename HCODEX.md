@@ -14,7 +14,7 @@ Branch `my-harness` trong repo này. Binary tên `hcodex`, tách hoàn toàn kh�
 | Branding `OpenAI Codex` → `hcodex` | `codex-rs/tui/...`, `codex-rs/exec/...` |
 | `/model` liệt kê model từ provider (`GET {base_url}/models`, mọi provider OpenAI-compatible) + effort low/medium/high/xhigh | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/models-manager/src/manager.rs` |
 | Catalog của proxy được chuẩn hoá thành prompt harness trung lập cho mọi model (GPT, Claude, Gemini, Qwen, GLM…), kể cả catalog file; cache model gắn identity provider+auth (cơ chế upstream) và không trộn catalog OpenAI bundled vào | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/model-provider/src/provider.rs`, `codex-rs/models-manager/src/manager.rs` |
-| `/provider` trong TUI: thêm provider (id, base URL, key) → kiểm tra `/models` → chọn model → ghi config + profile | `codex-rs/tui/src/bottom_pane/provider_setup_view.rs`, `codex-rs/tui/src/chatwidget/provider_setup.rs`, `codex-rs/tui/src/app/provider_setup.rs` |
+| `/provider` trong TUI: thêm provider (id, base URL, key) → kiểm tra `/models` → chọn model → ghi config + profile; `/model` gộp model của mọi provider, chọn là đổi provider **giữ nguyên hội thoại** (fork thread); `/provider use <id> [model]` là đường tắt | `codex-rs/tui/src/bottom_pane/provider_setup_view.rs`, `codex-rs/tui/src/chatwidget/provider_setup.rs`, `codex-rs/tui/src/app/provider_setup.rs` |
 | HTTP 429 từ provider **không phải OpenAI** được retry ở lớp HTTP, tôn trọng `Retry-After` (codex gốc không retry 429) | `codex-rs/model-provider-info/src/lib.rs` (`retry_429`), `codex-rs/codex-client/src/retry.rs` |
 | `server_is_overloaded`, SSE rate-limit và HTTP `usage_limit_reached` từ proxy được retry cấp turn (2s→30s/lần, tối đa `stream_max_retries`) thay vì kết thúc turn giả; OpenAI chính chủ giữ semantics upstream | `codex-rs/core/src/session/turn.rs`, `codex-rs/core/src/responses_retry.rs` (+ test `core/tests/suite/hcodex_overload_retry.rs`) |
 | Tool kiểu `namespace` (multi-agent v2 `collaboration`, MCP `mcp__<server>`) được **trải phẳng** thành function `<namespace>__<tool>` cho provider không phải OpenAI (proxy/gateway bỏ qua tool type lạ → model mất tool); call trả về được map lại đúng handler | `codex-rs/core/src/tools/flat_namespaces.rs`, `codex-rs/core/src/tools/router.rs`, `codex-rs/model-provider-info/src/capabilities.rs` (`responses_extensions`) |
@@ -227,6 +227,42 @@ hcodex
 > /provider                       # hỏi lần lượt: id → base URL → API key (Enter để bỏ qua)
 > /provider groq https://api.groq.com/openai/v1           # không key: có thể nhập 1 dòng
 ```
+
+**Nhiều provider trong một hội thoại: `/model` gộp (15/10/2026)**
+
+Config vẫn tách từng provider (`[model_providers.<id>]`, key và URL riêng),
+nhưng `/model` gộp model của **mọi** provider trong config thành một danh sách,
+mỗi dòng gắn tag provider:
+
+```
+claude-opus-5.5         [local-proxy]   (đang dùng)
+gpt-6-sol               [cliproxy]      via cliproxy — switches this conversation…
+gemini-3.8-flash-high   [cliproxy]
+anthropic/claude-…      [openrouter]
+```
+
+Chọn model của provider khác → hội thoại chạy tiếp bằng provider đó, giữ đủ
+context, không cần session mới. Cơ chế bên dưới: thread được fork
+(`thread/fork` của upstream nhận `model_provider` + `model` khác, copy toàn bộ
+history); trong TUI không thấy gì khác ngoài một dòng "Now using … via …". Hệ
+quả duy nhất: `/resume` có thêm thread cũ trước lúc đổi. Đã test thật hai
+chiều local-proxy (Claude) ↔ cliproxy (gpt-6-sol): model mới nhớ đủ nội dung cũ.
+
+Chi tiết:
+- Lúc mở `/model`, hcodex gọi `GET /models` của các provider khác **song song**,
+  timeout 3s/provider, cache 5 phút. Provider lỗi (không có key, không chạy)
+  hiện một dòng mờ "`<id>` unavailable: lý do", không chặn popup.
+- Provider cần đăng nhập OpenAI/AWS (`openai`, `amazon-bedrock`) không được
+  liệt kê chéo. Ẩn một provider khỏi danh sách gộp:
+  `[model_providers.<id>.capabilities] list_models = false`.
+- Effort của model mới về mặc định của nó, chỉnh lại bằng `/model`.
+- Những `/new` sau đó trong cùng process dùng provider vừa chọn.
+- Đường tắt gõ tay: `/provider use <id> [model]` (hoặc `/provider <id> <model>`);
+  "Use it now" trong wizard `/provider` cũng chuyển ngay tại chỗ thay vì mở
+  thread mới.
+- Item reasoning của model cũ vẫn nằm trong history; proxy không hiểu thì bỏ
+  qua. OpenAI chính chủ nhận reasoning mã hoá của model khác có thể báo lỗi —
+  khi đó dùng `/new`.
 
 Sau khi nhập, hcodex gọi `GET {base_url}/models` để kiểm tra kết nối và hiện
 danh sách model cho mày chọn (gõ để lọc); nếu provider không có `/models` thì
@@ -580,6 +616,20 @@ Muốn gửi thay đổi ngược lên upstream thì tách commit đó ra branch
 và mở PR — không PR từ `my-harness`.
 
 ## Sự cố thường gặp
+
+**`Error: this CLI has no complete local package; install a packaged Codex CLI…`**
+khi mở `hcodex` (từ sync 13/10/2026): upstream mặc định chạy TUI qua một
+app-server daemon nền và tự cài "package" của CLI; bản build từ source không có
+package đó. hcodex tắt sẵn trong `~/.hcodex/config.toml`:
+
+```toml
+[features]
+daemon_auto_start = false      # chạy app-server nhúng, tương đương --no-daemon
+```
+
+Hệ quả: `hcodex agents` (command center dùng chung daemon) không dùng được;
+`/agents` và `/subagents` trong TUI vẫn chạy bình thường.
+
 
 - `Model provider ... not found` / lỗi kết nối → proxy chưa chạy ở `:8181`,
   hoặc set `HCODEX_PROXY_URL` đúng.

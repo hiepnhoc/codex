@@ -325,6 +325,7 @@ use self::plan_implementation::PLAN_IMPLEMENTATION_TITLE;
 mod model_popup_state;
 mod model_popups;
 mod notifications;
+mod provider_models;
 mod provider_setup;
 mod session_model_selection;
 use self::notifications::Notification;
@@ -541,6 +542,10 @@ pub(crate) struct ChatWidget {
     has_codex_backend_auth: bool,
     model_catalog: Arc<ModelCatalog>,
     model_popup_request_id: Option<uuid::Uuid>,
+    /// hcodex: catalogs of the other configured providers for the merged `/model` picker.
+    other_provider_models: Vec<crate::app_event::OtherProviderModels>,
+    other_provider_models_fetched_at: Option<std::time::Instant>,
+    other_provider_models_request_id: Option<uuid::Uuid>,
     permission_popup_request_id: Option<uuid::Uuid>,
     permission_discovery: Option<crate::permission_discovery::PermissionDiscovery>,
     worktree_popup_request_id: Option<uuid::Uuid>,
