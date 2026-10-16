@@ -15,15 +15,28 @@ const OTHER_PROVIDER_LIST_TIMEOUT: Duration = Duration::from_secs(3);
 
 impl ChatWidget {
     /// Providers other than the active one whose `/models` can be listed
-    /// without an OpenAI/AWS login. `capabilities.list_models = false` opts out.
+    /// without an OpenAI/AWS login. `[tui] model_picker_providers` whitelists
+    /// ids; unset means every provider except the upstream built-ins.
+    /// `capabilities.list_models = false` opts a provider out either way.
     pub(crate) fn other_listable_providers(&self) -> Vec<(String, ModelProviderInfo)> {
         let current = self.config.model_provider_id.as_str();
+        let whitelist = self.local_settings.tui.model_picker_providers.as_ref();
+        let upstream_built_ins: Vec<String> =
+            codex_model_provider_info::built_in_model_providers(/*openai_base_url*/ None)
+                .into_keys()
+                .filter(|id| id != codex_model_provider_info::LOCAL_PROXY_PROVIDER_ID)
+                .collect();
         let mut providers: Vec<(String, ModelProviderInfo)> = self
             .config
             .model_providers
             .iter()
             .filter(|(id, info)| {
-                id.as_str() != current
+                let wanted = match whitelist {
+                    Some(ids) => ids.iter().any(|wanted| wanted == *id),
+                    None => !upstream_built_ins.contains(id),
+                };
+                wanted
+                    && id.as_str() != current
                     && !info.requires_openai_auth
                     && info.aws.is_none()
                     && info
@@ -60,9 +73,13 @@ impl ChatWidget {
         self.other_provider_models_request_id = Some(request_id);
         let app_event_tx = self.app_event_tx.clone();
         let http_client_factory = self.config.http_client_factory();
+        let picker_filters = self.local_settings.tui.model_picker_models.clone();
         tokio::spawn(async move {
             let fetches = providers.into_iter().map(|(provider_id, info)| {
                 let http_client_factory = http_client_factory.clone();
+                let filters = picker_filters
+                    .as_ref()
+                    .and_then(|filters| filters.get(&provider_id).cloned());
                 async move {
                     let listed = tokio::time::timeout(
                         OTHER_PROVIDER_LIST_TIMEOUT,
@@ -72,7 +89,11 @@ impl ChatWidget {
                     match listed {
                         Ok(Ok(models)) => OtherProviderModels {
                             provider_id,
-                            models: models.into_iter().map(|model| model.slug).collect(),
+                            models: models
+                                .into_iter()
+                                .map(|model| model.slug)
+                                .filter(|slug| model_matches_filters(filters.as_deref(), slug))
+                                .collect(),
                             error: None,
                         },
                         Ok(Err(err)) => OtherProviderModels {
@@ -134,6 +155,7 @@ impl ChatWidget {
                 model_ids.push(format!("{provider_id}:{model}"));
                 items.push(SelectionItem {
                     name: model.clone(),
+                    search_value: Some(format!("{model} {provider_id}")),
                     category_tag: Some(provider_id.clone()),
                     description: Some(format!(
                         "via {provider_id} — switches this conversation to that provider"
@@ -158,5 +180,65 @@ impl ChatWidget {
             });
         }
         (model_ids, items)
+    }
+}
+
+/// `*` matches any run of characters; matching is case-insensitive. No
+/// filters (or an empty list) keeps every model.
+pub(crate) fn model_matches_filters(filters: Option<&[String]>, slug: &str) -> bool {
+    let Some(filters) = filters.filter(|filters| !filters.is_empty()) else {
+        return true;
+    };
+    let slug = slug.to_ascii_lowercase();
+    filters
+        .iter()
+        .any(|pattern| glob_match(&pattern.to_ascii_lowercase(), &slug))
+}
+
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let Some(first) = parts.next() else {
+        return true;
+    };
+    if !text.starts_with(first) {
+        return false;
+    }
+    let mut rest = &text[first.len()..];
+    let mut last: Option<&str> = None;
+    for part in parts {
+        last = Some(part);
+        match rest.find(part) {
+            Some(idx) => rest = &rest[idx + part.len()..],
+            None => return false,
+        }
+    }
+    match last {
+        // No `*` in the pattern: exact match only.
+        None => rest.is_empty(),
+        // Trailing `*` accepts any suffix; otherwise the last segment must end the text.
+        Some(part) => part.is_empty() || rest.is_empty(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_matches_filters;
+
+    #[test]
+    fn picker_filters_use_simple_globs() {
+        let f = |patterns: &[&str], slug: &str| {
+            let patterns: Vec<String> = patterns.iter().map(|p| p.to_string()).collect();
+            model_matches_filters(Some(&patterns), slug)
+        };
+        assert!(model_matches_filters(None, "anything"));
+        assert!(f(&[], "anything"));
+        assert!(f(&["gpt-6*"], "gpt-6-sol"));
+        assert!(f(&["GPT-6*"], "gpt-6-sol-thinking"));
+        assert!(!f(&["gpt-6*"], "gpt-5.6-sol"));
+        assert!(f(&["*flash*"], "gemini-3.8-flash-high"));
+        assert!(f(&["gemini-3.8-flash-high"], "gemini-3.8-flash-high"));
+        assert!(!f(&["gemini-3.8-flash-high"], "gemini-3.8-flash-high-x"));
+        assert!(f(&["*-sol"], "gpt-6-sol"));
+        assert!(!f(&["*-sol"], "gpt-6-sol-thinking"));
     }
 }

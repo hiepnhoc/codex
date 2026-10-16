@@ -248,6 +248,18 @@ history); trong TUI không thấy gì khác ngoài một dòng "Now using … vi
 quả duy nhất: `/resume` có thêm thread cũ trước lúc đổi. Đã test thật hai
 chiều local-proxy (Claude) ↔ cliproxy (gpt-6-sol): model mới nhớ đủ nội dung cũ.
 
+Chọn provider nào được gộp và lọc model (16/10/2026), trong `~/.hcodex/config.toml`:
+
+```toml
+[tui]
+model_picker_providers = ["local-proxy", "cliproxy"]      # bỏ dòng = mọi provider trong config trừ built-in upstream (openai, ollama, lmstudio, bedrock); [] = không gộp
+model_picker_models = { cliproxy = ["gpt-6*", "gemini-3.8*"] }   # glob `*`, không phân biệt hoa thường; provider không có entry = lấy hết
+```
+
+Trong popup `/model` **gõ chữ để lọc** theo tên model hoặc provider (ví dụ gõ
+`sol` hoặc `cliproxy`); vì vậy phím số không còn chọn nhanh được, dùng ↑↓ + Enter.
+Model đang dùng được chọn sẵn khi mở.
+
 Chi tiết:
 - Lúc mở `/model`, hcodex gọi `GET /models` của các provider khác **song song**,
   timeout 3s/provider, cache 5 phút. Provider lỗi (không có key, không chạy)
