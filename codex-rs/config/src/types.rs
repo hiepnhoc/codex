@@ -929,6 +929,18 @@ pub struct Tui {
     #[serde(default = "default_true")]
     pub status_line_use_colors: bool,
 
+    /// hcodex: providers whose models are merged into `/model` next to the
+    /// active provider's. Unset: every provider except the upstream built-ins
+    /// (`openai`, `ollama`, `lmstudio`, Bedrock). Empty list: no merging.
+    #[serde(default)]
+    pub model_picker_providers: Option<Vec<String>>,
+
+    /// hcodex: per-provider glob filters for the merged `/model` rows, e.g.
+    /// `{ cliproxy = ["gpt-6*", "gemini-3.8*"] }`. Providers without an entry
+    /// list every model.
+    #[serde(default)]
+    pub model_picker_models: Option<HashMap<String, Vec<String>>>,
+
     /// Ordered list of terminal title item identifiers.
     ///
     /// When set, the TUI renders the selected items into the terminal window/tab title.

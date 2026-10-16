@@ -4886,6 +4886,31 @@
           "default": {},
           "description": "Startup tooltip availability NUX state persisted by the TUI."
         },
+        "model_picker_models": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "default": null,
+          "description": "hcodex: per-provider glob filters for the merged `/model` rows, e.g. `{ cliproxy = [\"gpt-6*\", \"gemini-3.8*\"] }`. Providers without an entry list every model.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "model_picker_providers": {
+          "default": null,
+          "description": "hcodex: providers whose models are merged into `/model` next to the active provider's. Unset: every provider except the upstream built-ins (`openai`, `ollama`, `lmstudio`, Bedrock). Empty list: no merging.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "mouse_scroll_speed": {
           "default": null,
           "description": "Mouse wheel speed multiplier for transcript scrolling, based on one row per event. Defaults to `1.0`. Positive fractional values slow scrolling; values above `1.0` speed it up.",

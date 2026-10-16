@@ -852,6 +852,12 @@ pub struct Config {
     /// Whether to color status line items with colors from the active syntax theme.
     pub tui_status_line_use_colors: bool,
 
+    /// hcodex: providers merged into the `/model` picker (`[tui] model_picker_providers`).
+    pub tui_model_picker_providers: Option<Vec<String>>,
+
+    /// hcodex: per-provider glob filters for the merged `/model` picker.
+    pub tui_model_picker_models: Option<HashMap<String, Vec<String>>>,
+
     /// Ordered list of terminal title item identifiers for the TUI.
     ///
     /// When unset, the TUI defaults to: `activity` and `project`.
@@ -4674,6 +4680,14 @@ impl Config {
                 .as_ref()
                 .map(|t| t.status_line_use_colors)
                 .unwrap_or(true),
+            tui_model_picker_providers: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.model_picker_providers.clone()),
+            tui_model_picker_models: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.model_picker_models.clone()),
             tui_terminal_title: cfg.tui.as_ref().and_then(|t| t.terminal_title.clone()),
             tui_theme: cfg.tui.as_ref().and_then(|t| t.theme.clone()),
             tui_pet: cfg.tui.as_ref().and_then(|t| t.pet.clone()),

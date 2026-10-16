@@ -269,6 +269,7 @@ impl ChatWidget {
             })];
             items.push(SelectionItem {
                 name: preset.display_name.clone(),
+                search_value: Some(format!("{} {current_provider}", preset.model)),
                 category_tag: Some(current_provider.clone()),
                 description,
                 is_current,
@@ -283,10 +284,11 @@ impl ChatWidget {
         }
 
         model_ids.extend(other_model_ids);
+        let current_index = items.iter().position(|item| item.is_current);
         items.extend(other_items);
         let header = self.model_menu_header(
             "Select Model and Effort",
-            "Models of every configured provider; picking another provider keeps this conversation",
+            "Type to filter by model or provider; picking another provider keeps this conversation",
         );
         self.show_model_selection_view(
             model_ids,
@@ -294,6 +296,10 @@ impl ChatWidget {
                 view_id: Some(view_id),
                 items,
                 header,
+                // hcodex: the merged list is long; typing filters instead of number shortcuts.
+                is_searchable: true,
+                search_placeholder: Some("Type to filter models…".to_string()),
+                initial_selected_idx: current_index,
                 ..SelectionViewParams::picker()
             },
         );
