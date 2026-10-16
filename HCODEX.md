@@ -629,6 +629,23 @@ và mở PR — không PR từ `my-harness`.
 
 ## Sự cố thường gặp
 
+**MCP Jira không có tool / agent tự `curl` Atlassian bằng token trong config** (phát hiện
+16/10/2026): config cũ khai `npx -y @sooperset/mcp-atlassian`, package này **không tồn tại
+trên npm** (404) nên server MCP chưa từng chạy, mỗi lần mở hcodex mất vài giây chờ npx
+thất bại, model không thấy tool `jira` rồi đọc token trong `config.toml` để `curl` thẳng
+REST API (token lọt vào rollout `~/.hcodex/sessions/*.jsonl`; trong sandbox mặc định
+không có mạng nên "không kết nối được"). Đã đổi sang bản thật (Python):
+
+```toml
+[mcp_servers.jira]
+command = "/Users/hiepln/.local/bin/uvx"
+args = ["mcp-atlassian", "--env-file", "/Users/hiepln/.hcodex/jira.env"]   # JIRA_URL, JIRA_USERNAME, JIRA_API_TOKEN
+startup_timeout_sec = 60
+```
+
+`~/.hcodex/jira.env` quyền 0600, token không còn trong `config.toml`. Nên đổi token Jira
+sau khi sửa vì token cũ đã nằm trong rollout.
+
 **`Error: this CLI has no complete local package; install a packaged Codex CLI…`**
 khi mở `hcodex` (từ sync 13/10/2026): upstream mặc định chạy TUI qua một
 app-server daemon nền và tự cài "package" của CLI; bản build từ source không có
