@@ -76,9 +76,12 @@ impl ChatWidget {
             .view_id
             .and_then(|view_id| self.bottom_pane.selected_index_for_present_view(view_id));
         let selected_model = selected_index.and_then(|index| self.model_popup_model_ids.get(index));
+        // Keep a caller-provided default (hcodex: the current model) when no
+        // row was highlighted before the refresh.
         params.initial_selected_idx = model_ids
             .iter()
-            .position(|model| Some(model) == selected_model);
+            .position(|model| Some(model) == selected_model)
+            .or(params.initial_selected_idx);
         self.model_popup_model_ids = model_ids;
         if let Some(view_id) = params.view_id.filter(|_| selected_index.is_some()) {
             self.bottom_pane
