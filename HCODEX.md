@@ -224,8 +224,11 @@ có `/chat/completions` hoặc API riêng (Anthropic, Gemini, Groq, DeepSeek…)
 Lưu ý (20/10/2026): provider khai key bằng `auth.command` (cách wizard `/provider` lưu
 key vào `provider-credentials/<id>.token`) trước đây **không liệt kê được `/models`**
 khi provider bắt buộc auth ở endpoint đó (Hibox trả 401) → `/model` trống, cảnh báo
-"Model metadata … not found". Đã sửa: endpoint catalog áp header auth giống request
-Responses (`codex-rs/model-provider/src/local_proxy_models.rs`), cả cho danh sách gộp.
+"Model metadata … not found". Đã sửa (2 phần, `codex-rs/model-provider/src/local_proxy_models.rs`): endpoint catalog áp
+header auth giống request Responses (cả cho danh sách gộp), và provider command-auth
+giờ có `identity` (tên + URL + hash lệnh, không lộ token) — trước đó trả `None` nên
+manager không phân biệt "chưa lấy" với "đã lấy", `model/list` trả 0 model. Kiểm chứng:
+`hcodex -p hibox` với key trong credential file → `/model` 44 model của hibox.
 
 **Thêm provider ngay trong TUI: `/provider`** (tính năng riêng của hcodex)
 

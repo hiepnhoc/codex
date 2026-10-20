@@ -366,9 +366,9 @@ impl LocalProxyModelsEndpoint {
         } else if let Some(env_key) = self.provider_info.env_key.as_deref() {
             let value = std::env::var(env_key).unwrap_or_default();
             format!("env:{env_key}:{:x}", Sha256::digest(value.as_bytes()))
-        } else if self.provider_info.auth.is_some() {
+        } else if let Some(auth) = self.provider_info.auth.as_ref() {
             // Command auth: the command line is stable even when the token rotates.
-            "command".to_string()
+            format!("command:{:x}", Sha256::digest(auth.command.as_bytes()))
         } else {
             "none".to_string()
         };
@@ -386,11 +386,12 @@ impl LocalProxyModelsEndpoint {
 
 impl ModelsEndpointClient for LocalProxyModelsEndpoint {
     fn identity(&self) -> Option<String> {
-        // A command may return a different token without changing its command
-        // line; do not reuse a persisted catalog across those unobservable scopes.
-        if self.provider_info.auth.is_some() {
-            return None;
-        }
+        // Always report an identity, including for command-backed auth: without
+        // one the manager cannot tell "never fetched" from "fetched for this
+        // provider" (both compare as `None`), so `model/list` returned an empty
+        // catalog for such providers. The command line is part of the identity;
+        // a rotated token behind the same command reuses the catalog until the
+        // cache TTL, which is fine for a model list.
         Some(self.catalog_identity())
     }
 
