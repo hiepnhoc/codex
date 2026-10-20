@@ -471,6 +471,35 @@ Import chạy nền (tóm tắt từng file/thư mục bằng haiku qua proxy); 
 memory liên quan và tóm tắt module liên quan; cuối turn transcript được ghi về
 server để trích memory. Debug: `OPENVIKING_DEBUG=1` → `~/.openviking/logs/codex-hooks.log`.
 
+### Kiểm tra tốc độ 20/10/2026 (hcodex "càng ngày càng chậm")
+
+Đo một turn "Reply OK" trong `digital-monorepo`, tách theo pha từ rollout:
+
+| Pha | Thời gian |
+|---|---|
+| Khởi động process (config, MCP jira+openviking, skills) | 2–6s |
+| Hook SessionStart (sweep + profile) | 0.2–1.7s |
+| Hook UserPromptSubmit (recall) | **1.2s ấm, 3–18s khi lạnh** |
+| Model trả lời (claude-sonnet-5.5 qua Kiro) | 2.4–4s |
+| Hook Stop (auto-capture) | 0.3s |
+
+Nguyên nhân "lúc nhanh lúc chậm" là ở recall:
+1. **ollama unload model embed sau 5 phút idle** (`keep_alive` mặc định); mỗi lần
+   recall sau idle phải load lại nomic-embed-text 3–6s (server log:
+   `embedding slow call … duration_ms=3500–5900`; `ollama.err.log` "loaded runners"
+   5 lần/ngày). Fix: `OLLAMA_KEEP_ALIVE=-1` trong
+   `~/Library/LaunchAgents/com.ollama.serve.plist` (model ~300 MB RAM, giữ thường trú).
+2. **VLM claude-haiku-4.5 qua Kiro bị `Input is too long`** (AmazonQ
+   `CONTENT_LENGTH_EXCEEDS_THRESHOLD`) khi OpenViking tạo working memory lúc commit
+   → retry 3 lần rồi bỏ, memory không được rút trích. Fix: `vlm` và
+   `query_planner` trong `~/.openviking/ov.conf` đổi sang `claude-sonnet-5.5`.
+
+Không phải nguyên nhân: kho dữ liệu còn nhỏ (vectordb 112 MB, 267 memory, 1.158
+session, 9.837 file resource), state dir 14 file, khối recall chèn vào prompt ~5k ký tự
+(~1,2k token), bảng skill ~22k ký tự. Lưu ý thêm: phiên TUI để mở nhiều ngày thì
+context tích luỹ hàng trăm nghìn token, model trả lời chậm dần là do context, không
+phải OpenViking; `/new` hoặc `/compact` sẽ thấy nhanh lại.
+
 ### Cách dùng hằng ngày
 
 **1. Index một repo bất kỳ (1 lệnh)** — làm 1 lần, và làm lại khi repo đổi nhiều:
