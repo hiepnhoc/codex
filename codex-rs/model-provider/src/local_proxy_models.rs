@@ -199,18 +199,20 @@ impl LocalProxyModelsEndpoint {
             .clone()
             .map(RedactedString::into_inner)
             .or_else(|| self.provider_info.api_key().ok().flatten());
-        let bearer = match configured_bearer {
-            Some(bearer) => Some(bearer),
-            None => match self.auth_manager.as_ref() {
-                Some(auth_manager) => auth_manager
-                    .auth()
-                    .await
-                    .and_then(|auth| auth.get_token().ok()),
-                None => None,
-            },
-        };
-        if let Some(key) = bearer {
-            request = request.bearer_auth(key);
+        match configured_bearer {
+            Some(key) => request = request.bearer_auth(key),
+            None => {
+                // Fall back to the auth manager. Command-backed provider auth
+                // (`[model_providers.x.auth] command = ...`) resolves to a header
+                // map rather than a plain token, so apply the provider's auth
+                // headers the same way the Responses request path does.
+                if let Some(auth_manager) = self.auth_manager.as_ref()
+                    && let Some(auth) = auth_manager.auth().await
+                {
+                    let headers = crate::auth::auth_provider_from_auth(&auth).to_auth_headers();
+                    request = request.headers(headers);
+                }
+            }
         }
         let response = request
             .send()
@@ -346,7 +348,9 @@ pub async fn list_models_for_provider(
     provider_info: ModelProviderInfo,
     http_client_factory: HttpClientFactory,
 ) -> CoreResult<Vec<ModelInfo>> {
-    let endpoint = LocalProxyModelsEndpoint::new(provider_info, /*auth_manager*/ None);
+    // Command-backed `auth` needs its own manager so the credential command runs.
+    let auth_manager = crate::auth::auth_manager_for_provider(/*auth_manager*/ None, &provider_info);
+    let endpoint = LocalProxyModelsEndpoint::new(provider_info, auth_manager);
     timeout(MODELS_REFRESH_TIMEOUT, endpoint.fetch(http_client_factory))
         .await
         .map_err(|_| CodexErr::Timeout)?
