@@ -47,7 +47,7 @@ fn proxy_models_replace_openai_identity_without_changing_guidance() {
 }
 
 #[test]
-fn command_auth_disables_file_cache_without_exposing_credential_scope() {
+fn command_auth_identity_hides_the_command_line() {
     use codex_protocol::config_types::ModelProviderAuthInfo;
     use std::num::NonZeroU64;
 
@@ -70,7 +70,10 @@ fn command_auth_disables_file_cache_without_exposing_credential_scope() {
         /*auth_manager*/ None,
     );
 
-    assert_eq!(endpoint.identity(), None);
+    let identity = endpoint.identity().expect("command-auth providers keep a catalog identity");
+    assert!(identity.starts_with("Proxy|https://proxy.example/v1|command:"));
+    assert!(!identity.contains("token-fetcher"));
+    assert!(!identity.contains("account-a"));
 }
 
 #[test]
@@ -95,7 +98,7 @@ fn cache_key_separates_auth_scopes_without_exposing_tokens() {
 }
 
 #[test]
-fn command_auth_disables_persistent_model_cache() {
+fn command_auth_keeps_persistent_model_cache() {
     use codex_protocol::config_types::ModelProviderAuthInfo;
     use std::num::NonZeroU64;
 
@@ -118,7 +121,11 @@ fn command_auth_disables_persistent_model_cache() {
         /*auth_manager*/ None,
     );
 
-    assert_eq!(endpoint.identity(), None);
+    // Without an identity the manager could not tell "never fetched" from
+    // "fetched for this provider" and `model/list` came back empty.
+    let identity = endpoint.identity().expect("identity");
+    assert!(identity.contains("|command:"));
+    assert!(!identity.contains("provider-credential"));
 }
 
 #[test]
