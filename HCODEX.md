@@ -213,6 +213,7 @@ có `/chat/completions` hoặc API riêng (Anthropic, Gemini, Groq, DeepSeek…)
 | Provider | Cách bật | Ghi chú |
 |---|---|---|
 | `local-proxy` | (mặc định, không cần gì) | proxy `:8181`, 16 model claude/gpt |
+| `hibox` | key trong `~/.hcodex/provider-credentials/hibox.token` (0600, đọc qua `hcodex provider-credential hibox`) | proxy local `:8318`, 27 model (gpt-6-*, gemini-3.x, claude-*); `hcodex -p hibox` = gpt-6-sol; có trong `/model` gộp (thêm 20/10/2026) |
 | `openrouter` | `export OPENROUTER_API_KEY=sk-or-...` | Responses API native (đã verify); ~427 model; list model không cần key, chạy turn mới cần |
 | `litellm` | chạy LiteLLM ở `:4000` (xem dưới) | gateway sang Anthropic/Gemini/Groq/DeepSeek… |
 | `azure` | bỏ comment trong config, điền resource + `AZURE_OPENAI_API_KEY` | có `query_params.api-version` |
