@@ -426,6 +426,30 @@ responses_extensions = true   # provider hiểu đủ dialect OpenAI; false = é
 Kiểm tra nhanh: `hcodex exec "dùng spawn_agent tạo 1 subagent trả lời pong,
 wait_agent rồi báo kết quả"` phải thấy subagent chạy thay vì "không có tool".
 
+## Codemap cho monorepo (20/10/2026, chỉ local)
+
+Vì sao: soi phiên `digital-monorepo` lớn nhất (412 lệnh tool) thấy 111 lệnh chỉ để mò cấu
+trúc (`rg --files`, `ls`, `sed -n`), 0 lần dùng tool OpenViking. OpenViking recall không
+thay được bước định hướng vì nó chọn theo câu hỏi; repo 32 service không có AGENTS.md
+nên phiên nào cũng quét lại.
+
+Cách làm: dùng cơ chế `AGENTS.override.md` của codex (ưu tiên hơn `AGENTS.md`, tự nạp
+mọi file trên đường từ project root tới cwd, tổng ≤ 32 KB `project_doc_max_bytes`):
+
+- `digital-monorepo/AGENTS.override.md` (~19 KB): luật dùng map, chỉ mục 26 service
+  (stack + mục đích), tổng quan repo (họ service, quy ước Go/Quarkus/Node, giao tiếp
+  Dapr/REST/gRPC, infra CodeBuild/ECR, DB theo service, git/Jira prefix, "where to start").
+- `<service>/AGENTS.override.md` (≤ 8 KB mỗi cái): purpose, stack, entrypoint, layout
+  thật, integrations, config, lệnh build/test, "common tasks: muốn làm X thì sửa Y",
+  gotchas. Tự nạp khi cwd nằm trong service; từ root thì map bảo agent `cat` nó.
+- Chỉ local: tên file nằm trong `.git/info/exclude` (cùng chỗ `.claude`, `.opencode`),
+  `git status` không thấy, không commit cho team.
+
+Tạo bằng 4 agent đọc repo song song (chỉ đọc), ghép lại bằng script; làm lại khi
+layout đổi: xoá các file `AGENTS.override.md` rồi chạy lại quy trình (hoặc dùng skill
+`$codemap` của pack cho từng service). Map có ghi vị trí credential commit nhầm trong
+repo (không chép giá trị) — nên xử lý.
+
 ## Memory + RAG cho repo lớn: OpenViking (07/10/2026)
 
 Vấn đề: mỗi session mới lại phải quét các module trong `digital-monorepo` → tốn
