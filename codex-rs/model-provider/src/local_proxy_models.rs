@@ -367,8 +367,18 @@ impl LocalProxyModelsEndpoint {
             let value = std::env::var(env_key).unwrap_or_default();
             format!("env:{env_key}:{:x}", Sha256::digest(value.as_bytes()))
         } else if let Some(auth) = self.provider_info.auth.as_ref() {
-            // Command auth: the command line is stable even when the token rotates.
-            format!("command:{:x}", Sha256::digest(auth.command.as_bytes()))
+            // Command auth: hash the whole invocation (command, args, cwd) so two
+            // providers sharing a credential helper binary never share a catalog;
+            // the line is stable even when the token it returns rotates.
+            let mut digest = Sha256::new();
+            digest.update(auth.command.as_bytes());
+            for arg in &auth.args {
+                digest.update(b"\0");
+                digest.update(arg.as_bytes());
+            }
+            digest.update(b"\0");
+            digest.update(auth.cwd.as_path().to_string_lossy().as_bytes());
+            format!("command:{:x}", digest.finalize())
         } else {
             "none".to_string()
         };
