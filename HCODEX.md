@@ -399,6 +399,31 @@ Lưu ý: qua cliproxy/Kiro mỗi subagent nhân thêm tải (3–6s/request, quo
 khoản); giữ `max_concurrent_threads_per_session` ≤ 3. OpenViking hooks chỉ chạy
 trên thread chính; subagent vẫn có MCP `search`/`read` của OpenViking.
 
+### Review song song bằng subagent, model khác model đã code (21/10/2026)
+
+Kịch bản: code bằng model rẻ (gemini) rồi muốn model mạnh (gpt-6-sol) review mà không
+tốn token quét lại source. Subagent **cùng provider** với cha nhưng chọn được model
+khác trong catalog của provider đó (hibox và cliproxy đều có gemini + gpt-6-sol).
+
+Skill local `~/.hcodex/skills/hcodex-parallel-review/SKILL.md` (`$hcodex-parallel-review`):
+cha lấy `git diff` một lần, spawn 2–3 subagent `fork_turns="none"` (không kế thừa
+context dài của cha) với model mày chỉ định, mỗi con một trọng tâm (correctness /
+tests / conventions), chỉ đọc file trong diff, trả findings `[severity] file:line`;
+cha `wait_agent` rồi gộp. Đã test: cha gemini-3.8-flash-high trên hibox spawn 2 con
+gpt-6-sol, tổng ~8 phút (con "tests" chạy `cargo test` nên lâu; bảo nó bỏ qua nếu không cần).
+
+```
+hcodex -p hibox -m gemini-3.8-flash-high
+> …code xong…
+> $hcodex-parallel-review review uncommitted changes with 2 subagents on gpt-6-sol: correctness and tests
+```
+
+Lưu ý `[agents] default_subagent_model` phải tồn tại trong catalog của provider đang
+dùng; `config.toml` đặt `claude-sonnet-5.5` (local-proxy), nên profile `hibox` và
+`cliproxy` ghi đè bằng `gpt-6-sol`. Sai model thì spawn báo "Unknown model … Available
+models: …" và cha tự chọn lại. Song song = nhanh hơn, không rẻ hơn: mỗi con là một
+request stream riêng (diff + hướng dẫn ≈ vài nghìn token mỗi con).
+
 ### Vì sao cần sửa core: tool `namespace` và item `agent_message` bị proxy bỏ rơi
 
 Upstream gửi tool multi-agent v2 (và tool MCP) dưới dạng **một** tool
