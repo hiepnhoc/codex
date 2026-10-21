@@ -690,6 +690,29 @@ Chạy smoke test lẻ bất cứ lúc nào: `scripts/harness-smoke.sh` (mặc �
 Muốn gửi thay đổi ngược lên upstream thì tách commit đó ra branch riêng từ `main`
 và mở PR — không PR từ `my-harness`.
 
+## Tìm lại session (`/resume` không thấy phiên cũ)
+
+Ba lý do thường gặp và cách xử lý:
+
+1. **`/resume` chỉ liệt kê phiên mở từ đúng thư mục hiện tại.** Phiên mở ở
+   `digital-monorepo/esign-service` không hiện khi mày đứng ở root monorepo và ngược
+   lại. Trong picker bấm **Ctrl+A** để xem mọi thư mục (có thêm cột CWD), hoặc chạy
+   `hcodex resume --all`.
+2. **Ô tìm kiếm của picker chỉ khớp tên thread và câu đầu tiên mày gõ**, không tìm trong
+   nội dung. Mỗi trang 25 phiên, cuộn xuống để tải thêm; Ctrl+E xem trước transcript.
+3. Phiên chạy bằng `hcodex exec` bị ẩn; thêm `--include-non-interactive` nếu cần.
+
+Tìm theo **nội dung** (từ khoá bất kỳ trong hội thoại, kể cả câu trả lời của model):
+
+```bash
+scripts/hc-find-session.sh "ccq" 30          # từ khoá, số ngày (mặc định 30)
+# 2026-10-21T04:26  github/digital-monorepo/esign-service  01a15cb5-...  check cho tao chổ gen hop đồng ccq
+hcodex resume 01a15cb5-da89-7b31-823c-98a86cb5726a
+```
+
+In ra ngày, thư mục, thread id, câu hỏi đầu tiên, mới nhất trước. Đặt tên thread
+(`/rename`-tương đương: `hcodex resume` nhận cả tên) giúp tìm bằng picker về sau.
+
 ## Sự cố thường gặp
 
 **MCP Jira không có tool / agent tự `curl` Atlassian bằng token trong config** (phát hiện
