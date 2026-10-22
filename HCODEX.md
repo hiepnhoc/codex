@@ -399,66 +399,45 @@ Lưu ý: qua cliproxy/Kiro mỗi subagent nhân thêm tải (3–6s/request, quo
 khoản); giữ `max_concurrent_threads_per_session` ≤ 3. OpenViking hooks chỉ chạy
 trên thread chính; subagent vẫn có MCP `search`/`read` của OpenViking.
 
-### Workflow nhiều agent: orchestrator → dev → QC (22/10/2026)
+### Đội agent kiểu oh-my-opencode: role + skill `$orch` (dọn lại 22/10/2026)
 
-Cơ chế upstream dùng: **agent roles**. Mỗi file `~/.hcodex/agents/<role>.toml` (tự
-phát hiện, không cần khai trong config.toml) định nghĩa một `agent_type` cho
-`spawn_agent`: `description` (model cha thấy khi chọn role), `model`,
-`model_reasoning_effort`, `developer_instructions` (luật của vai trò), `nickname_candidates`.
-Subagent luôn cùng provider với cha, nên model trong role phải có trong catalog của
-provider đang dùng (hibox và cliproxy đều có gemini-3.8-flash-high và gpt-6-sol).
+Ba tầng, không trộn:
+- **Role** (`~/.hcodex/agents/<role>.toml`, cơ chế agent roles của upstream, tự phát hiện) = *ai chạy*:
+  model, effort, `developer_instructions` của một con. Không chứa thứ tự việc.
+- **Skill** (`~/.hcodex/skills/<tên>/SKILL.md`) = *làm thế nào*: workflow, bước, rẽ nhánh. Skill điều khiển role qua `spawn_agent(agent_type=...)`.
+- **Profile** (`-p …`) = provider/model/sandbox của phiên. Không còn profile `orch`; orchestrator là bất kỳ phiên nào mày gõ `$orch`.
 
-| Role | Model | Việc |
-|---|---|---|
-| (cha = orchestrator) | model của phiên, ví dụ `gpt-6-sol` | lên plan, chia task có acceptance criteria, điều phối vòng lặp, báo cáo |
-| `dev` | gemini-3.8-flash-high | làm đúng một task, chạy build/test, trả CHANGE REPORT (FILES/TESTS/NOTES/STATUS) |
-| `qc` | gpt-6-sol, effort high | chỉ đọc + chạy test, trả `VERDICT: QC: PASS|FAIL` + FINDINGS `[severity] file:line` |
+| Role | Model | Chỉ đọc | Việc |
+|---|---|---|---|
+| `explore` | gemini-3.8-flash-high, low | có | tra cứu nhanh, trả `file:line` |
+| `research` | gpt-6-sol, high | có | options / tradeoff / rủi ro / khuyến nghị, có bằng chứng |
+| `plan` | gpt-6-sol, high | có | PLAN: task đánh số, scope, acceptance criteria, test strategy, phụ thuộc, rủi ro |
+| `dev` | gemini-3.8-flash-high, medium | không | làm đúng một task, chạy test, trả CHANGE REPORT |
+| `qc` | gpt-6-sol, high | có | nghiệm thu theo criteria, chạy test, `VERDICT: QC: PASS/FAIL` + findings |
 
-Vòng lặp nằm trong skill local `$hcodex-dev-qc` (`~/.hcodex/skills/hcodex-dev-qc/SKILL.md`):
-mỗi task → `spawn_agent(agent_type="dev", fork_turns="none")` → `wait_agent` → `spawn_agent(agent_type="qc")`
-với CHANGE REPORT → `wait_agent` → PASS thì sang task sau; FAIL thì `followup_task` cho **cùng** dev
-với FINDINGS (dev giữ context), rồi `followup_task` cho cùng qc để verify lại; tối đa 3 vòng
-rồi dừng báo mày. Subagent không kế thừa history cha (`fork_turns="none"`) nên mỗi message
-giao việc phải tự đủ (task, criteria, đường dẫn codemap, lệnh test).
+Subagent luôn cùng provider với cha nên model trong role phải có trong catalog của
+provider đang dùng (hibox, cliproxy có đủ). `[agents] default_subagent_model` trong profile
+hibox/cliproxy = `gpt-6-sol` (mặc định `claude-sonnet-5.5` chỉ có ở local-proxy).
 
-```
-hcodex -p hibox -m gpt-6-sol
-> $hcodex-dev-qc Thêm endpoint X vào esign-service, có test; dùng dev→QC workflow
-```
-
-**Đội agent kiểu oh-my-opencode (22/10/2026)**: `~/.hcodex/agents/` có 5 role —
-`explore` (gemini flash, tra cứu nhanh chỉ đọc), `research` (gpt-6-sol high, điều tra cách
-làm/rủi ro, chỉ đọc), `plan` (gpt-6-sol high, ra task list có acceptance criteria, chỉ đọc),
-`dev` (gemini, làm một task), `qc` (gpt-6-sol high, nghiệm thu, chỉ đọc). Orchestrator = profile
-`-p orch`; luật điều phối trong `developer_instructions`: câu hỏi → explore/research; đổi code
-→ plan trước (việc > 1 file) → duyệt plan với mày nếu lớn → từng task dev → qc, FAIL thì
-followup cùng dev/qc, 3 vòng thì dừng; tối đa 2 dev song song, 4 agent tổng.
-
-**Agent orchestrator có sẵn (kiểu oh-my-opencode): profile `-p orch`.** Codex không có
-persona orchestrator riêng; agent gốc của phiên chính là orchestrator, và persona của nó
-đặt bằng `developer_instructions` trong profile. `~/.hcodex/orch.config.toml` = hibox +
-gpt-6-sol effort high + luật: không tự code, việc đổi code đi theo vòng `$hcodex-dev-qc`
-(không cần gõ skill), câu hỏi/điều tra thì spawn role `explore` (gemini flash, chỉ đọc,
-trả lời kèm `file:line`, `~/.hcodex/agents/explore.toml`), tối đa 2 dev chạy song song,
-4 agent tổng. Đã test: `hcodex -p orch exec -s workspace-write 'Add multiply…'` → tự
-spawn dev (gemini) → qc (gpt-6-sol) PASS, 107s, ~62k token, không cần nhắc skill; câu hỏi
-"divide định nghĩa ở đâu" → explore trả lời `mathx.py:9-11` trong 32s.
+**Workflow nằm trong skill `$orch`** (`~/.hcodex/skills/orch/SKILL.md`): phân loại
+(câu hỏi → explore/research; đổi code → plan trước, trừ sửa vặt một file; việc lớn đưa mày
+duyệt plan) → từng task `dev` → `qc` → PASS sang task sau, FAIL thì `followup_task` cùng dev
+rồi cùng qc, tối đa 3 vòng → báo cáo chỉ gồm điều agent đã xác nhận. Tối đa 2 dev song song,
+4 agent tổng; con lỗi thì followup chính nó, không spawn con không có role.
 
 ```
-hcodex -p orch            # phiên orchestrator; gõ việc bình thường, nó tự chia cho explore/dev/qc
+hcodex -p hibox -m gpt-6-sol        # hoặc -p cliproxy; model của phiên = orchestrator
+> $orch Thêm endpoint GET /contracts/{id}/status vào esign-service, có test
+> $daily-dev …                       # việc nhỏ, làm trong phiên như bình thường
 ```
 
-Lưu ý TOML: trong profile, `developer_instructions` phải đứng **trước** `[agents]`, nếu
-không nó bị hiểu là `agents.developer_instructions` và profile lỗi parse.
+Theo dõi từng con: `/subagents` hoặc `Alt+←/→`. Subagent kế thừa sandbox của phiên: TUI
+mặc định workspace-write là đủ; `hcodex exec` phải thêm `-s workspace-write`.
 
-Theo dõi: `/subagents` hoặc `Alt+←/→` nhảy vào từng con. Chi phí: mỗi vòng dev + qc là 2
-request riêng; QC chạy test nên lâu hơn review thường.
-
-Đã test trên repo nháp (`hcodex -p hibox -m gpt-6-sol exec -s workspace-write '$hcodex-dev-qc …'`):
-cha lên plan 1 task → dev (gemini) viết `subtract`/`divide` + 4 test pytest → qc (gpt-6-sol)
-chạy lại test, `VERDICT: QC: PASS` → cha báo cáo; 147s, ~94k token. Lưu ý sandbox: subagent
-kế thừa sandbox của phiên, `hcodex exec` mặc định read-only nên dev sẽ báo `BLOCKED`;
-TUI mặc định workspace-write thì bình thường, exec thì thêm `-s workspace-write`.
+Đã test (khi còn ở dạng profile + skill `hcodex-dev-qc`, logic giống hệt): task
+"Stats mean/median/mode + test + README" → dev gemini → qc gpt-6-sol bắt `__pycache__`
+ngoài phạm vi → sửa → PASS, 13 test, 314s, ~72k token. Bài học đã ghi vào skill: orch tự
+lên plan thay vì gọi `plan`, và spawn con không role khi dev trả thiếu → giờ cấm cả hai.
 
 ### Review song song bằng subagent, model khác model đã code (21/10/2026)
 
