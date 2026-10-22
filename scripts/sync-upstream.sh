@@ -11,6 +11,8 @@
 #   scripts/sync-upstream.sh --no-build   git sync only
 #   scripts/sync-upstream.sh --build-only skip git, just build + gate + install
 #   scripts/sync-upstream.sh --rollback   reinstall the binaries backed up by the last run
+#   scripts/sync-upstream.sh --unattended non-interactive (launchd): rebase cleanly -> build + gate + install;
+#                                         any conflict -> abort, reset to the pre-sync tag, report, exit 2
 #   env SKIP_TESTS=1                      skip the cargo test gate (still smoke-tests)
 #   env BUILD_JOBS=4 BUILD_NICE=15         parallelism / niceness for cargo (keeps the machine usable)
 #   env HARNESS_BRANCH=<name>             harness branch (default my-harness)
@@ -31,6 +33,13 @@ if [[ -n "${CODEX_HOME:-}" && "$CODEX_HOME" != "$HCODEX_HOME" ]]; then
   echo "note: CODEX_HOME=$CODEX_HOME is set in this shell; backups/cache still use $HCODEX_HOME" >&2
 fi
 MODE="${1:-}"
+UNATTENDED=0
+if [[ "$MODE" == "--unattended" ]]; then
+  UNATTENDED=1; MODE=""
+  export BUILD_JOBS="${BUILD_JOBS:-2}"
+  mkdir -p "$HCODEX_HOME/log"
+  echo "===== $(date '+%F %T') unattended sync start ====="
+fi
 
 # Files the harness changes vs upstream; upstream commits touching these are
 # the ones that can break a rebase or a hook point.
@@ -90,6 +99,15 @@ git_sync() {
   say "rebase $BRANCH onto main"
   git checkout -q "$BRANCH"
   if ! git rebase main; then
+    if [[ "$UNATTENDED" == "1" ]]; then
+      echo "rebase conflict in unattended mode; aborting and restoring $tag" >&2
+      git diff --name-only --diff-filter=U | sed 's/^/  conflict: /' >&2
+      git rebase --abort || true
+      git checkout -q "$BRANCH"
+      git reset -q --hard "$tag"
+      echo "===== $(date '+%F %T') unattended sync: CONFLICT, harness left at $tag (main is already fast-forwarded). Run the sync manually. =====" >&2
+      exit 2
+    fi
     cat >&2 <<MSG
 
 Rebase conflict. Resolve the files above, then:
@@ -108,16 +126,30 @@ MSG
 
 build_gate_install() {
   cd "$ROOT/codex-rs"
-  local v8_dir="$HOME/.cargo/.rusty_v8/codex-v150.4.0"
-  if [[ -d "$v8_dir" ]]; then
+  # Pick the cached V8 prebuilt matching Cargo.lock (dirs are ~/.cargo/.rusty_v8/codex-v<ver>).
+  local v8_lock v8_dir
+  v8_lock="$(grep -A1 '^name = "v8"$' Cargo.lock | grep version | head -1 | cut -d'"' -f2 || true)"
+  v8_dir="$HOME/.cargo/.rusty_v8/codex-v${v8_lock:-150.4.0}"
+  if [[ ! -d "$v8_dir" ]]; then
+    v8_dir="$(ls -d "$HOME"/.cargo/.rusty_v8/codex-v* 2>/dev/null | sort -V | tail -1 || true)"
+    echo "WARNING: Cargo.lock pins v8 ${v8_lock:-?} but no cached artifacts for it; using ${v8_dir:-none}" >&2
+    echo "         download the matching rusty-v8-v$v8_lock assets first (see HCODEX.md)" >&2
+    if [[ "$UNATTENDED" == "1" && -n "$v8_lock" ]]; then
+      echo "===== unattended sync: V8 $v8_lock assets missing, not building. Git is synced; run --build-only after fetching V8. =====" >&2
+      exit 3
+    fi
+  fi
+  if [[ -n "$v8_dir" && -d "$v8_dir" ]]; then
     export RUSTY_V8_ARCHIVE="$v8_dir/librusty_v8_ptrcomp_sandbox_release_aarch64-apple-darwin.a.gz"
     export RUSTY_V8_SRC_BINDING_PATH="$v8_dir/src_binding_ptrcomp_sandbox_release_aarch64-apple-darwin.rs"
   fi
-  local v8_lock
-  v8_lock="$(grep -A1 '^name = "v8"$' Cargo.lock | grep version | head -1 | cut -d'"' -f2 || true)"
-  if [[ -n "$v8_lock" && "$v8_dir" != *"$v8_lock"* ]]; then
-    echo "WARNING: Cargo.lock pins v8 $v8_lock but the cached artifacts are in $v8_dir" >&2
-    echo "         download the matching rusty-v8-v$v8_lock assets first (see HCODEX.md)" >&2
+
+  # The toolchain pinned by rust-toolchain.toml must be installed (rustup would prompt/download otherwise).
+  local chan
+  chan="$(grep -E '^channel' rust-toolchain.toml 2>/dev/null | cut -d'"' -f2 || true)"
+  if [[ -n "$chan" ]] && ! rustup toolchain list | grep -q "^$chan"; then
+    echo "toolchain $chan missing; installing" >&2
+    rustup toolchain install "$chan" --profile minimal -c rustfmt -c clippy
   fi
 
   # Back up what is installed now so --rollback can restore it after a bad build.
@@ -156,6 +188,10 @@ build_gate_install() {
   rm -rf target/debug/incremental
   echo "cleaned target/debug/incremental (disk free: $(df -h . | awk 'NR==2{print $4}'))"
   echo "reminder: codex-ide types -> cd ~/github/codex-ide && hcodex app-server generate-ts --out src/protocol && pnpm exec tsc --noEmit"
+  if [[ "$UNATTENDED" == "1" ]]; then
+    git push -q origin "$BRANCH" 2>/dev/null && echo "pushed $BRANCH to origin" || echo "(push to origin skipped/failed)"
+    echo "===== $(date '+%F %T') unattended sync: OK, installed $(git -C "$ROOT" rev-parse --short HEAD) ====="
+  fi
 }
 
 case "$MODE" in
