@@ -718,6 +718,17 @@ Script bảo vệ mày thế nào:
 - File untracked (như `docs/open-skills/scripts/`) không chặn sync; chỉ file đã
   sửa chưa commit mới chặn.
 
+**Sync tự động hằng tuần (22/10/2026)**: launchd `~/Library/LaunchAgents/com.hiepln.hcodex-sync.plist`
+chạy `scripts/sync-upstream.sh --unattended` **Chủ nhật 02:07**, log `~/.hcodex/log/sync.log`.
+Chế độ `--unattended`: fetch → tag `harness-pre-sync-*` → ff `main` → rebase `my-harness`;
+rebase **sạch** thì tự cài toolchain theo `rust-toolchain.toml` nếu thiếu, chọn V8 cache theo
+`Cargo.lock` (`~/.cargo/.rusty_v8/codex-v<ver>`; thiếu thì dừng, exit 3, git đã sync), build
+`-j2` nice 15, test gate, smoke, cài, push `my-harness`. Có **conflict** thì `rebase --abort`,
+reset `my-harness` về tag, ghi danh sách file conflict vào log, exit 2; `main` vẫn đã lên
+upstream, hôm sau chạy sync tay (hoặc nhờ agent) để sửa conflict. Tắt job:
+`launchctl unload ~/Library/LaunchAgents/com.hiepln.hcodex-sync.plist`; chạy thử ngay:
+`launchctl start com.hiepln.hcodex-sync`.
+
 **Máy thiếu RAM khi build**: supervisor của session (và macOS) kill cargo ở bước
 link test TUI hoặc link binary release. Cách đã dùng ngày 12/10/2026: chạy gate
 với `BUILD_JOBS=2`, bỏ test TUI (`SKIP_TESTS=1`, release build vẫn compile crate
