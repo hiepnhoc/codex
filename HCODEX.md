@@ -426,6 +426,23 @@ hcodex -p hibox -m gpt-6-sol
 > $hcodex-dev-qc Thêm endpoint X vào esign-service, có test; dùng dev→QC workflow
 ```
 
+**Agent orchestrator có sẵn (kiểu oh-my-opencode): profile `-p orch`.** Codex không có
+persona orchestrator riêng; agent gốc của phiên chính là orchestrator, và persona của nó
+đặt bằng `developer_instructions` trong profile. `~/.hcodex/orch.config.toml` = hibox +
+gpt-6-sol effort high + luật: không tự code, việc đổi code đi theo vòng `$hcodex-dev-qc`
+(không cần gõ skill), câu hỏi/điều tra thì spawn role `explore` (gemini flash, chỉ đọc,
+trả lời kèm `file:line`, `~/.hcodex/agents/explore.toml`), tối đa 2 dev chạy song song,
+4 agent tổng. Đã test: `hcodex -p orch exec -s workspace-write 'Add multiply…'` → tự
+spawn dev (gemini) → qc (gpt-6-sol) PASS, 107s, ~62k token, không cần nhắc skill; câu hỏi
+"divide định nghĩa ở đâu" → explore trả lời `mathx.py:9-11` trong 32s.
+
+```
+hcodex -p orch            # phiên orchestrator; gõ việc bình thường, nó tự chia cho explore/dev/qc
+```
+
+Lưu ý TOML: trong profile, `developer_instructions` phải đứng **trước** `[agents]`, nếu
+không nó bị hiểu là `agents.developer_instructions` và profile lỗi parse.
+
 Theo dõi: `/subagents` hoặc `Alt+←/→` nhảy vào từng con. Chi phí: mỗi vòng dev + qc là 2
 request riêng; QC chạy test nên lâu hơn review thường.
 
