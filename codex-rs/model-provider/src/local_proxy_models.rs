@@ -209,7 +209,11 @@ impl LocalProxyModelsEndpoint {
                 if let Some(auth_manager) = self.auth_manager.as_ref()
                     && let Some(auth) = auth_manager.auth().await
                 {
-                    let headers = crate::auth::auth_provider_from_auth(&auth).to_auth_headers();
+                    let headers = crate::auth::auth_provider_from_auth(&auth)
+                        .to_auth_headers()
+                        .map_err(|err| {
+                            CodexErr::Stream(format!("local-proxy models auth: {err}"))
+                        })?;
                     request = request.headers(headers);
                 }
             }
