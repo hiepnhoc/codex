@@ -525,6 +525,21 @@ layout đổi: xoá các file `AGENTS.override.md` rồi chạy lại quy trình
 `$codemap` của pack cho từng service). Map có ghi vị trí credential commit nhầm trong
 repo (không chép giá trị) — nên xử lý.
 
+### `daily-dev` bản riêng của hcodex + codemap tự sinh (22/10/2026)
+
+`~/.hcodex/skills/daily-dev/` giờ là **bản chép riêng** (trước là symlink sang
+`~/.codex/skills/daily-dev`, sửa là dính cả codex gốc). Pack gốc giữ nguyên. Bản hcodex
+thêm mục **Repo Orientation** chạy trước mọi route:
+1. Có `AGENTS.override.md` → đọc, đi thẳng vào file; cấm `rg --files`/`ls -R` cả service.
+2. Chưa có → một lượt định hướng có giới hạn rồi tự viết `AGENTS.override.md` (≤ 8 KB,
+   kèm `<module>/AGENTS.override.md` cho module đang làm), thêm tên file vào
+   `.git/info/exclude`, báo mày một dòng. Lần sau vào repo đó không mò lại.
+3. Map cũ: dòng đầu mỗi map ghi `<!-- codemap: generated <ngày> at commit <sha> -->`;
+   agent so với `git rev-parse HEAD`, khác thì `git diff --stat <sha>..HEAD -- <module>`;
+   module đổi nhiều thì làm mới phần map đó trước; gặp đường dẫn/lệnh sai thì sửa map
+   ngay trong lượt và báo "codemap updated". Map là gợi ý, code là sự thật.
+Map của `digital-monorepo` đã được đóng dấu commit `aedda8cf2` (20/10).
+
 ## Memory + RAG cho repo lớn: OpenViking (07/10/2026)
 
 Vấn đề: mỗi session mới lại phải quét các module trong `digital-monorepo` → tốn
