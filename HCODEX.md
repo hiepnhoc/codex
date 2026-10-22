@@ -426,6 +426,14 @@ hcodex -p hibox -m gpt-6-sol
 > $hcodex-dev-qc Thêm endpoint X vào esign-service, có test; dùng dev→QC workflow
 ```
 
+**Đội agent kiểu oh-my-opencode (22/10/2026)**: `~/.hcodex/agents/` có 5 role —
+`explore` (gemini flash, tra cứu nhanh chỉ đọc), `research` (gpt-6-sol high, điều tra cách
+làm/rủi ro, chỉ đọc), `plan` (gpt-6-sol high, ra task list có acceptance criteria, chỉ đọc),
+`dev` (gemini, làm một task), `qc` (gpt-6-sol high, nghiệm thu, chỉ đọc). Orchestrator = profile
+`-p orch`; luật điều phối trong `developer_instructions`: câu hỏi → explore/research; đổi code
+→ plan trước (việc > 1 file) → duyệt plan với mày nếu lớn → từng task dev → qc, FAIL thì
+followup cùng dev/qc, 3 vòng thì dừng; tối đa 2 dev song song, 4 agent tổng.
+
 **Agent orchestrator có sẵn (kiểu oh-my-opencode): profile `-p orch`.** Codex không có
 persona orchestrator riêng; agent gốc của phiên chính là orchestrator, và persona của nó
 đặt bằng `developer_instructions` trong profile. `~/.hcodex/orch.config.toml` = hibox +
