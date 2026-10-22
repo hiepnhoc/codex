@@ -375,6 +375,7 @@ impl ChatWidget {
             }
             SlashCommand::Presets => {
                 self.open_quick_dial_menu();
+            }
             SlashCommand::Provider => {
                 self.open_provider_setup(/*inline_args*/ None);
             }
