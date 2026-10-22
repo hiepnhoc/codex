@@ -399,6 +399,42 @@ Lưu ý: qua cliproxy/Kiro mỗi subagent nhân thêm tải (3–6s/request, quo
 khoản); giữ `max_concurrent_threads_per_session` ≤ 3. OpenViking hooks chỉ chạy
 trên thread chính; subagent vẫn có MCP `search`/`read` của OpenViking.
 
+### Workflow nhiều agent: orchestrator → dev → QC (22/10/2026)
+
+Cơ chế upstream dùng: **agent roles**. Mỗi file `~/.hcodex/agents/<role>.toml` (tự
+phát hiện, không cần khai trong config.toml) định nghĩa một `agent_type` cho
+`spawn_agent`: `description` (model cha thấy khi chọn role), `model`,
+`model_reasoning_effort`, `developer_instructions` (luật của vai trò), `nickname_candidates`.
+Subagent luôn cùng provider với cha, nên model trong role phải có trong catalog của
+provider đang dùng (hibox và cliproxy đều có gemini-3.8-flash-high và gpt-6-sol).
+
+| Role | Model | Việc |
+|---|---|---|
+| (cha = orchestrator) | model của phiên, ví dụ `gpt-6-sol` | lên plan, chia task có acceptance criteria, điều phối vòng lặp, báo cáo |
+| `dev` | gemini-3.8-flash-high | làm đúng một task, chạy build/test, trả CHANGE REPORT (FILES/TESTS/NOTES/STATUS) |
+| `qc` | gpt-6-sol, effort high | chỉ đọc + chạy test, trả `VERDICT: QC: PASS|FAIL` + FINDINGS `[severity] file:line` |
+
+Vòng lặp nằm trong skill local `$hcodex-dev-qc` (`~/.hcodex/skills/hcodex-dev-qc/SKILL.md`):
+mỗi task → `spawn_agent(agent_type="dev", fork_turns="none")` → `wait_agent` → `spawn_agent(agent_type="qc")`
+với CHANGE REPORT → `wait_agent` → PASS thì sang task sau; FAIL thì `followup_task` cho **cùng** dev
+với FINDINGS (dev giữ context), rồi `followup_task` cho cùng qc để verify lại; tối đa 3 vòng
+rồi dừng báo mày. Subagent không kế thừa history cha (`fork_turns="none"`) nên mỗi message
+giao việc phải tự đủ (task, criteria, đường dẫn codemap, lệnh test).
+
+```
+hcodex -p hibox -m gpt-6-sol
+> $hcodex-dev-qc Thêm endpoint X vào esign-service, có test; dùng dev→QC workflow
+```
+
+Theo dõi: `/subagents` hoặc `Alt+←/→` nhảy vào từng con. Chi phí: mỗi vòng dev + qc là 2
+request riêng; QC chạy test nên lâu hơn review thường.
+
+Đã test trên repo nháp (`hcodex -p hibox -m gpt-6-sol exec -s workspace-write '$hcodex-dev-qc …'`):
+cha lên plan 1 task → dev (gemini) viết `subtract`/`divide` + 4 test pytest → qc (gpt-6-sol)
+chạy lại test, `VERDICT: QC: PASS` → cha báo cáo; 147s, ~94k token. Lưu ý sandbox: subagent
+kế thừa sandbox của phiên, `hcodex exec` mặc định read-only nên dev sẽ báo `BLOCKED`;
+TUI mặc định workspace-write thì bình thường, exec thì thêm `-s workspace-write`.
+
 ### Review song song bằng subagent, model khác model đã code (21/10/2026)
 
 Kịch bản: code bằng model rẻ (gemini) rồi muốn model mạnh (gpt-6-sol) review mà không
