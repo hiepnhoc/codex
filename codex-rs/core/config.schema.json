@@ -2873,6 +2873,10 @@
           "description": "Whether hosted web search may access the live web.",
           "type": "boolean"
         },
+        "list_models": {
+          "description": "hcodex: whether this provider's models are listed in the merged `/model` picker (default true). Set `false` to keep a provider out of the list.",
+          "type": "boolean"
+        },
         "remote_compaction": {
           "allOf": [
             {
@@ -2880,10 +2884,6 @@
             }
           ],
           "description": "Remote context-compaction protocol; omission preserves provider defaults."
-        },
-        "list_models": {
-          "description": "hcodex: whether this provider's models are listed in the merged `/model` picker (default true). Set `false` to keep a provider out of the list.",
-          "type": "boolean"
         },
         "responses_extensions": {
           "description": "hcodex: whether the provider understands the OpenAI-only parts of the Responses API (`namespace` tool specs, `agent_message` input items). Proxies that translate to other vendors drop them, so non-OpenAI providers default to flat function tools and plain-text agent messages; set `true` for a provider that speaks the full dialect.",
@@ -5102,10 +5102,7 @@
           },
           "default": null,
           "description": "hcodex: per-provider glob filters for the merged `/model` rows, e.g. `{ cliproxy = [\"gpt-6*\", \"gemini-3.8*\"] }`. Providers without an entry list every model.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "type": "object"
         },
         "model_picker_providers": {
           "default": null,
@@ -5113,10 +5110,7 @@
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "mouse_scroll_speed": {
           "default": null,
