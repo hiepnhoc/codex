@@ -721,7 +721,7 @@ Script bảo vệ mày thế nào:
   sửa chưa commit mới chặn.
 
 **Sync tự động hằng tuần (22/10/2026)**: launchd `~/Library/LaunchAgents/com.hiepln.hcodex-sync.plist`
-chạy `scripts/sync-upstream.sh --unattended` **Chủ nhật 02:07**, log `~/.hcodex/log/sync.log`.
+chạy `scripts/sync-upstream.sh --unattended` **mỗi ngày 02:07** (đổi từ hằng tuần 23/10/2026), log `~/.hcodex/log/sync.log`.
 Chế độ `--unattended`: fetch → tag `harness-pre-sync-*` → ff `main` → rebase `my-harness`;
 rebase **sạch** thì tự cài toolchain theo `rust-toolchain.toml` nếu thiếu, chọn V8 cache theo
 `Cargo.lock` (`~/.cargo/.rusty_v8/codex-v<ver>`; thiếu thì dừng, exit 3, git đã sync), build
