@@ -726,21 +726,30 @@ và cài plugin như mục trên. Lưu ý: memory nằm theo **user** (`viking:/
 pilot **thấy chung** memory/tóm tắt repo đã index thì cho họ dùng chung user `default`
 (cùng key); user riêng = không gian riêng, phải index lại.
 
-**Cấu hình embedding / VLM (model + URL) ở đâu**: hai nơi, nơi sau đè nơi trước:
+**Cấu hình embedding / VLM (model + URL + key) ở đâu**: **chỉ trong file**
+`~/.openviking/ov.conf`, Studio không có trang sửa (đã kiểm bundle Studio 0.4.23:
+VLM/Embedding chỉ hiện *đọc* ở Monitoring → tab Models). Mỗi model một block, sửa xong
+`launchctl kickstart -k gui/$(id -u)/ai.openviking.server` rồi `openviking-server doctor`:
 
-1. File `~/.openviking/ov.conf` (nguồn cố định, cần restart server):
-   ```json
-   "embedding": {"dense": {"provider": "ollama", "model": "nomic-embed-text",
-                            "api_base": "http://127.0.0.1:11434/v1", "dimension": 768}},
-   "vlm":           {"provider": "openai", "model": "claude-sonnet-5.5",
-                     "api_base": "http://127.0.0.1:8181/v1", "api_key": "…"},
-   "query_planner": {"provider": "openai", "model": "claude-sonnet-5.5", "api_base": "http://127.0.0.1:8181/v1"}
-   ```
-2. **Giao diện**: Web Studio `http://127.0.0.1:1933/studio/` → đăng nhập bằng key →
-   trang **Settings** có Embedding / VLM / API key / Root key; các mục `vlm`,
-   `query_planner`, `embedding`, `vectordb` chỉ root key mới sửa được (lớp runtime config,
-   API `GET/PATCH /api/v1/admin/configuration`). Đổi embedding model/dimension là phải
-   index lại toàn bộ resource. Giao diện text: `ov tui`.
+```json
+"embedding": {"dense": {"provider": "ollama", "model": "nomic-embed-text",
+                         "api_base": "http://127.0.0.1:11434/v1", "dimension": 768}},
+"vlm":           {"provider": "openai", "model": "claude-sonnet-5.5",
+                  "api_base": "http://127.0.0.1:8181/v1", "api_key": "<key proxy>"},
+"query_planner": {"provider": "openai", "model": "claude-sonnet-5.5",
+                  "api_base": "http://127.0.0.1:8181/v1", "api_key": "<key proxy>"}
+```
+
+Embedding qua Ollama local nên không có `api_key`; đổi sang API ngoài thì thêm
+`api_key` vào `embedding.dense`, và đổi embedding model/dimension là phải index lại
+toàn bộ resource. (Server còn lớp runtime config `GET/PATCH /api/v1/admin/configuration`,
+root key, nhưng chưa dùng; file vẫn là nguồn chuẩn.)
+
+**Đăng nhập Studio** `http://127.0.0.1:1933/studio/` → Settings → **Connection Settings**:
+Server URL `http://127.0.0.1:1933`, *Root or Admin API Key* = `~/.openviking/root.key`
+(để vào Users & Permissions: tạo user, copy/regenerate key), *User API Key* =
+`~/.openviking/user-default.key`, Account `default`, User `default`. Chưa điền key thì
+Home báo "Connection identity is unresolved".
 
 **Đưa lên cloud sau này** (chỉ mình dùng + vài pilot): copy `~/.openviking/data` +
 `ov.conf` lên máy mới, `uv tool install openviking` cùng version (0.4.23), đổi
