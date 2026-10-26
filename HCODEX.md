@@ -945,8 +945,15 @@ Hệ quả: `hcodex agents` (command center dùng chung daemon) không dùng đ�
 - `hook: SessionStart Failed` / `UserPromptSubmit Failed` trong `hcodex exec`, câu trả lời
   không còn `<openviking-context>` → plugin cache vừa re-sync, fingerprint thư mục plugin
   đổi nên hook bị từ chối ("plugin contents changed; hook approval required"). Chạy
-  `scripts/hc-approve-hooks.sh ~/github/<repo>` (hoặc `/hooks` trong TUI). Không liên
-  quan tới OpenViking server hay API key (26/10/2026 từng nhầm).
+  `scripts/hc-approve-hooks.sh ~/github/<repo>` (hoặc `/hooks` trong TUI), rồi mở
+  session mới. Không liên quan tới OpenViking server hay API key (26/10/2026 từng nhầm).
+  Gốc rễ (xác minh 26/10/2026): upstream OpenViking sửa `examples/codex-memory-plugin`
+  liên tục (5 commit trong 22–26/10, hai lần riêng ngày 26/10) nhưng **không đổi version
+  0.11.15**; marketplace `docs.openviking.ai/dl/plugins/memory-plugins.git` là repo sinh
+  tự động (1 commit, ngày 2000-01-01) nên revision đổi theo; còn hcodex/app-server mỗi
+  lần khởi động chạy thread `plugins-marketplace-auto-upgrade` re-clone marketplace và
+  cài đè cache (`~/.hcodex/plugins/cache/openviking/openviking-memory/0.11.15`). Hệ quả:
+  mỗi commit upstream ⇒ lần mở hcodex kế tiếp hook chết im cho tới khi approve lại.
 - `hcodex exec` treo → stdin không phải TTY, thêm `</dev/null`.
 - Lỗi 401 tới `chatgpt.com/backend-api/plugins/featured` → do không login
   ChatGPT, vô hại.
