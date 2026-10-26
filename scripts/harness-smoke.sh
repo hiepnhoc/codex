@@ -8,6 +8,8 @@
 set -euo pipefail
 
 BIN="${1:-hcodex}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORIG_PWD="$PWD"
 PROXY="${HCODEX_PROXY_URL:-http://127.0.0.1:8181/v1}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -58,4 +60,15 @@ if ! grep -q "provider: local-proxy" <<<"$out" || ! grep -qi "pong" <<<"$out"; t
   echo "FAIL: exec turn through local-proxy did not answer 'pong':"; echo "$out" | tail -15; exit 1
 fi
 echo "exec turn: ok ($(grep -m1 '^model:' <<<"$out"))"
+# plugin hooks still trusted? (upstream fingerprints the plugin dir; a marketplace
+# re-sync silently disables every hook until re-approved). Warn only: not a build fault.
+# Uses the real ~/.hcodex (not the throwaway CODEX_HOME above) and the caller's cwd.
+if [[ -x "$HERE/hc-approve-hooks.sh" ]]; then
+  hooks="$(env -u CODEX_HOME HCODEX_BIN="$BIN" "$HERE/hc-approve-hooks.sh" --dry-run "$ORIG_PWD" 2>&1 || true)"
+  if grep -q "^approving" <<<"$hooks"; then
+    echo "WARN: plugin hooks need re-approval (run scripts/hc-approve-hooks.sh):"; grep "^  " <<<"$hooks"
+  else
+    echo "hooks: $(grep -c "^trusted" <<<"$hooks") trusted, none pending"
+  fi
+fi
 echo "smoke: PASS"
