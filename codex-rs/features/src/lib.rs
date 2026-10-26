@@ -121,6 +121,10 @@ pub enum Feature {
 
     /// Automatically start the shared local daemon for eligible interactive launches.
     DaemonAutoStart,
+    /// hcodex: re-clone configured Git marketplaces and reinstall their plugins at startup.
+    /// Set `plugin_marketplace_auto_upgrade = false` to freeze the plugin cache until
+    /// `hcodex plugin marketplace upgrade` is run by hand.
+    PluginMarketplaceAutoUpgrade,
     /// Allow the TUI to discover and select among multiple conversation backends.
     TuiMultiBackend,
     /// Render the configured status line through the experimental TUI Extensions renderer.
@@ -1099,6 +1103,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::DaemonAutoStart,
         key: "daemon_auto_start",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::PluginMarketplaceAutoUpgrade,
+        key: "plugin_marketplace_auto_upgrade",
         stage: Stage::Stable,
         default_enabled: true,
     },

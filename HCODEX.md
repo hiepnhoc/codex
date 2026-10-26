@@ -759,6 +759,39 @@ Home báo "Connection identity is unresolved".
 tunnel ngược), Ollama cũng phải chạy cạnh server hoặc đổi `embedding` sang API ngoài
 (đổi model ⇒ index lại). Phía client chỉ đổi `url` trong `ovcli.conf`.
 
+### Đóng băng plugin cache: `plugin_marketplace_auto_upgrade = false` (26/10/2026)
+
+Vì sao: xem "Sự cố thường gặp" → hook `plugin contents changed`. Upstream (codex) mỗi lần
+khởi động TUI/app-server chạy thread `plugins-marketplace-auto-upgrade`: re-clone mọi
+marketplace Git trong `[marketplaces]`, cài đè cache plugin nếu snapshot đổi. OpenViking
+sửa plugin liên tục mà không bump version ⇒ hook chết im sau mỗi commit của họ.
+
+hcodex thêm feature flag (mặc định `true` như upstream, diff core nhỏ):
+
+```toml
+[features]
+plugin_marketplace_auto_upgrade = false   # không tự re-clone marketplace lúc khởi động
+```
+
+Code: `features/src/lib.rs` (`Feature::PluginMarketplaceAutoUpgrade`),
+`core-plugins/src/manager.rs` (`PluginsConfigInput::marketplace_auto_upgrade`, gate trong
+`maybe_start_plugin_startup_tasks_for_config`, log `configured marketplace auto-upgrade
+disabled…`), `core/src/config/mod.rs` nối flag vào `plugins_config_input()`.
+
+Quy trình cập nhật plugin thủ công (vài tuần một lần, hoặc khi OpenViking có fix mày cần —
+xem commit trên `examples/codex-memory-plugin` của repo OpenViking trước):
+
+```bash
+scripts/hc-update-plugins.sh openviking ~/github/<repo>
+#  = hcodex plugin marketplace upgrade openviking   (re-clone + cài đè cache)
+#  + in danh sách file đổi và diff hooks.json / scripts/*.mjs để mày xem trước khi tin
+#  + scripts/hc-approve-hooks.sh <repo>              (duyệt fingerprint mới)
+#  + hcodex exec "Reply OK" → phải thấy "hook: … Completed"
+```
+
+Session đang mở phải `/new` hoặc mở lại. Nâng server OpenViking (`uv tool upgrade openviking`)
+thì nâng plugin cùng lúc cho khớp. Bật lại hành vi upstream: xoá dòng flag hoặc đặt `true`.
+
 ## Cập nhật từ upstream (openai/codex)
 
 Mô hình branch:
@@ -954,6 +987,8 @@ Hệ quả: `hcodex agents` (command center dùng chung daemon) không dùng đ�
   lần khởi động chạy thread `plugins-marketplace-auto-upgrade` re-clone marketplace và
   cài đè cache (`~/.hcodex/plugins/cache/openviking/openviking-memory/0.11.15`). Hệ quả:
   mỗi commit upstream ⇒ lần mở hcodex kế tiếp hook chết im cho tới khi approve lại.
+  Chữa tận gốc: `[features] plugin_marketplace_auto_upgrade = false` + cập nhật thủ công
+  bằng `scripts/hc-update-plugins.sh` (mục "Đóng băng plugin cache").
 - `hcodex exec` treo → stdin không phải TTY, thêm `</dev/null`.
 - Lỗi 401 tới `chatgpt.com/backend-api/plugins/featured` → do không login
   ChatGPT, vô hại.

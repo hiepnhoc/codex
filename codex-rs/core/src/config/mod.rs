@@ -1847,6 +1847,7 @@ impl Config {
             self.http_client_factory(),
             self.apps_mcp_product_sku.clone(),
         )
+        .with_marketplace_auto_upgrade(self.features.enabled(Feature::PluginMarketplaceAutoUpgrade))
     }
 
     /// Applies managed MCP requirements to servers supplied by one plugin.

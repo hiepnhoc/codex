@@ -173,6 +173,8 @@ pub struct PluginsConfigInput {
     pub remote_plugin_enabled: bool,
     pub chatgpt_base_url: String,
     pub product_sku: Option<String>,
+    /// hcodex: when false, skip the startup marketplace re-clone + plugin reinstall.
+    pub marketplace_auto_upgrade: bool,
     http_client_factory: HttpClientFactory,
     remote_http_clients: Arc<OnceLock<Arc<dyn HttpClientSelector>>>,
 }
@@ -199,8 +201,16 @@ impl PluginsConfigInput {
             chatgpt_base_url,
             http_client_factory,
             product_sku,
+            marketplace_auto_upgrade: true,
             remote_http_clients: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// hcodex: control the startup marketplace auto-upgrade (feature
+    /// `plugin_marketplace_auto_upgrade`, default on like upstream).
+    pub fn with_marketplace_auto_upgrade(mut self, enabled: bool) -> Self {
+        self.marketplace_auto_upgrade = enabled;
+        self
     }
 
     /// Shares a lazy route-aware connection pool across this input and its clones.
@@ -2902,7 +2912,7 @@ impl PluginsManager {
                 config,
                 on_effective_plugins_changed.clone(),
             );
-            let should_spawn_marketplace_auto_upgrade = {
+            let should_spawn_marketplace_auto_upgrade = config.marketplace_auto_upgrade && {
                 let mut state = match self.configured_marketplace_upgrade_state.write() {
                     Ok(state) => state,
                     Err(err) => err.into_inner(),
@@ -2914,6 +2924,11 @@ impl PluginsManager {
                     true
                 }
             };
+            if !config.marketplace_auto_upgrade {
+                tracing::info!(
+                    "configured marketplace auto-upgrade disabled by plugin_marketplace_auto_upgrade=false"
+                );
+            }
             if should_spawn_marketplace_auto_upgrade {
                 let manager = Arc::clone(self);
                 let config = config.clone();
