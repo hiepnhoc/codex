@@ -551,11 +551,11 @@ Thành phần đã cài:
 
 | Thành phần | Ở đâu | Chạy bằng |
 |---|---|---|
-| OpenViking server v0.4.23 | `uv tool install openviking`; config `~/.openviking/ov.conf`; data `~/.openviking/data` | launchd `ai.openviking.server` (port 1933, auth `dev`) |
+| OpenViking server v0.4.23 | `uv tool install openviking`; config `~/.openviking/ov.conf`; data `~/.openviking/data` | launchd `ai.openviking.server` (port 1933, auth `api_key` từ 26/10/2026) |
 | Embedding | Ollama `nomic-embed-text` (768d), binary `~/.local/bin/ollama` + `~/.local/lib/ollama` (tarball GitHub, brew fail) | launchd `com.ollama.serve` (127.0.0.1:11434) |
-| VLM (tóm tắt L0/L1) + query planner | `claude-haiku-4.5` qua proxy `http://127.0.0.1:8181/v1` | — |
+| VLM (tóm tắt L0/L1) + query planner | `claude-sonnet-5.5` qua proxy `http://127.0.0.1:8181/v1` (haiku bị `Input is too long`, xem bên dưới) | — |
 | Plugin cho hcodex | `openviking-memory@openviking` (marketplace trong `~/.hcodex/config.toml`) | hooks: SessionStart / UserPromptSubmit / Stop / PreCompact / SessionEnd |
-| CLI | `ov` (`~/.openviking/ovcli.conf` → `http://127.0.0.1:1933`) | |
+| CLI + plugin | `ov` và hook plugin đọc `~/.openviking/ovcli.conf` (url + `api_key` + account/user) | |
 
 Lệnh hay dùng:
 
@@ -668,7 +668,13 @@ Hai knob đã chỉnh để đạt số trên:
   đã tắt 3 hook chạy **mỗi lần gọi tool** (`pre_tool_use` uri-guard, `post_tool_use`
   usage/track-lookup, `stop:1` usage/report; mỗi cái ~0,1s Node startup → turn có 30
   tool call mất thêm ~6s), và `trusted_hash` cho các hook còn lại để khỏi hỏi trust.
-  Xem/đổi trong TUI bằng `/hooks`. Khi plugin cập nhật, hash đổi → TUI hỏi trust lại.
+  Xem/đổi trong TUI bằng `/hooks`. **Từ sync 23/10/2026 upstream fingerprint cả thư
+  mục plugin** (`trusted_content_hash`), plugin cache tự re-sync từ marketplace → mỗi
+  lần plugin đổi nội dung, mọi hook bị từ chối im lặng (`hook: UserPromptSubmit Failed`
+  trong `hcodex exec`, không còn `<openviking-context>`). Chữa: `/hooks` trong TUI
+  hoặc headless `scripts/hc-approve-hooks.sh [--dry-run] <cwd>` (cùng đường app-server
+  `hooks/list` + `config/batchWrite` như TUI). `scripts/harness-smoke.sh` cảnh báo
+  khi có hook `modified`.
 Tắt hẳn recall tạm thời: `OPENVIKING_AUTO_RECALL=0 hcodex`; tắt ghi transcript: `OPENVIKING_AUTO_CAPTURE=0`.
 
 **4. Khi có vấn đề**: trong hcodex gõ `$ov-memory-doctor` (skill của plugin), hoặc
@@ -685,6 +691,64 @@ Kiểm tra nhanh: gửi `/v1/responses` có item role `developer` chứa 1 từ 
 
 Gỡ: `hcodex plugin remove openviking-memory@openviking && hcodex plugin marketplace remove openviking`,
 `launchctl bootout gui/$(id -u)/ai.openviking.server`, xoá `~/.openviking`.
+
+### Auth bằng API key, kho tri thức tập trung và cấu hình model (26/10/2026)
+
+Mục tiêu: OpenViking là **kho tri thức tập trung** (memory + tóm tắt repo) dùng chung
+cho mọi session hcodex; sau này đưa lên cloud cho pilot thì chỉ cần cấp key. Đã đổi
+server từ `auth_mode = "dev"` sang `"api_key"` (backup `~/.openviking/ov.conf.bak-dev-mode`,
+đổi lại chỉ cần copy đè và `launchctl kickstart -k gui/$(id -u)/ai.openviking.server`).
+
+| Key | Ở đâu (0600) | Dùng cho |
+|---|---|---|
+| Root key (`server.root_api_key` trong `ov.conf`) | `~/.openviking/root.key` | admin API: tạo account/user, đổi config runtime, đăng nhập Studio quyền root |
+| User key `default/default` (role admin) | `~/.openviking/user-default.key` và `~/.openviking/ovcli.conf` → `api_key` | `ov` CLI, hook plugin của hcodex, Studio |
+
+Header là `Authorization: Bearer <key>` (hoặc `X-API-Key`). Không key → 401; user key
+gọi `/api/v1/admin/*` → 403. Plugin hcodex không cần đổi gì: nó đọc `ovcli.conf`
+(log `credentialSource":"ovcli","hasApiKey":true`), đã kiểm `hcodex exec` vẫn bơm
+`<openviking-context>`.
+
+**Cấp key cho người dùng pilot** (chạy trên máy chủ, cần root key):
+
+```bash
+ROOT=$(cat ~/.openviking/root.key); OV=http://127.0.0.1:1933
+curl -s -X POST $OV/api/v1/admin/accounts -H "Authorization: Bearer $ROOT" \
+  -H 'Content-Type: application/json' -d '{"account_id":"default"}'        # đã có → ALREADY_EXISTS, bỏ qua
+curl -s -X POST $OV/api/v1/admin/accounts/default/users -H "Authorization: Bearer $ROOT" \
+  -H 'Content-Type: application/json' -d '{"user_id":"hiep2","role":"user"}' # trả về "user_key"
+curl -s -X POST $OV/api/v1/admin/accounts/default/users/hiep2/key -H "Authorization: Bearer $ROOT"  # cấp lại key
+```
+
+Người nhận chỉ cần `~/.openviking/ovcli.conf` `{"url":"http://<host>:1933","api_key":"<key>"}`
+và cài plugin như mục trên. Lưu ý: memory nằm theo **user** (`viking://user/<id>/memories`,
+`viking://user/<id>/peers/<repo>/…`, `viking://user/<id>/resources/<repo>`), nên muốn
+pilot **thấy chung** memory/tóm tắt repo đã index thì cho họ dùng chung user `default`
+(cùng key); user riêng = không gian riêng, phải index lại.
+
+**Cấu hình embedding / VLM (model + URL) ở đâu**: hai nơi, nơi sau đè nơi trước:
+
+1. File `~/.openviking/ov.conf` (nguồn cố định, cần restart server):
+   ```json
+   "embedding": {"dense": {"provider": "ollama", "model": "nomic-embed-text",
+                            "api_base": "http://127.0.0.1:11434/v1", "dimension": 768}},
+   "vlm":           {"provider": "openai", "model": "claude-sonnet-5.5",
+                     "api_base": "http://127.0.0.1:8181/v1", "api_key": "…"},
+   "query_planner": {"provider": "openai", "model": "claude-sonnet-5.5", "api_base": "http://127.0.0.1:8181/v1"}
+   ```
+2. **Giao diện**: Web Studio `http://127.0.0.1:1933/studio/` → đăng nhập bằng key →
+   trang **Settings** có Embedding / VLM / API key / Root key; các mục `vlm`,
+   `query_planner`, `embedding`, `vectordb` chỉ root key mới sửa được (lớp runtime config,
+   API `GET/PATCH /api/v1/admin/configuration`). Đổi embedding model/dimension là phải
+   index lại toàn bộ resource. Giao diện text: `ov tui`.
+
+**Đưa lên cloud sau này** (chỉ mình dùng + vài pilot): copy `~/.openviking/data` +
+`ov.conf` lên máy mới, `uv tool install openviking` cùng version (0.4.23), đổi
+`server.host` sang `0.0.0.0` và đặt sau reverse proxy có TLS, trỏ `vlm.api_base` /
+`query_planner.api_base` sang LLM gateway mà máy chủ gọi được (Kiro-Go hiện là
+127.0.0.1:8181 **của máy này**, lên cloud phải có endpoint OpenAI-compatible khác hoặc
+tunnel ngược), Ollama cũng phải chạy cạnh server hoặc đổi `embedding` sang API ngoài
+(đổi model ⇒ index lại). Phía client chỉ đổi `url` trong `ovcli.conf`.
 
 ## Cập nhật từ upstream (openai/codex)
 
@@ -869,6 +933,11 @@ Hệ quả: `hcodex agents` (command center dùng chung daemon) không dùng đ�
   `~/.hcodex/models_cache-<provider-hash>.json` (OpenAI chính chủ vẫn dùng
   `models_cache.json`). Mỗi provider như `cliproxy`, `kr` có cache riêng; xoá
   file hash tương ứng hoặc toàn bộ `models_cache-*.json` để buộc tải lại.
+- `hook: SessionStart Failed` / `UserPromptSubmit Failed` trong `hcodex exec`, câu trả lời
+  không còn `<openviking-context>` → plugin cache vừa re-sync, fingerprint thư mục plugin
+  đổi nên hook bị từ chối ("plugin contents changed; hook approval required"). Chạy
+  `scripts/hc-approve-hooks.sh ~/github/<repo>` (hoặc `/hooks` trong TUI). Không liên
+  quan tới OpenViking server hay API key (26/10/2026 từng nhầm).
 - `hcodex exec` treo → stdin không phải TTY, thêm `</dev/null`.
 - Lỗi 401 tới `chatgpt.com/backend-api/plugins/featured` → do không login
   ChatGPT, vô hại.
