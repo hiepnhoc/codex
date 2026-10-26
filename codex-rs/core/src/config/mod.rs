@@ -1936,6 +1936,7 @@ impl Config {
                 && codex_runtime_agent_instance::is_openai_api_url(&self.chatgpt_base_url))
             .then_some(self.runtime_auth_mode),
         )
+        .with_marketplace_auto_upgrade(self.features.enabled(Feature::PluginMarketplaceAutoUpgrade))
     }
 
     /// Applies managed MCP requirements to servers supplied by one plugin.

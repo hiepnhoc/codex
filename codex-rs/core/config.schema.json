@@ -1262,6 +1262,9 @@
             "plugin_hooks": {
               "type": "boolean"
             },
+            "plugin_marketplace_auto_upgrade": {
+              "type": "boolean"
+            },
             "plugin_sharing": {
               "type": "boolean"
             },
@@ -8599,6 +8602,9 @@
           "type": "boolean"
         },
         "plugin_hooks": {
+          "type": "boolean"
+        },
+        "plugin_marketplace_auto_upgrade": {
           "type": "boolean"
         },
         "plugin_sharing": {
