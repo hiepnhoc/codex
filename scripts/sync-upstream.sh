@@ -163,10 +163,27 @@ build_gate_install() {
   if [[ "${SKIP_TESTS:-}" != "1" ]]; then
     say "test gate (harness unit tests)"
     export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"   # core/tui tests overflow the default stack (see justfile)
-    RUST_MIN_STACK="$RUST_MIN_STACK" nice -n "${BUILD_NICE:-15}" cargo test -q -j "${BUILD_JOBS:-4}" -p codex-core --test all -- hcodex_overload_retry model_overrides first_turn_model_change 2>&1 | tail -3
-    RUST_MIN_STACK="$RUST_MIN_STACK" nice -n "${BUILD_NICE:-15}" cargo test -q -j "${BUILD_JOBS:-4}" -p codex-core --lib -- flat_namespaces hcodex_namespace spec_plan::tests::multi_agent agent::role::tests 2>&1 | tail -3
-    nice -n "${BUILD_NICE:-15}" cargo test -q -j "${BUILD_JOBS:-4}" -p codex-models-manager -p codex-model-provider -p codex-model-provider-info -p codex-features 2>&1 | tail -5
-    nice -n "${BUILD_NICE:-15}" cargo test -q -j "${BUILD_JOBS:-4}" -p codex-tui -- provider_setup command_popup 2>&1 | tail -5
+    # Full output goes to the gate log (the console only shows the summary), and a
+    # failing group is re-run once: timeout-sensitive tests flake when the machine swaps.
+    GATE_LOG="$HOME/.hcodex/log/sync-gate-$(date +%Y%m%d-%H%M%S).log"
+    echo "gate log: $GATE_LOG"
+    gate_run() {
+      local attempt
+      for attempt in 1 2; do
+        if RUST_MIN_STACK="$RUST_MIN_STACK" nice -n "${BUILD_NICE:-15}" cargo test -q -j "${BUILD_JOBS:-4}" "$@" >>"$GATE_LOG" 2>&1; then
+          grep "^test result" "$GATE_LOG" | tail -1
+          return 0
+        fi
+        echo "gate: '$*' failed (attempt $attempt):"
+        grep -E "^test .* FAILED|^test result" "$GATE_LOG" | tail -8
+        [[ $attempt -eq 1 ]] && echo "gate: retrying once"
+      done
+      return 1
+    }
+    gate_run -p codex-core --test all -- hcodex_overload_retry model_overrides first_turn_model_change
+    gate_run -p codex-core --lib -- flat_namespaces hcodex_namespace spec_plan::tests::multi_agent agent::role::tests
+    gate_run -p codex-models-manager -p codex-model-provider -p codex-model-provider-info -p codex-features
+    gate_run -p codex-tui -- provider_setup command_popup
   fi
 
   # Keep the machine usable while building: low priority and a bounded job count
