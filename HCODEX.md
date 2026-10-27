@@ -453,7 +453,7 @@ lặt vặt thì gemini-3.8 làm tốt; task to phải tự đổi model rồi `
 | writing-plans | model chính nếu đang là opus, không thì spawn `plan` (`fork_turns="all"`) | `plan.toml` → claude-opus-5.5 @ local-proxy |
 | code từng task (kể cả bug nhỏ) | `dev` | `dev.toml` → gemini-3.8-flash-high @ cliproxy |
 | review bằng OCR delegation (rule 12) | `reviewer` | `reviewer.toml` → gpt-6.1-terra @ cliproxy |
-| simplify sau khi mọi task PASS | `simplify`, rồi `reviewer` kiểm lại một lần | `simplify.toml` → claude-sonnet-5.5 @ local-proxy (gợi ý của tao, đổi được) |
+| simplify sau khi mọi task PASS | `simplify`, rồi `reviewer` kiểm lại một lần | `simplify.toml` → gemini-3.8-flash-high @ cliproxy (mày chốt 27/10; reviewer kiểm lại nên đủ) |
 | `REVIEW: FAIL` | `followup_task` lại đúng dev với FINDINGS → dev sửa → reviewer kiểm lại; tối đa 3 vòng | |
 | `$orch` | `explore` gemini @ cliproxy, `research`/`qc` gpt-6.1-terra @ cliproxy, `plan` opus @ kr | |
 
