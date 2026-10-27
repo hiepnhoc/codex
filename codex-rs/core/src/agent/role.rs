@@ -37,6 +37,9 @@ const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not availabl
 struct AgentRoleOverrides {
     developer_instructions: Option<String>,
     model: Option<String>,
+    /// hcodex: run this role on another configured provider (`model_provider = "cliproxy"`).
+    /// Upstream always inherits the parent's provider.
+    model_provider: Option<String>,
     model_reasoning_effort: Option<ReasoningEffort>,
     model_reasoning_summary: Option<ReasoningSummary>,
     model_verbosity: Option<Verbosity>,
@@ -80,6 +83,13 @@ async fn apply_role_to_config_inner(
     let mut overrides = AgentRoleOverrides {
         developer_instructions: role_config.developer_instructions,
         model: role_config.model,
+        // hcodex: only projected into the role layer when `agent_role_provider` is on,
+        // so upstream's "role must not control model_provider" rule holds by default.
+        model_provider: config
+            .features
+            .enabled(Feature::AgentRoleProvider)
+            .then_some(role_config.model_provider)
+            .flatten(),
         model_reasoning_effort: role_config.model_reasoning_effort,
         model_reasoning_summary: role_config.model_reasoning_summary,
         model_verbosity: role_config.model_verbosity,
@@ -183,6 +193,23 @@ mod role_overrides {
         next_config.config_layer_stack = build_config_layer_stack(config, &role_layer_toml)?;
         if let Some(model) = &overrides.model {
             next_config.model = Some(model.clone());
+        }
+        // hcodex: a role may pin a provider (feature `agent_role_provider`); subagents
+        // otherwise inherit the parent's, as upstream requires.
+        if let Some(provider_id) = &overrides.model_provider
+            && next_config.features.enabled(Feature::AgentRoleProvider)
+            && *provider_id != next_config.model_provider_id
+        {
+            next_config.model_provider = next_config
+                .model_providers
+                .get(provider_id)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "role model_provider `{provider_id}` is not a configured provider"
+                    )
+                })?;
+            next_config.model_provider_id = provider_id.clone();
         }
         if let Some(instructions) = &overrides.developer_instructions {
             next_config.developer_instructions = Some(instructions.clone());
@@ -316,6 +343,13 @@ pub(crate) mod spawn_tool_spec {
                     let reasoning_effort = role_toml
                         .get("model_reasoning_effort")
                         .and_then(TomlValue::as_str);
+                    let provider_note = role_toml
+                        .get("model_provider")
+                        .and_then(TomlValue::as_str)
+                        .map(|provider| format!(" (provider `{provider}`)"))
+                        .unwrap_or_default();
+                    let model = model.map(|model| format!("{model}{provider_note}"));
+                    let model = model.as_deref();
                     match (model, reasoning_effort) {
                         (Some(model), Some(reasoning_effort)) => format!(
                             "\n- This role's model is set to `{model}` and its reasoning effort is set to `{reasoning_effort}`. These settings cannot be changed."
