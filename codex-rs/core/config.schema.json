@@ -823,6 +823,9 @@
             "agent_message_board_mcp": {
               "type": "boolean"
             },
+            "agent_role_provider": {
+              "type": "boolean"
+            },
             "analytics_plan_history": {
               "type": "boolean"
             },
@@ -8163,6 +8166,9 @@
           "type": "boolean"
         },
         "agent_message_board_mcp": {
+          "type": "boolean"
+        },
+        "agent_role_provider": {
           "type": "boolean"
         },
         "analytics_plan_history": {

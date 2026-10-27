@@ -126,6 +126,9 @@ pub enum Feature {
 
     /// Automatically start the shared local daemon for eligible interactive launches.
     DaemonAutoStart,
+    /// hcodex: let a user-defined agent role pin its own `model_provider` (subagents otherwise
+    /// inherit the parent's provider). Off by default to keep upstream's role-authority rules.
+    AgentRoleProvider,
     /// hcodex: re-clone configured Git marketplaces and reinstall their plugins at startup.
     /// Set `plugin_marketplace_auto_upgrade = false` to freeze the plugin cache until
     /// `hcodex plugin marketplace upgrade` is run by hand.
@@ -1167,6 +1170,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "tui_workspace",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::AgentRoleProvider,
+        key: "agent_role_provider",
+        stage: Stage::Stable,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::PluginMarketplaceAutoUpgrade,
