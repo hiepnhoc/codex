@@ -439,32 +439,43 @@ mặc định workspace-write là đủ; `hcodex exec` phải thêm `-s workspac
 ngoài phạm vi → sửa → PASS, 13 test, 314s, ~72k token. Bài học đã ghi vào skill: orch tự
 lên plan thay vì gọi `plan`, và spawn con không role khi dev trả thiếu → giờ cấm cả hai.
 
-### `$daily-dev` giao code cho `dev`, review bằng `reviewer` (27/10/2026)
+### `$daily-dev` chia việc theo role: opus thiết kế/plan, gemini code, terra review (27/10/2026)
 
 Thói quen của mày: mở `$daily-dev` với model mạnh để check source, nhận Jira, lập plan; code
 lặt vặt thì gemini-3.8 làm tốt; task to phải tự đổi model rồi `/review` lại → thủ công. Giờ
 `$daily-dev` bản hcodex tự chia việc (mục "Delegated Execution (hcodex)" trong
-`~/.hcodex/skills/daily-dev/SKILL.md`):
+`~/.hcodex/skills/daily-dev/SKILL.md`). Model của từng pha nằm ở role
+`~/.hcodex/agents/<role>.toml` (sửa dòng `model` là đổi, không cần build):
 
-| Bước | Ai | Model |
+| Pha | Ai | Model (id theo catalog hibox) |
 |---|---|---|
-| route, hỏi lại, brainstorming, plan, worktree | model chính của session (`-p hibox` + `/model` gpt-6-sol hoặc claude-opus-5-5) | tuỳ mày chọn |
-| code từng task (kể cả bug nhỏ, feature nhỏ) | `spawn_agent(agent_type="dev")` | gemini-3.8-flash-high |
-| review diff bằng OCR delegation (rule 12 của skill) | `spawn_agent(agent_type="reviewer")` — role mới `~/.hcodex/agents/reviewer.toml` | gpt-6.1-sol, high |
-| `REVIEW: FAIL` | `followup_task` lại đúng dev với FINDINGS → dev sửa → `followup_task` lại reviewer; tối đa 3 vòng | |
-| test project-native, simplify, docs, báo cáo | model chính | |
+| route, scan, hỏi lại, worktree, test cuối, báo cáo | model chính của session | profile `hibox` mặc định `claude-opus-5-5`; `/model` chọn gì thì dùng nấy |
+| brainstorming | model chính nếu đang là opus, không thì spawn `design` (`fork_turns="all"`) | `design.toml` = claude-opus-5-5 |
+| writing-plans | model chính nếu đang là opus, không thì spawn `plan` (`fork_turns="all"`) | `plan.toml` = claude-opus-5-5 |
+| code từng task (kể cả bug nhỏ) | `dev` | `dev.toml` = gemini-3.8-flash-high |
+| review bằng OCR delegation (rule 12) | `reviewer`; hibox không có model này → tự fallback `qc` | `reviewer.toml` = gpt-6.1-terra (chỉ cliproxy); `qc.toml` = gpt-6.1-sol |
+| simplify sau khi mọi task PASS | `simplify`, rồi `reviewer` kiểm lại một lần | `simplify.toml` = claude-sonnet-5-5 (gợi ý của tao, đổi được) |
+| `REVIEW: FAIL` | `followup_task` lại đúng dev với FINDINGS → dev sửa → reviewer kiểm lại; tối đa 3 vòng | |
 
-Khác `$orch`: vẫn là `$daily-dev` với đủ gate (duyệt thiết kế, worktree, protected action),
-chỉ thay "ai gõ code / ai review". `qc` của `$orch` vẫn `gpt-6-sol`. OCR không có LLM thứ hai:
-`reviewer` chính là model suy luận, nó gọi `ocr-safe.sh delegate preview/rule` rồi đọc diff.
-Model chính không chạy OCR nữa nên không tốn context cho diff.
+`design`/`plan` không nói chuyện trực tiếp với mày: nó trả QUESTIONS/DESIGN/PLAN, model chính
+chuyển nguyên văn cho mày, lấy câu trả lời rồi `followup_task`. Gate duyệt thiết kế, worktree,
+protected action giữ nguyên; `yolo` vẫn thay gate duyệt như trước. OCR không có LLM thứ hai:
+`reviewer` chính là model suy luận, gọi `ocr-safe.sh delegate preview/rule` rồi đọc diff; model
+chính không chạy OCR nữa nên không tốn context cho diff.
 
-Lưu ý: subagent chạy cùng provider với session; hibox có đủ 4 model. Khi hibox trả
-`429 all accounts for gpt-6.1-sol are rate limited` (27/10 gặp, ~10 phút) hoặc `404 no
-available account serves model`, agent báo "Agent errored" → `followup_task` lại sau, hoặc
-tạm đổi `model` trong `reviewer.toml`. Một turn `hcodex exec` chỉ spawn 1 agent tốn ~99k
-token ở model chính (bảng skill + OpenViking context), nên đừng dùng `$daily-dev` cho việc
-một dòng.
+Ràng buộc đáng nhớ:
+- Subagent chạy cùng provider với session, và id model khác nhau giữa provider (`claude-opus-5-5`
+  trên hibox, `claude-opus-5.5` trên local-proxy). Các role đang ghi id của **hibox**; chạy
+  `-p hibox` là khớp hết, trừ `gpt-6.1-terra` chỉ có trên cliproxy (hibox có `gpt-6.1-sol`,
+  `gpt-5.6-terra`), nên trên hibox review rơi về `qc`.
+- hibox = Fusebox (`~/github/Fusebox`, port 8318). Dòng `gpt-6*` đi qua một account `codex`
+  (ChatGPT Plus); 27/10 account này `401 invalidated oauth token` nên mọi request gpt-6 trả
+  `429 all accounts rate limited; next available in 578s` (số đứng yên = token chết, không phải
+  cooldown) hoặc `404 no available account`. Chữa: `cd ~/github/Fusebox && ./target/debug/fusebox
+  login codex`. Xem trạng thái account: `curl -H "Authorization: Bearer <hibox key>"
+  http://127.0.0.1:8318/api/accounts`.
+- Một turn `hcodex exec` chỉ spawn 1 agent tốn ~99k token ở model chính (bảng skill +
+  OpenViking context), nên đừng dùng `$daily-dev` cho việc một dòng.
 
 ### Review song song bằng subagent, model khác model đã code (21/10/2026)
 
