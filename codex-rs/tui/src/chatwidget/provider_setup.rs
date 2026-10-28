@@ -15,7 +15,10 @@ pub(crate) enum ProviderCommand {
     /// Open the wizard.
     Wizard,
     /// Add a provider inline: id + base URL.
-    Setup { id: String, base_url: String },
+    Setup {
+        id: String,
+        base_url: String,
+    },
     /// Switch this conversation to an already configured provider.
     Switch {
         provider_id: String,

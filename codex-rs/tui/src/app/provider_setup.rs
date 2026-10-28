@@ -121,10 +121,8 @@ impl App {
             self.chat_widget.add_info_message(saved, Some(hint));
             return;
         }
-        self.chat_widget.add_info_message(
-            saved,
-            Some(format!("Profile: {}", profile_path.display())),
-        );
+        self.chat_widget
+            .add_info_message(saved, Some(format!("Profile: {}", profile_path.display())));
         // The provider table was just written; reload so the switch sees it.
         self.refresh_in_memory_config_from_disk_best_effort("switching provider")
             .await;
@@ -257,6 +255,7 @@ impl App {
                 .clone_from(&self.chat_widget.config_ref().workspace_roots);
         }
         fork_config.model_provider_id = provider_id.clone();
+        let provider_info = info.clone();
         fork_config.model_provider = info;
         fork_config.model = Some(model.clone());
         // The new model picks its own default effort; `/model` can adjust it.
@@ -281,6 +280,12 @@ impl App {
                 )
                 .await;
                 self.config = fork_config;
+                // The replacement widget takes its `/model` catalog from
+                // `self.model_catalog`, which bootstrap loaded for the startup
+                // provider; reload it for the provider we just switched to so the
+                // picker does not show the old provider's models under the new id.
+                self.refresh_model_catalog_for_provider(&provider_id, &provider_info)
+                    .await;
                 match self
                     .replace_chat_widget_with_app_server_thread(
                         tui,
@@ -294,21 +299,24 @@ impl App {
                         if selected_profile.is_some() {
                             self.adopt_inherited_server_selection();
                         }
+                        // Belt and braces: the widget must carry the reloaded catalog.
+                        self.chat_widget
+                            .set_model_catalog(std::sync::Arc::clone(&self.model_catalog));
                         self.chat_widget.add_info_message(
                             format!("Now using `{model}` via `{provider_id}`; the conversation continues with its full history."),
                             /*hint*/ None,
                         );
                     }
                     Err(err) => {
-                        self.chat_widget
-                            .add_error_message(format!("Failed to attach after provider switch: {err}"));
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to attach after provider switch: {err}"
+                        ));
                     }
                 }
             }
             Err(err) => {
-                self.chat_widget.add_error_message(format!(
-                    "Failed to switch to `{provider_id}`: {err}"
-                ));
+                self.chat_widget
+                    .add_error_message(format!("Failed to switch to `{provider_id}`: {err}"));
             }
         }
         // The replacement widget inherits `fork_in_progress`; clear it so the
@@ -316,6 +324,54 @@ impl App {
         self.chat_widget.fork_in_progress = false;
         self.chat_widget.maybe_send_next_queued_input();
         tui.frame_requester().schedule_frame();
+    }
+}
+
+impl App {
+    /// hcodex: rebuild the shared model catalog from `{base_url}/models` of
+    /// `provider_info` (same listing the merged picker uses). Keeps the previous
+    /// catalog when the provider cannot be listed, and says so.
+    pub(super) async fn refresh_model_catalog_for_provider(
+        &mut self,
+        provider_id: &str,
+        provider_info: &codex_model_provider_info::ModelProviderInfo,
+    ) {
+        let http_client_factory = self.config.http_client_factory();
+        let listed = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            codex_model_provider::list_models_for_provider(
+                provider_info.clone(),
+                http_client_factory,
+            ),
+        )
+        .await;
+        let outcome = match listed {
+            Ok(Ok(models)) if !models.is_empty() => {
+                let presets: Vec<codex_protocol::openai_models::ModelPreset> =
+                    models.into_iter().map(Into::into).collect();
+                tracing::info!(
+                    provider_id,
+                    count = presets.len(),
+                    first = presets.first().map(|p| p.model.as_str()),
+                    "hcodex: model catalog reloaded for provider switch"
+                );
+                let modes = self.model_catalog.collaboration_modes.clone();
+                self.model_catalog = std::sync::Arc::new(
+                    crate::model_catalog::ModelCatalog::new(presets)
+                        .with_collaboration_modes(modes),
+                );
+                return;
+            }
+            Ok(Ok(_)) => "returned no models".to_string(),
+            Ok(Err(err)) => err.to_string(),
+            Err(_) => "timed out after 10s".to_string(),
+        };
+        self.chat_widget.add_info_message(
+            format!(
+                "Could not load the model list of `{provider_id}` ({outcome}); `/model` keeps the previous provider's list."
+            ),
+            /*hint*/ None,
+        );
     }
 }
 
