@@ -182,7 +182,9 @@ build_gate_install() {
     }
     gate_run -p codex-core --test all -- hcodex_overload_retry model_overrides first_turn_model_change
     gate_run -p codex-core --lib -- flat_namespaces hcodex_namespace spec_plan::tests::multi_agent agent::role::tests
-    gate_run -p codex-models-manager -p codex-model-provider -p codex-model-provider-info -p codex-features
+    # Skip upstream GCP/Bedrock credential-process tests: they spawn `sh` with a 5 s
+    # deadline and time out whenever this machine is swapping (not harness code).
+    gate_run -p codex-models-manager -p codex-model-provider -p codex-model-provider-info -p codex-features -- --skip credential_export --skip credential_files_scope_token
     gate_run -p codex-tui -- provider_setup command_popup
   fi
 
