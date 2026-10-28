@@ -483,6 +483,13 @@ upstream. Ghi chú "This role's model is set to…" trong tool spec có thêm pr
 `agent::role::tests::hcodex_apply_role_*`. Tên model theo catalog của provider đó: Kiro gọi
 `claude-opus-5.5`, cliproxy/hibox gọi `claude-opus-5-5`.
 
+**Model chính không tự sửa code.** Lần đầu chạy (28/10) opus tự sửa 2 template vì reasoning
+"tweak CSS nhỏ → ngoại lệ edit nhỏ". Skill giờ có "hcodex execution contract" ngay đầu: mọi
+sửa code/test/template/config đi qua `dev`, kể cả việc nhỏ; chỉ tự sửa khi mày gõ "tự làm"
+hoặc là một dòng mày chỉ đích danh; "direct execution" = bỏ bước plan, vẫn giao dev; route
+announcement phải có `Implementer: dev → reviewer`. Pha scan bị giới hạn (codemap + ~5 file,
+hơn thì spawn `explore`; không tự render/build để "đo"). Nếu vẫn thấy nó tự sửa, gõ "giao dev".
+
 `design`/`plan` không nói chuyện trực tiếp với mày: nó trả QUESTIONS/DESIGN/PLAN, model chính
 chuyển nguyên văn cho mày, lấy câu trả lời rồi `followup_task`. Gate duyệt thiết kế, worktree,
 protected action giữ nguyên; `yolo` vẫn thay gate duyệt như trước. OCR không có LLM thứ hai:
