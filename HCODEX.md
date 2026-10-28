@@ -485,8 +485,11 @@ upstream. Ghi chú "This role's model is set to…" trong tool spec có thêm pr
 
 **Model chính không tự sửa code.** Lần đầu chạy (28/10) opus tự sửa 2 template vì reasoning
 "tweak CSS nhỏ → ngoại lệ edit nhỏ". Skill giờ có "hcodex execution contract" ngay đầu: mọi
-sửa code/test/template/config đi qua `dev`, kể cả việc nhỏ; chỉ tự sửa khi mày gõ "tự làm"
-hoặc là một dòng mày chỉ đích danh; "direct execution" = bỏ bước plan, vẫn giao dev; route
+sửa code/test/template/config đi qua `dev`, kể cả việc nhỏ; **không có ngoại lệ theo kích
+thước** (test 16:06 cho thấy ngoại lệ "một dòng" cũng bị model vin vào); chỉ tự sửa khi câu
+của mày có chữ "tự làm" / "làm trực tiếp", một điều kiện kiểm tra cơ học thay vì đánh giá.
+Test 16:09 trên repo tạm: `Implementer: dev → reviewer`, dev sửa, reviewer PASS vòng đầu.
+"direct execution" = bỏ bước plan, vẫn giao dev; route
 announcement phải có `Implementer: dev → reviewer`. Pha scan bị giới hạn (codemap + ~5 file,
 hơn thì spawn `explore`; không tự render/build để "đo"). Nếu vẫn thấy nó tự sửa, gõ "giao dev".
 
