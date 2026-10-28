@@ -1048,6 +1048,17 @@ Hệ quả: `hcodex agents` (command center dùng chung daemon) không dùng đ�
   mỗi commit upstream ⇒ lần mở hcodex kế tiếp hook chết im cho tới khi approve lại.
   Chữa tận gốc: `[features] plugin_marketplace_auto_upgrade = false` + cập nhật thủ công
   bằng `scripts/hc-update-plugins.sh` (mục "Đóng băng plugin cache").
+- `/model` sau khi đổi provider giữa hội thoại hiện danh sách của provider cũ gắn tên provider
+  mới (ví dụ `local-proxy via cliproxy (antigravity)`), provider cũ biến mất khỏi danh sách,
+  provider vừa chọn hiện hai lần (28/10/2026): catalog model được nạp một lần lúc khởi động cho
+  provider ban đầu (`App.model_catalog`) và mọi widget sau fork dùng lại. Fix: sau khi fork
+  thành công, `switch_provider_in_place` tải `{base_url}/models` của provider mới và thay catalog
+  (`refresh_model_catalog_for_provider`, `ChatWidget::set_model_catalog`); tải lỗi thì giữ
+  catalog cũ và báo "Could not load the model list of `<id>`". Log kiểm chứng trong
+  `~/.hcodex/logs_2.sqlite`: `hcodex: model catalog reloaded for provider switch`.
+- Đổi provider trong một session **chưa có lượt nào** báo `thread/fork failed: no rollout found`:
+  upstream ghi rollout lười, chưa có file để fork. Gửi một câu trước rồi đổi, hoặc mở
+  `hcodex -p <profile>` thẳng.
 - `hcodex exec` treo → stdin không phải TTY, thêm `</dev/null`.
 - Lỗi 401 tới `chatgpt.com/backend-api/plugins/featured` → do không login
   ChatGPT, vô hại.

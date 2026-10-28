@@ -6,7 +6,9 @@
 
 use super::*;
 use crate::app_event::OtherProviderModels;
+use crate::model_catalog::ModelCatalog;
 use codex_model_provider_info::ModelProviderInfo;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -14,6 +16,11 @@ const OTHER_PROVIDER_MODELS_TTL: Duration = Duration::from_secs(300);
 const OTHER_PROVIDER_LIST_TIMEOUT: Duration = Duration::from_secs(3);
 
 impl ChatWidget {
+    /// hcodex: swap the `/model` catalog (after an in-place provider switch).
+    pub(crate) fn set_model_catalog(&mut self, catalog: Arc<ModelCatalog>) {
+        self.model_catalog = catalog;
+    }
+
     /// Providers other than the active one whose `/models` can be listed
     /// without an OpenAI/AWS login. `[tui] model_picker_providers` whitelists
     /// ids; unset means every provider except the upstream built-ins.
@@ -171,7 +178,8 @@ impl ChatWidget {
                 });
             }
         }
-        if self.other_provider_models_request_id.is_some() && self.other_provider_models.is_empty() {
+        if self.other_provider_models_request_id.is_some() && self.other_provider_models.is_empty()
+        {
             model_ids.push(String::from(":loading"));
             items.push(SelectionItem {
                 name: "Listing other providers…".to_string(),

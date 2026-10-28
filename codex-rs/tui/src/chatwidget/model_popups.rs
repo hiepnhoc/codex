@@ -23,7 +23,15 @@ impl ChatWidget {
         }
 
         let presets: Vec<ModelPreset> = match self.model_catalog.try_list_models() {
-            Ok(models) => models,
+            Ok(models) => {
+                tracing::info!(
+                    provider = %self.config.model_provider_id,
+                    count = models.len(),
+                    first = models.first().map(|p| p.model.as_str()),
+                    "hcodex: /model opened with catalog"
+                );
+                models
+            }
             Err(_) => {
                 self.add_info_message(
                     "Models are being updated; please try /model again in a moment.".to_string(),
@@ -247,7 +255,8 @@ impl ChatWidget {
         }
 
         let mut items: Vec<SelectionItem> = Vec::new();
-        let mut model_ids: Vec<String> = presets.iter().map(|preset| preset.model.clone()).collect();
+        let mut model_ids: Vec<String> =
+            presets.iter().map(|preset| preset.model.clone()).collect();
         let current_provider = self.config.model_provider_id.clone();
         for preset in presets.into_iter() {
             let description =
