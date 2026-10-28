@@ -456,6 +456,8 @@ lặt vặt thì gemini-3.8 làm tốt; task to phải tự đổi model rồi `
 | simplify sau khi mọi task PASS | `simplify`, rồi `reviewer` kiểm lại một lần | `simplify.toml` → gemini-3.8-flash-high @ cliproxy (mày chốt 27/10; reviewer kiểm lại nên đủ) |
 | `REVIEW: FAIL` | `followup_task` lại đúng dev với FINDINGS → dev sửa → reviewer kiểm lại; tối đa 3 vòng | |
 | `$orch` | `explore` gemini @ cliproxy, `research`/`qc` gpt-6.1-terra @ cliproxy, `plan` opus @ kr | |
+| tra tài liệu/API lạ trước khi code | `docs` (read-only, trả SOURCE/API/EXAMPLE, dev nhận nguyên văn) | `docs.toml` → gemini-3.8-flash-high @ cliproxy |
+| ý kiến thứ hai (advisor) | `advisor` (`fork_turns="all"`) ở 3 mốc: trước khi chốt plan khi model chính không phải opus; cùng một finding/lỗi fail 2 lần; trước báo cáo hoàn thành task nhiều bước. `STOP` = dừng hỏi mày | `advisor.toml` → claude-opus-5.5 @ kr |
 
 Đổi model/provider của một pha = sửa hai dòng trong `~/.hcodex/agents/<role>.toml`, không build:
 
