@@ -1,0 +1,2 @@
+Vendored from https://github.com/jc01rho/omo-herdr-dag (Apache-2.0), commit 69f90a2, 2026-10-29.
+Only the standalone viewer is used; the OmO/Herdr integration is not.
