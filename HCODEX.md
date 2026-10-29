@@ -490,7 +490,9 @@ thước** (test 16:06 cho thấy ngoại lệ "một dòng" cũng bị model vi
 của mày có chữ "tự làm" / "làm trực tiếp", một điều kiện kiểm tra cơ học thay vì đánh giá.
 Test 16:09 trên repo tạm: `Implementer: dev → reviewer`, dev sửa, reviewer PASS vòng đầu.
 "direct execution" = bỏ bước plan, vẫn giao dev; route
-announcement phải có `Implementer: dev → reviewer`. Pha scan bị giới hạn (codemap + ~5 file,
+announcement phải có `Implementer: dev → reviewer`. Review-only cũng do `reviewer` làm (29/10:
+opus tự review vì contract mới chỉ nói về sửa file); tự review chỉ khi mày gõ "tự review".
+Pha scan bị giới hạn (codemap + ~5 file,
 hơn thì spawn `explore`; không tự render/build để "đo"). Nếu vẫn thấy nó tự sửa, gõ "giao dev".
 
 `design`/`plan` không nói chuyện trực tiếp với mày: nó trả QUESTIONS/DESIGN/PLAN, model chính
