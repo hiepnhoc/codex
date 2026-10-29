@@ -959,6 +959,41 @@ Chạy smoke test lẻ bất cứ lúc nào: `scripts/harness-smoke.sh` (mặc �
 Muốn gửi thay đổi ngược lên upstream thì tách commit đó ra branch riêng từ `main`
 và mở PR — không PR từ `my-harness`.
 
+## Xem main và subagent trong pane riêng: `scripts/hc-agents.sh` (29/10/2026)
+
+Vấn đề: muốn thấy agent nào đang chạy gì mà không phải `/subagents` rồi nhảy vào thread,
+và lỡ bấm `esc` trong thread con là ngắt nó. Giải pháp: một viewer **chỉ đọc**, chạy ở
+terminal/pane khác, tail rollout mà core đã ghi sẵn. **Không đụng core, không hook, không
+cần build**; sync đêm không biết nó tồn tại.
+
+```bash
+cd ~/github/digital-monorepo && ~/github/codex/scripts/hc-agents.sh   # session mới nhất có cwd bắt đầu bằng $PWD
+scripts/hc-agents.sh --latest                                          # session mới nhất bất kỳ
+scripts/hc-agents.sh --session <id>                                    # đúng một session
+```
+
+Mở nó trong split của iTerm/tmux cạnh hcodex. Hiển thị: `main` (model, lượt, tool, câu lệnh
+cuối, đang chờ gì) và cây subagent theo `parent_thread_id`: role, nickname, path, `round N`
+(số lần followup), model @ provider, trạng thái ● running / ✓ completed / ✗ error /
+interrupted, tool đang chạy, dòng trả lời cuối, thời gian, số tool. Phím: `↑↓` cuộn,
+`tab`/`n` chọn, `space` gập/mở, `d` chi tiết, `t` Tasks/DAG, `f` follow, `q` đóng. `q` chỉ
+đóng viewer, không ngắt ai.
+
+Cấu tạo (`scripts/hc-agents/`):
+- `tail.mjs` (hcodex): quét `~/.hcodex/sessions` 3 ngày gần nhất, chọn thread chính
+  (`thread_source != subagent`), gom con theo `parent_thread_id`, tóm tắt mỗi rollout
+  (`task_started/task_complete/turn_aborted/error`, `function_call`/`output`, message) và
+  lấy brief + số round từ lệnh `spawn_agent`/`followup_task` của thread cha (brief trong
+  rollout con là `encrypted_content`, không đọc được). Ghi `~/.hcodex/agents-view/<key>.json`
+  mỗi 0,7 s khi có thay đổi.
+- `vendor/` = viewer của [omo-herdr-dag](https://github.com/jc01rho/omo-herdr-dag)
+  (Apache-2.0, giữ LICENSE + NOTICE), chỉ phần TUI độc lập; phần gắn OmO/Herdr không dùng.
+  Node 22 chạy được dù README họ ghi 24.
+
+Giới hạn: chỉ xem, độ trễ ≈ tốc độ core ghi rollout (<1 s); chế độ DAG (`t`) chỉ có khi có
+`runs` với cạnh phụ thuộc, `$daily-dev`/`$orch` hiện chưa phát ra, nên mặc định là Tasks.
+Một session mở 2 ngày thì "elapsed" của main tính từ lượt hiện tại, của con tính từ lúc spawn.
+
 ## Tìm lại session (`/resume` không thấy phiên cũ)
 
 Ba lý do thường gặp và cách xử lý:
