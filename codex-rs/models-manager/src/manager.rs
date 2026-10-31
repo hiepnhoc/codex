@@ -1074,11 +1074,10 @@ fn construct_model_info(
     let mut metadata = Arc::unwrap_or_clone(resolved.model);
     metadata.slug = model.to_owned();
     // hcodex: per-model metadata/prompt overrides from config, keyed by provider.
-    let metadata = config.model_overrides.apply_to_model(
-        config.model_provider_id.as_deref(),
-        model,
-        metadata,
-    );
+    let metadata =
+        config
+            .model_overrides
+            .apply_to_model(config.model_provider_id.as_deref(), model, metadata);
     resolved.model = model_info::with_config_overrides(metadata, config).into();
     resolved
 }

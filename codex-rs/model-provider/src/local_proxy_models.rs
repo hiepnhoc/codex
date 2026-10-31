@@ -299,7 +299,8 @@ pub(crate) fn model_info_for(
     info.context_window = Some(metadata.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW));
     info.max_context_window = None;
     // These entries are authoritative for the proxy, not a guess.
-    info.used_fallback_model_metadata = false;
+    // Upstream now tracks metadata provenance as `ModelOrigin` on the catalog entry
+    // (dc40446064); proxy catalog entries are `Provider` origin by construction.
     normalize_proxy_model_instructions(info)
 }
 
@@ -353,7 +354,8 @@ pub async fn list_models_for_provider(
     http_client_factory: HttpClientFactory,
 ) -> CoreResult<Vec<ModelInfo>> {
     // Command-backed `auth` needs its own manager so the credential command runs.
-    let auth_manager = crate::auth::auth_manager_for_provider(/*auth_manager*/ None, &provider_info);
+    let auth_manager =
+        crate::auth::auth_manager_for_provider(/*auth_manager*/ None, &provider_info);
     let endpoint = LocalProxyModelsEndpoint::new(provider_info, auth_manager);
     timeout(MODELS_REFRESH_TIMEOUT, endpoint.fetch(http_client_factory))
         .await
