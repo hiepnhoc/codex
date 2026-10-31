@@ -30,11 +30,19 @@ fn tui_startup_future_stays_bounded() {
 }
 
 async fn build_config(temp_dir: &TempDir) -> std::io::Result<Config> {
-    ConfigBuilder::default()
+    // hcodex: the harness defaults to the `local-proxy` provider; these upstream tests
+    // assume OpenAI is the default, so pin it unless the fixture names a provider.
+    let fixture = std::fs::read_to_string(temp_dir.path().join("config.toml")).unwrap_or_default();
+    let mut builder = ConfigBuilder::default()
         .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
-        .codex_home(temp_dir.path().to_path_buf())
-        .build()
-        .await
+        .codex_home(temp_dir.path().to_path_buf());
+    if !fixture.contains("model_provider =") {
+        builder = builder.cli_overrides(vec![(
+            "model_provider".to_string(),
+            toml::Value::String("openai".to_string()),
+        )]);
+    }
+    builder.build().await
 }
 
 #[tokio::test]

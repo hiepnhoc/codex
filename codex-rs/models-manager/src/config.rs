@@ -71,7 +71,7 @@ impl ModelOverrides {
         Ok(overrides)
     }
 
-    pub(crate) fn apply_to_model(
+    pub fn apply_to_model(
         &self,
         provider_id: Option<&str>,
         model_slug: &str,
@@ -88,7 +88,7 @@ impl ModelOverrides {
         model
     }
 
-    pub(crate) fn apply_to_models(
+    pub fn apply_to_models(
         &self,
         provider_id: Option<&str>,
         models: Vec<ModelInfo>,
@@ -231,20 +231,9 @@ impl ModelMetadataOverride {
 }
 
 fn empty_model_messages() -> ModelMessages {
-    ModelMessages {
-        persistent_instructions: None,
-        tools: None,
-        instructions_template: None,
-        approvals: None,
-        collaboration_modes: None,
-        auto_review: None,
-        permissions: None,
-        multi_agent: None,
-        token_budget: None,
-        guardian_v2: None,
-        confirmation_policies: None,
-        content_filter_guidance: None,
-    }
+    // `ModelMessages` derives Default; using it keeps this port stable when
+    // upstream adds fields (31/10/2026: `apps`).
+    ModelMessages::default()
 }
 
 #[derive(Debug, Clone, Default)]
