@@ -70,7 +70,9 @@ fn command_auth_identity_hides_the_command_line() {
         /*auth_manager*/ None,
     );
 
-    let identity = endpoint.identity().expect("command-auth providers keep a catalog identity");
+    let identity = endpoint
+        .identity()
+        .expect("command-auth providers keep a catalog identity");
     assert!(identity.starts_with("Proxy|https://proxy.example/v1|command:"));
     assert!(!identity.contains("token-fetcher"));
     assert!(!identity.contains("account-a"));
