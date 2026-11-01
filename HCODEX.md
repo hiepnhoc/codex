@@ -58,9 +58,11 @@ export RUSTY_V8_SRC_BINDING_PATH=$D/src_binding_${P}_${T}.rs
 
 # release (khuyên dùng; lần đầu 15–30 phút, sau đó incremental nhanh)
 cargo build --release --bin hcodex --bin codex-code-mode-host
-ln -sf ~/github/codex/codex-rs/target/release/hcodex ~/.cargo/bin/hcodex
-# code-mode host phải nằm cạnh hcodex (codex tìm nó trong cùng thư mục)
-ln -sf ~/github/codex/codex-rs/target/release/codex-code-mode-host ~/.cargo/bin/codex-code-mode-host
+# cài: copy vào ~/.hcodex/bin (độc lập với target/, xoá target thoải mái) rồi symlink lên PATH;
+# code-mode host phải nằm cạnh hcodex (codex tìm nó trong cùng thư mục). Script sync làm y vậy.
+mkdir -p ~/.hcodex/bin && cp -p target/release/{hcodex,codex-code-mode-host} ~/.hcodex/bin/
+ln -sf ~/.hcodex/bin/hcodex ~/.cargo/bin/hcodex
+ln -sf ~/.hcodex/bin/codex-code-mode-host ~/.cargo/bin/codex-code-mode-host
 
 # hoặc debug (build nhanh hơn, binary to hơn, chạy chậm hơn)
 cargo build --bin hcodex
@@ -1136,10 +1138,16 @@ Hệ quả: `hcodex agents` (command center dùng chung daemon) không dùng đ�
   upstream ghi rollout lười, chưa có file để fork. Gửi một câu trước rồi đổi, hoặc mở
   `hcodex -p <profile>` thẳng.
 - `zsh: command not found: hcodex` dù `~/.cargo/bin/hcodex` vẫn có (31/10/2026): symlink trỏ vào
-  `codex-rs/target/release/hcodex` mà thư mục `target` đã bị xoá (dọn disk hoặc `cargo clean`).
-  Chữa ngay: `cp -p ~/.hcodex/backup/{hcodex,codex-code-mode-host} codex-rs/target/release/`
-  (bản cài trước đó, script sync luôn backup trước khi cài) hoặc `scripts/sync-upstream.sh
-  --rollback`; rồi build lại khi rảnh (`--build-only`, mất cache nên 2–2,5 giờ).
+  `codex-rs/target/release/hcodex` mà thư mục `target` đã bị xoá. Từ 01/11/2026 script cài
+  **copy** binary vào `~/.hcodex/bin/` và symlink `~/.cargo/bin/hcodex` vào đó, nên xoá cả
+  `target` cũng không sao. Nếu vẫn gặp: `scripts/sync-upstream.sh --rollback` (lấy từ
+  `~/.hcodex/backup`).
+- **Dọn ổ cứng**: được xoá `codex-rs/target/debug` (test gate, ~20 GB, script giờ tự xoá sau mỗi
+  lần cài; `KEEP_DEBUG=1` để giữ khi đang chạy test nhiều trong ngày), toolchain rustup cũ
+  (`rustup toolchain uninstall <ver>`, giữ bản `rust-toolchain.toml` đang pin), `~/.hcodex/.tmp/git-*`.
+  **Giữ**: `~/.hcodex/bin` (binary đang chạy), `~/.hcodex/backup`, `~/.hcodex/sessions`
+  (`/resume`), `~/.cargo/registry` + `~/.cargo/git` (dependency, xoá là tải lại),
+  `~/.cargo/.rusty_v8` (V8 prebuilt), `target/release/deps` (giữ thì rebuild 40 phút thay vì 2 giờ).
 - `hcodex exec` treo → stdin không phải TTY, thêm `</dev/null`.
 - Lỗi 401 tới `chatgpt.com/backend-api/plugins/featured` → do không login
   ChatGPT, vô hại.

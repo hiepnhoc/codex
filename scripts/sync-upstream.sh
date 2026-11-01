@@ -15,6 +15,7 @@
 #                                         any conflict -> abort, reset to the pre-sync tag, report, exit 2
 #   env SKIP_TESTS=1                      skip the cargo test gate (still smoke-tests)
 #   env BUILD_JOBS=4 BUILD_NICE=15         parallelism / niceness for cargo (keeps the machine usable)
+#   env KEEP_DEBUG=1                        keep target/debug after install (default: removed to save ~20 GB)
 #   env HARNESS_BRANCH=<name>             harness branch (default my-harness)
 #
 # Every run tags the pre-sync harness commit as harness-pre-sync-<UTC>; undo a
@@ -24,7 +25,8 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 ROOT="$PWD"
 BRANCH="${HARNESS_BRANCH:-my-harness}"
-BIN_DIR="$HOME/.cargo/bin"
+BIN_DIR="$HOME/.cargo/bin"          # symlinks on PATH
+INSTALL_DIR="$HCODEX_HOME/bin"       # real binaries live here, independent of target/
 # hcodex state lives in ~/.hcodex regardless of a CODEX_HOME set by the calling
 # shell (some launchers export one); use it for backups and the models cache.
 HCODEX_HOME="$HOME/.hcodex"
@@ -51,11 +53,14 @@ say() { printf '\n==> %s\n' "$*"; }
 
 rollback() {
   [[ -x "$BACKUP_DIR/hcodex" ]] || { echo "no backup in $BACKUP_DIR" >&2; exit 1; }
-  say "rollback: restoring $BACKUP_DIR/* into $BIN_DIR"
-  cp -f "$BACKUP_DIR/hcodex" "$BIN_DIR/hcodex"
-  cp -f "$BACKUP_DIR/codex-code-mode-host" "$BIN_DIR/codex-code-mode-host"
+  say "rollback: restoring $BACKUP_DIR/* into $INSTALL_DIR"
+  mkdir -p "$INSTALL_DIR"
+  cp -f "$BACKUP_DIR/hcodex" "$INSTALL_DIR/hcodex"
+  cp -f "$BACKUP_DIR/codex-code-mode-host" "$INSTALL_DIR/codex-code-mode-host"
+  ln -sf "$INSTALL_DIR/hcodex" "$BIN_DIR/hcodex"
+  ln -sf "$INSTALL_DIR/codex-code-mode-host" "$BIN_DIR/codex-code-mode-host"
   rm -f "$HCODEX_HOME"/models_cache*.json
-  echo "restored: $("$BIN_DIR/hcodex" --version) (next sync re-links target/release)"
+  echo "restored: $("$BIN_DIR/hcodex" --version)"
   exit 0
 }
 [[ "$MODE" == "--rollback" ]] && rollback
@@ -198,14 +203,21 @@ build_gate_install() {
   "$ROOT/scripts/harness-smoke.sh" "$PWD/target/release/hcodex"
 
   say "install"
-  ln -sf "$PWD/target/release/hcodex" "$BIN_DIR/hcodex"
-  ln -sf "$PWD/target/release/codex-code-mode-host" "$BIN_DIR/codex-code-mode-host"
+  # Copy, don't symlink: the installed hcodex must survive `rm -rf target` (31/10/2026).
+  mkdir -p "$INSTALL_DIR"
+  cp -f "$PWD/target/release/hcodex" "$INSTALL_DIR/hcodex.new" && mv -f "$INSTALL_DIR/hcodex.new" "$INSTALL_DIR/hcodex"
+  cp -f "$PWD/target/release/codex-code-mode-host" "$INSTALL_DIR/codex-code-mode-host.new" && mv -f "$INSTALL_DIR/codex-code-mode-host.new" "$INSTALL_DIR/codex-code-mode-host"
+  ln -sf "$INSTALL_DIR/hcodex" "$BIN_DIR/hcodex"
+  ln -sf "$INSTALL_DIR/codex-code-mode-host" "$BIN_DIR/codex-code-mode-host"
   rm -f "$HCODEX_HOME"/models_cache*.json
-  echo "installed: $("$BIN_DIR/hcodex" --version)"
-  # Incremental caches from the test/check gate grow by tens of GB per sync and
-  # are never reused across dependency bumps; drop them (deps/ stay for speed).
-  rm -rf target/debug/incremental
-  echo "cleaned target/debug/incremental (disk free: $(df -h . | awk 'NR==2{print $4}'))"
+  echo "installed: $("$BIN_DIR/hcodex" --version) -> $INSTALL_DIR"
+  # Disk hygiene after a good install: the debug tree (test/check gate, ~20 GB) is
+  # rebuilt by the next gate anyway; release deps stay so rebuilds take ~40 min.
+  # Set KEEP_DEBUG=1 to skip (e.g. when iterating on tests during the day).
+  if [[ "${KEEP_DEBUG:-}" != "1" ]]; then
+    rm -rf target/debug
+    echo "cleaned target/debug (disk free: $(df -h . | awk 'NR==2{print $4}'))"
+  fi
   echo "reminder: codex-ide types -> cd ~/github/codex-ide && hcodex app-server generate-ts --out src/protocol && pnpm exec tsc --noEmit"
   if [[ "$UNATTENDED" == "1" ]]; then
     git push -q origin "$BRANCH" 2>/dev/null && echo "pushed $BRANCH to origin" || echo "(push to origin skipped/failed)"
