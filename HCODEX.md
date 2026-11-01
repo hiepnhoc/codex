@@ -995,6 +995,34 @@ Giới hạn: chỉ xem, độ trễ ≈ tốc độ core ghi rollout (<1 s); ch
 `runs` với cạnh phụ thuộc, `$daily-dev`/`$orch` hiện chưa phát ra, nên mặc định là Tasks.
 Một session mở 2 ngày thì "elapsed" của main tính từ lượt hiện tại, của con tính từ lúc spawn.
 
+## Khối sub-agents sống ngay dưới dòng `Working` (01/11/2026)
+
+Không cần gõ gì: khi session chính có agent con đang chạy, dưới dòng `• Working (…)` hiện:
+
+```text
+• Working (4m 56s · esc to interrupt)
+  sub-agents · ⌥→ open · /subagents details
+  ● dev_1      gemini-3.8-flash-high  2m 10s  $ go test ./internal/... -count=1
+    Đang thêm case key rỗng vào strict_list.go, chạy lại test
+  ● review_1   gpt-6.1-terra          0m 40s  $ git diff HEAD -- account-service/
+    Preview cho thấy 3 file reviewable…
+  ✓ dev_2      CHANGE REPORT đã gửi
+```
+
+Mỗi agent đang chạy: tên (`agent_path` bỏ `/root/`), model, thời gian từ lúc thấy chạy, lệnh
+đang chạy (ItemStarted CommandExecution chưa có ItemCompleted), và dòng hoạt động cuối (cùng
+bộ tóm tắt `/subagents` của upstream dùng). Agent xong gom thành một dòng `✓`, tối đa 3; không
+còn con nào chạy thì khối biến mất. `⌥→`/`⌥←` nhảy vào/ra thread con (phím upstream),
+`/subagents` in khối chi tiết + picker.
+
+Cách làm, không đụng core: TUI vốn buffer event của mọi thread con (`app/thread_events.rs`).
+`app/agents_live.rs` (hcodex) đọc buffer đó + `agent_navigation` dựng các dòng;
+`thread_routing.rs` gọi nó sau mỗi Item/Turn/ThreadClosed của thread con; `chatwidget/
+agents_live.rs` chuyển xuống `bottom_pane` (`set_agents_live_block`), `status_indicator_widget`
+vẽ sau phần details, cắt theo bề rộng. Thời điểm bắt đầu giữ trong `static` của file hcodex để
+không thêm field vào `App` upstream. Khác với `hc-agents.sh` (pane riêng, đọc rollout, thấy cả
+lịch sử), khối này chỉ là cái nhìn nhanh trong session.
+
 ## Tìm lại session (`/resume` không thấy phiên cũ)
 
 Ba lý do thường gặp và cách xử lý:

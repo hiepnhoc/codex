@@ -135,7 +135,7 @@ impl AgentStatusThreadPreview {
     }
 }
 
-fn activity_summary(item: &ThreadItemPayload) -> Option<String> {
+pub(super) fn activity_summary(item: &ThreadItemPayload) -> Option<String> {
     let summary = match item {
         ThreadItemPayload::AgentMessage { text, .. } | ThreadItemPayload::Plan { text, .. } => text,
         ThreadItemPayload::Reasoning { summary, .. } => summary.last()?,
