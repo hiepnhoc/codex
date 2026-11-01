@@ -1194,6 +1194,13 @@ impl App {
         } else if turn_stopped {
             self.agent_navigation.mark_stopped(thread_id);
         }
+        // hcodex: keep the live sub-agents block under the status row current.
+        if notification
+            .as_ref()
+            .is_none_or(Self::notification_affects_agents_live_block)
+        {
+            self.refresh_agents_live_block();
+        }
 
         // Settings snapshots do not belong in the transcript queue: apply them in receive order.
         if let Some(ServerNotification::ThreadSettingsUpdated(settings)) = notification.as_ref()

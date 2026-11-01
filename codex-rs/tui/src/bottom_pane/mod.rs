@@ -329,6 +329,8 @@ pub(crate) struct BottomPane {
     status: Option<StatusIndicatorWidget>,
     /// Running-hook summary supplied by the lifecycle owner after its reveal delay.
     hook_status_message: Option<String>,
+    /// hcodex: live sub-agents block shown under the status row.
+    agents_live_block: Vec<Line<'static>>,
     inline_banner: Option<actionable_banner::InlineBanner>,
     /// Streaming may drop the row without losing its elapsed time or modal pause.
     status_timer: crate::status_indicator_widget::StatusTimer,
@@ -422,6 +424,7 @@ impl BottomPane {
             is_task_running: false,
             status: None,
             hook_status_message: None,
+            agents_live_block: Vec::new(),
             inline_banner: None,
             status_timer: crate::status_indicator_widget::StatusTimer::default(),
             unified_exec_footer: UnifiedExecFooter::new(),
@@ -1811,7 +1814,18 @@ impl BottomPane {
         if let Some(status) = self.status.as_mut() {
             status.update_inline_message(self.unified_exec_footer.summary_text());
             status.update_hook_status_message(self.hook_status_message.clone());
+            status.update_agents_block(self.agents_live_block.clone());
         }
+    }
+
+    /// hcodex: replace the live sub-agents block (empty clears it).
+    pub(crate) fn set_agents_live_block(&mut self, lines: Vec<Line<'static>>) {
+        if self.agents_live_block == lines {
+            return;
+        }
+        self.agents_live_block = lines;
+        self.sync_status_inline_message();
+        self.request_redraw();
     }
 
     pub(crate) fn composer_is_empty(&self) -> bool {

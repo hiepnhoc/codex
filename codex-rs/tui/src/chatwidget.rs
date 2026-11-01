@@ -256,6 +256,8 @@ use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 mod activity_groups;
 mod activity_presentation;
+/// hcodex: live sub-agents block pass-through to the bottom pane.
+mod agents_live;
 mod command_lifecycle;
 mod config_panel;
 mod connector_mentions;

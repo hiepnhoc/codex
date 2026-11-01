@@ -62,6 +62,8 @@ pub(crate) struct StatusIndicatorWidget {
     inline_message: Option<String>,
     /// Hook activity may move below the status row when it cannot fit in full.
     hook_status_message: Option<String>,
+    /// hcodex: pre-rendered live sub-agents rows shown under the details.
+    agents_block: Vec<Line<'static>>,
     show_interrupt_hint: bool,
     interrupt_binding: Option<ShortcutHint>,
 
@@ -102,6 +104,7 @@ impl StatusIndicatorWidget {
             details_max_lines: STATUS_DETAILS_DEFAULT_MAX_LINES,
             inline_message: None,
             hook_status_message: None,
+            agents_block: Vec::new(),
             show_interrupt_hint: true,
             interrupt_binding: Some(key_hint::plain(KeyCode::Esc).into()),
             app_event_tx,
@@ -160,6 +163,11 @@ impl StatusIndicatorWidget {
 
     pub(crate) fn update_hook_status_message(&mut self, message: Option<String>) {
         self.hook_status_message = message;
+    }
+
+    /// hcodex: rows for running sub-agents, rendered after the details lines.
+    pub(crate) fn update_agents_block(&mut self, lines: Vec<Line<'static>>) {
+        self.agents_block = lines;
     }
 
     pub(crate) fn header(&self) -> &str {
@@ -291,6 +299,13 @@ impl StatusIndicator<'_> {
         ));
         lines.extend(hook_overflow);
         lines.extend(row.wrapped_details_lines(width));
+        // hcodex: live sub-agents block, one row per line, clipped to the width.
+        lines.extend(
+            row.agents_block
+                .iter()
+                .cloned()
+                .map(|line| truncate_line_with_ellipsis_if_overflow(line, usize::from(width))),
+        );
         lines
     }
 }

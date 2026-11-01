@@ -166,6 +166,7 @@ mod hcodex_rate_limit_tests {
         TransportError::Http {
             status,
             url: None,
+            retry_after: codex_http_client::RetryAfter::from_headers(&headers),
             headers: Some(headers),
             body: None,
         }

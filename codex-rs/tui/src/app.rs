@@ -200,6 +200,8 @@ mod agent_message_consolidation;
 mod agent_navigation;
 mod agent_picker;
 mod agent_status_feed;
+/// hcodex: live sub-agents block under the status row.
+mod agents_live;
 #[cfg(any(unix, windows))]
 mod agents_overview;
 mod agents_overview_actions;
