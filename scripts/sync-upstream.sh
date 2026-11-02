@@ -26,11 +26,11 @@ cd "$(git rev-parse --show-toplevel)"
 ROOT="$PWD"
 BRANCH="${HARNESS_BRANCH:-my-harness}"
 BIN_DIR="$HOME/.cargo/bin"          # symlinks on PATH
-INSTALL_DIR="$HCODEX_HOME/bin"       # real binaries live here, independent of target/
 # hcodex state lives in ~/.hcodex regardless of a CODEX_HOME set by the calling
 # shell (some launchers export one); use it for backups and the models cache.
 HCODEX_HOME="$HOME/.hcodex"
 BACKUP_DIR="$HCODEX_HOME/backup"
+INSTALL_DIR="$HCODEX_HOME/bin"       # real binaries live here, independent of target/
 if [[ -n "${CODEX_HOME:-}" && "$CODEX_HOME" != "$HCODEX_HOME" ]]; then
   echo "note: CODEX_HOME=$CODEX_HOME is set in this shell; backups/cache still use $HCODEX_HOME" >&2
 fi
