@@ -1824,6 +1824,12 @@ impl BottomPane {
             return;
         }
         self.agents_live_block = lines;
+        // Upstream hides the status row once an assistant message is committed and
+        // does not bring it back for a following `wait_agent`; the block lives in that
+        // row, so re-show it while agents run and a task is still in flight.
+        if !self.agents_live_block.is_empty() && self.status.is_none() && self.is_task_running() {
+            self.ensure_status_indicator();
+        }
         self.sync_status_inline_message();
         self.request_redraw();
     }
