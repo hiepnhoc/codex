@@ -497,6 +497,15 @@ opus tự review vì contract mới chỉ nói về sửa file); tự review ch�
 Pha scan bị giới hạn (codemap + ~5 file,
 hơn thì spawn `explore`; không tự render/build để "đo"). Nếu vẫn thấy nó tự sửa, gõ "giao dev".
 
+**Đo 02/11/2026 trên ticket thật (PAD-662 + HTML PAD-665)**: dev gemini 29 phút/149 tool call nhưng
+150 message (kể lể từng bước), 17 output >6 KB; reviewer terra 44 phút/60 call, 47 output >6 KB vì
+`nl -ba` cả file, 23 s mỗi bước = 43 phút chờ model; main opus 7 lần `wait_agent` mỗi lần kèm một
+câu "vẫn đang chạy" trên session đã 660 triệu token tích luỹ. Sửa: `dev` không narrate, đọc có địa
+chỉ (`sed -n`, `rg -n`), test một lần cuối; `reviewer` bắt đầu từ `git diff`, không dump cả file,
+ngân sách ~15 phút rồi trả verdict ghi "not checked (budget)"; skill: chờ im lặng, checkpoint 30
+phút bằng `followup_task` hỏi tiến độ (không ngắt, không respawn), mỗi ticket một session mới.
+Không đặt trần số tool call: task to hợp lệ cần nhiều lệnh, chia nhỏ ở plan chứ không chặn dev.
+
 `design`/`plan` không nói chuyện trực tiếp với mày: nó trả QUESTIONS/DESIGN/PLAN, model chính
 chuyển nguyên văn cho mày, lấy câu trả lời rồi `followup_task`. Gate duyệt thiết kế, worktree,
 protected action giữ nguyên; `yolo` vẫn thay gate duyệt như trước. OCR không có LLM thứ hai:
