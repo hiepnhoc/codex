@@ -1157,6 +1157,12 @@ Hệ quả: `hcodex agents` (command center dùng chung daemon) không dùng đ�
   **Giữ**: `~/.hcodex/bin` (binary đang chạy), `~/.hcodex/backup`, `~/.hcodex/sessions`
   (`/resume`), `~/.cargo/registry` + `~/.cargo/git` (dependency, xoá là tải lại),
   `~/.cargo/.rusty_v8` (V8 prebuilt), `target/release/deps` (giữ thì rebuild 40 phút thay vì 2 giờ).
+- Bấm "Trust and continue" báo `config/batchWrite failed … Invalid configuration: invalid
+  transport in mcp_servers.jira` (03/11/2026): file profile (`kr.config.toml`) có bảng lẻ
+  `[mcp_servers.jira.tools.*]` trong khi `command` của jira ở `config.toml`; TUI ghi trust vào
+  file profile rồi validate riêng file đó nên jira "không command, không url". Quy tắc: mọi
+  bảng `[mcp_servers.<x>…]` để chung một file với khối `[mcp_servers.<x>]` có `command`/`url`
+  (đã chuyển vào `config.toml`).
 - `hcodex exec` treo → stdin không phải TTY, thêm `</dev/null`.
 - Lỗi 401 tới `chatgpt.com/backend-api/plugins/featured` → do không login
   ChatGPT, vô hại.
