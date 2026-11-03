@@ -1117,6 +1117,19 @@ Hệ quả: `hcodex agents` (command center dùng chung daemon) không dùng đ�
   SSE → hcodex không ghi nó thành quota OpenAI. Harness retry lại toàn request
   theo `stream_max_retries`, hiện status `Provider rate limit, retrying...` và
   chỉ báo lỗi khi hết lượt.
+- Sub-agent "đứng" hàng giờ, block sub-agents vẫn hiện lệnh cuối, main cứ
+  `Waiting for agents` (gặp 03/11/2026 với `reviewer` trên cliproxy): proxy trả 503
+  kèm `Retry-After: 12353` (3h26m) và core **ngủ đúng chừng đó** trước khi thử lại,
+  không báo lỗi vì vẫn là "retry 1/5". Nhận dạng: rollout của con không có dòng mới
+  sau một `function_call_output`, và `logs_2.sqlite` có `Request completed ... status=503`
+  với `retry-after` lớn ngay trước đó. Từ bản sửa 03/11/2026
+  (`core/src/responses_retry.rs::cap_provider_retry_after`), provider **không phải
+  OpenAI** chỉ được chờ tối đa **60s** mỗi lượt dù header đòi bao nhiêu (log WARN
+  `provider Retry-After exceeds the hcodex ceiling`); hết `stream_max_retries` (5 lượt,
+  ~5 phút) thì turn con fail và `wait_agent` của main nhận lỗi để đổi provider. Chữa
+  tại chỗ khi gặp: sửa `model_provider` của role sang provider khác (role file được
+  đọc lại ở mỗi lần spawn, không cần restart), `esc` cắt lượt wait của main rồi bảo
+  nó `close_agent` con treo và spawn lại.
 - `/model` hiện danh sách cũ → danh sách được cache 5 phút ở
   `~/.hcodex/models_cache-<provider-hash>.json` (OpenAI chính chủ vẫn dùng
   `models_cache.json`). Mỗi provider như `cliproxy`, `kr` có cache riêng; xoá
