@@ -1143,6 +1143,12 @@ Hệ quả: `hcodex agents` (command center dùng chung daemon) không dùng đ�
   (`refresh_model_catalog_for_provider`, `ChatWidget::set_model_catalog`); tải lỗi thì giữ
   catalog cũ và báo "Could not load the model list of `<id>`". Log kiểm chứng trong
   `~/.hcodex/logs_2.sqlite`: `hcodex: model catalog reloaded for provider switch`.
+- Resume bằng profile khác provider đã ghi (vd `hcodex -p hibox resume <id>` cho chat từng chạy
+  local-proxy) → "This chat uses Local Proxy, but Codex now uses hibox, so this chat is read-only"
+  (upstream `55c099a142`, từ sync 31/10/2026; trước đó resume tự nhận provider mới). Phím trong
+  màn hình đó: `c` chat mới có câu dẫn tới chat cũ, `n` chat mới, `esc` chọn chat khác. Muốn
+  **giữ nguyên lịch sử**: resume bằng đúng profile cũ (`-p kr`) rồi `/model` chọn model của
+  provider mới; hcodex fork thread sang provider đó, lần sau resume bằng profile mới.
 - Đổi provider trong một session **chưa có lượt nào** báo `thread/fork failed: no rollout found`:
   upstream ghi rollout lười, chưa có file để fork. Gửi một câu trước rồi đổi, hoặc mở
   `hcodex -p <profile>` thẳng.
