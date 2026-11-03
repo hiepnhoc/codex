@@ -1163,8 +1163,10 @@ Hệ quả: `hcodex agents` (command center dùng chung daemon) không dùng đ�
   **giữ nguyên lịch sử**: resume bằng đúng profile cũ (`-p kr`) rồi `/model` chọn model của
   provider mới; hcodex fork thread sang provider đó, lần sau resume bằng profile mới.
 - Đổi provider trong một session **chưa có lượt nào** báo `thread/fork failed: no rollout found`:
-  upstream ghi rollout lười, chưa có file để fork. Gửi một câu trước rồi đổi, hoặc mở
-  `hcodex -p <profile>` thẳng.
+  upstream ghi rollout lười, chưa có file để fork. Bản cũ: gửi một câu trước rồi đổi, hoặc mở
+  `hcodex -p <profile>` thẳng. Từ 03/11/2026 (`tui/src/app/provider_setup.rs`): gặp lỗi này
+  hcodex tự mở thread mới trên provider vừa chọn (không có gì để mang theo) và báo
+  "Now using `<model>` via `<provider>` (new chat …)".
 - `zsh: command not found: hcodex` dù `~/.cargo/bin/hcodex` vẫn có (31/10/2026): symlink trỏ vào
   `codex-rs/target/release/hcodex` mà thư mục `target` đã bị xoá. Từ 01/11/2026 script cài
   **copy** binary vào `~/.hcodex/bin/` và symlink `~/.cargo/bin/hcodex` vào đó, nên xoá cả
