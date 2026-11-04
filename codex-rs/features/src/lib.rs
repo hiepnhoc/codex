@@ -133,6 +133,11 @@ pub enum Feature {
     /// Set `plugin_marketplace_auto_upgrade = false` to freeze the plugin cache until
     /// `hcodex plugin marketplace upgrade` is run by hand.
     PluginMarketplaceAutoUpgrade,
+    /// hcodex: a thread keeps running on the provider it was recorded with, even when the
+    /// current profile or an in-session `/model` switch selects another configured provider.
+    /// No-op since upstream e115d5f90d made this the default behavior; the key is kept so
+    /// existing `[features] thread_keeps_provider = true` configs still load cleanly.
+    ThreadKeepsProvider,
     /// Allow the TUI to discover and select among multiple conversation backends.
     TuiMultiBackend,
     /// Enable workspace behavior for side conversations in the owned TUI.
@@ -1182,6 +1187,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "plugin_marketplace_auto_upgrade",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::ThreadKeepsProvider,
+        key: "thread_keeps_provider",
+        stage: Stage::Stable,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::TuiMultiBackend,

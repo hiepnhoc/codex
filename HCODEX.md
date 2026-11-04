@@ -15,6 +15,7 @@ Branch `my-harness` trong repo này. Binary tên `hcodex`, tách hoàn toàn kh�
 | `/model` liệt kê model từ provider (`GET {base_url}/models`, mọi provider OpenAI-compatible) + effort low/medium/high/xhigh | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/models-manager/src/manager.rs` |
 | Catalog của proxy được chuẩn hoá thành prompt harness trung lập cho mọi model (GPT, Claude, Gemini, Qwen, GLM…), kể cả catalog file; cache model gắn identity provider+auth (cơ chế upstream) và không trộn catalog OpenAI bundled vào | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/model-provider/src/provider.rs`, `codex-rs/models-manager/src/manager.rs` |
 | `/provider` trong TUI: thêm provider (id, base URL, key) → kiểm tra `/models` → chọn model → ghi config + profile; `/model` gộp model của mọi provider, chọn là đổi provider **giữ nguyên hội thoại** (fork thread); `/provider use <id> [model]` là đường tắt | `codex-rs/tui/src/bottom_pane/provider_setup_view.rs`, `codex-rs/tui/src/chatwidget/provider_setup.rs`, `codex-rs/tui/src/app/provider_setup.rs` |
+| Thread chạy tiếp trên provider nó đã ghi khi profile/`/model` chọn provider khác (upstream khoá read-only); bật bằng `[features] thread_keeps_provider = true` | `codex-rs/app-server/src/config_manager.rs` (`check_thread_model_provider_for_input`, `load_for_resume`), `codex-rs/features/src/lib.rs` |
 | HTTP 429 từ provider **không phải OpenAI** được retry ở lớp HTTP, tôn trọng `Retry-After` (codex gốc không retry 429) | `codex-rs/model-provider-info/src/lib.rs` (`retry_429`), `codex-rs/codex-client/src/retry.rs` |
 | `server_is_overloaded`, SSE rate-limit và HTTP `usage_limit_reached` từ proxy được retry cấp turn (2s→30s/lần, tối đa `stream_max_retries`) thay vì kết thúc turn giả; OpenAI chính chủ giữ semantics upstream | `codex-rs/core/src/session/turn.rs`, `codex-rs/core/src/responses_retry.rs` (+ test `core/tests/suite/hcodex_overload_retry.rs`) |
 | Tool kiểu `namespace` (multi-agent v2 `collaboration`, MCP `mcp__<server>`) được **trải phẳng** thành function `<namespace>__<tool>` cho provider không phải OpenAI (proxy/gateway bỏ qua tool type lạ → model mất tool); call trả về được map lại đúng handler | `codex-rs/core/src/tools/flat_namespaces.rs`, `codex-rs/core/src/tools/router.rs`, `codex-rs/model-provider-info/src/capabilities.rs` (`responses_extensions`) |
@@ -1163,12 +1164,20 @@ Hệ quả: `hcodex agents` (command center dùng chung daemon) không dùng đ�
   (`refresh_model_catalog_for_provider`, `ChatWidget::set_model_catalog`); tải lỗi thì giữ
   catalog cũ và báo "Could not load the model list of `<id>`". Log kiểm chứng trong
   `~/.hcodex/logs_2.sqlite`: `hcodex: model catalog reloaded for provider switch`.
-- Resume bằng profile khác provider đã ghi (vd `hcodex -p hibox resume <id>` cho chat từng chạy
-  local-proxy) → "This chat uses Local Proxy, but Codex now uses hibox, so this chat is read-only"
-  (upstream `55c099a142`, từ sync 31/10/2026; trước đó resume tự nhận provider mới). Phím trong
-  màn hình đó: `c` chat mới có câu dẫn tới chat cũ, `n` chat mới, `esc` chọn chat khác. Muốn
-  **giữ nguyên lịch sử**: resume bằng đúng profile cũ (`-p kr`) rồi `/model` chọn model của
-  provider mới; hcodex fork thread sang provider đó, lần sau resume bằng profile mới.
+- "This chat uses X, but Codex now uses Y, so this chat is read-only" (upstream `55c099a142`,
+  từ sync 31/10/2026). Upstream so provider của thread với provider trong config trên đĩa
+  (profile `-p`), lệch là khoá nhập liệu. Nó bắn cả khi `/model` đổi provider **trong phiên**:
+  fork sang hibox thành công rồi bị khoá ngay vì profile vẫn là kr (gặp 04/11/2026). Từ
+  04/11/2026 hcodex có flag `[features] thread_keeps_provider = true` (đã bật trong
+  `config.toml`, mặc định tắt để giữ test upstream): thread chạy tiếp trên provider đã ghi
+  miễn provider đó có trong `[model_providers]`; áp dụng cho cả nhập liệu
+  (`check_thread_model_provider_for_input`) lẫn resume (`load_for_resume`,
+  `app-server/src/config_manager.rs`). Provider lạ vẫn bị khoá như upstream. Khi chưa có
+  bản build này: resume bằng đúng profile của thread (status line có `provider: <id>`),
+  hoặc `c` chat mới có câu dẫn, `n` chat mới, `esc` chọn chat khác.
+  Test: `cargo test -p codex-app-server --lib -- thread_keeps_provider input_provider_check`
+  (2 test `catalog_reload_*` cùng crate fail sẵn vì hcodex mặc định `local-proxy`, upstream mong
+  `openai`; gate sync không chạy nhóm này).
 - Đổi provider trong một session **chưa có lượt nào** báo `thread/fork failed: no rollout found`:
   upstream ghi rollout lười, chưa có file để fork. Bản cũ: gửi một câu trước rồi đổi, hoặc mở
   `hcodex -p <profile>` thẳng. Từ 03/11/2026 (`tui/src/app/provider_setup.rs`): gặp lỗi này
