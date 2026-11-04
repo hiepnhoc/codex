@@ -320,3 +320,61 @@ name = "Gateway"
     );
     Ok(())
 }
+
+/// hcodex: `thread_keeps_provider` lets a thread stay writable on another configured provider.
+#[tokio::test]
+async fn thread_keeps_provider_admits_other_configured_provider() -> Result<()> {
+    let home = tempdir()?;
+    std::fs::write(
+        home.path().join("config.toml"),
+        r#"
+model_provider = "openai"
+[features]
+thread_keeps_provider = true
+[model_providers.gateway]
+name = "Gateway"
+"#,
+    )?;
+    let selecting_gateway = ConfigManager::new_for_tests(
+        home.path().to_path_buf(),
+        vec![("model_provider".into(), TomlValue::String("gateway".into()))],
+        LoaderOverrides::without_managed_config_for_tests(),
+        CloudConfigBundleLoader::default(),
+    );
+    let gateway_thread = selecting_gateway
+        .load_latest_config(Some(home.path().to_path_buf()))
+        .await?;
+    assert_eq!(gateway_thread.model_provider_id, "gateway");
+
+    // The profile on disk selects `openai`; the thread recorded on `gateway` stays writable.
+    let default_manager = ConfigManager::without_managed_config_for_tests(home.path().to_path_buf());
+    default_manager
+        .check_thread_model_provider_for_input(&gateway_thread)
+        .await?;
+    default_manager
+        .load_for_resume(
+            Some("gateway"),
+            None,
+            ConfigOverrides::default(),
+            Some(home.path().to_path_buf()),
+        )
+        .await?;
+
+    // A provider that is not configured is still rejected.
+    let mut unknown_thread = gateway_thread.clone();
+    unknown_thread.model_provider_id = "ghost".into();
+    let error = default_manager
+        .check_thread_model_provider_for_input(&unknown_thread)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<ModelProviderError>()),
+        Some(&ModelProviderError::ModelProviderMismatch {
+            model_provider: "ghost".into(),
+            current_model_provider: "openai".into(),
+        })
+    );
+    Ok(())
+}

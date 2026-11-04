@@ -12,6 +12,7 @@ use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_exec_server::LOCAL_FS;
+use codex_features::Feature;
 use codex_features::feature_for_key;
 use codex_login::AuthManager;
 use codex_login::default_client::set_default_client_residency_requirement;
@@ -440,6 +441,16 @@ impl ConfigManager {
             .load_latest_config(Some(current.cwd.to_path_buf()))
             .await?;
         if current.model_provider_id != configured.model_provider_id {
+            // hcodex: with `thread_keeps_provider`, a thread recorded on another configured
+            // provider stays writable on that provider (in-session `/model` switch, or a
+            // resume under a different profile) instead of turning read-only.
+            if configured.features.enabled(Feature::ThreadKeepsProvider)
+                && configured
+                    .model_providers
+                    .contains_key(&current.model_provider_id)
+            {
+                return Ok(());
+            }
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 ModelProviderError::ModelProviderMismatch {
@@ -551,10 +562,14 @@ impl ConfigManager {
                 .map(str::to_owned)
         });
         // Resolve the selection before the saved provider is applied as a resume override.
-        let current_provider = self
+        let latest_config = self
             .load_latest_config(typesafe_overrides.cwd.clone().or_else(|| cwd.clone()))
-            .await
-            .map(|config| config.model_provider_id);
+            .await;
+        // hcodex: see `check_thread_model_provider_for_input`.
+        let keeps_provider = latest_config
+            .as_ref()
+            .is_ok_and(|config| config.features.enabled(Feature::ThreadKeepsProvider));
+        let current_provider = latest_config.map(|config| config.model_provider_id);
         self.load_with_validation(
             &self.current_cli_overrides(),
             request_overrides,
@@ -599,6 +614,9 @@ impl ConfigManager {
                     requested_provider,
                 ] {
                     if provider != current_provider {
+                        if keeps_provider && config.model_providers.contains_key(provider) {
+                            continue;
+                        }
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidInput,
                             ModelProviderError::ModelProviderMismatch {
