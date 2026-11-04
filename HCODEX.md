@@ -240,6 +240,13 @@ hcodex
 > /provider groq https://api.groq.com/openai/v1           # không key: có thể nhập 1 dòng
 ```
 
+**Status line hiện provider (04/11/2026)**
+
+Upstream có sẵn item `provider` (`provider: <id>`) cho `[tui] status_line`; đã đặt nó đầu
+dòng trong `~/.hcodex/config.toml` để phân biệt `claude-opus-5-5` của hibox với
+`claude-opus-5.5` của kr sau khi `/model` đổi provider (item đọc `model_provider_id` của
+thread đang hiển thị nên đổi theo fork). Sửa tại chỗ bằng `/statusline` nếu muốn bỏ.
+
 **Nhiều provider trong một hội thoại: `/model` gộp (15/10/2026)**
 
 Config vẫn tách từng provider (`[model_providers.<id>]`, key và URL riêng),
