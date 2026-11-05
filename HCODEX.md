@@ -80,6 +80,64 @@ which hcodex && hcodex --version
 Mỗi lần sửa code harness chỉ cần `cargo build --release --bin hcodex` lại —
 symlink tự trỏ vào binary mới, không cần cài lại.
 
+## Cài trên máy Windows (WSL2) (05/11/2026)
+
+Dùng **WSL2 Ubuntu**, không build native Windows: script (`scripts/*.sh`, `ocr-safe.sh`,
+hooks), skills và symlink đều là bash/POSIX; V8 prebuilt cho `x86_64-unknown-linux-gnu`
+có sẵn trên release `rusty-v8-v152.2.0` của openai/codex (bản `.a.gz` cho
+`x86_64-pc-windows-msvc` không có).
+
+```powershell
+# PowerShell (Admin), một lần
+wsl --install -d Ubuntu
+```
+
+```bash
+# trong Ubuntu (WSL)
+sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev git curl python3 python3-pip unzip
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source ~/.cargo/env
+curl -LsSf https://astral.sh/uv/install.sh | sh                      # uvx cho MCP jira
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs   # hc-agents viewer
+
+git clone -b my-harness https://github.com/hiepnhoc/codex.git ~/github/codex
+cd ~/github/codex/codex-rs
+D=~/.cargo/.rusty_v8/codex-v152.2.0; mkdir -p $D
+B=https://github.com/openai/codex/releases/download/rusty-v8-v152.2.0
+T=x86_64-unknown-linux-gnu; P=ptrcomp_sandbox_release
+( cd $D && curl -fsSL -O $B/librusty_v8_${P}_${T}.a.gz && curl -fsSL -O $B/src_binding_${P}_${T}.rs \
+        && curl -fsSL -O $B/rusty_v8_${P}_${T}.sha256 && sha256sum -c rusty_v8_${P}_${T}.sha256 )
+export RUSTY_V8_ARCHIVE=$D/librusty_v8_${P}_${T}.a.gz
+export RUSTY_V8_SRC_BINDING_PATH=$D/src_binding_${P}_${T}.rs   # cho cả 2 export vào ~/.bashrc
+cargo build --release -j 4 --bin hcodex --bin codex-code-mode-host   # 20–40 phút
+mkdir -p ~/.hcodex/bin && cp -p target/release/{hcodex,codex-code-mode-host} ~/.hcodex/bin/
+ln -sf ~/.hcodex/bin/hcodex ~/.cargo/bin/hcodex
+ln -sf ~/.hcodex/bin/codex-code-mode-host ~/.cargo/bin/codex-code-mode-host
+hcodex --version
+```
+
+**Mang cấu hình từ Mac sang** (không mang sessions/sqlite/log):
+
+```bash
+# trên Mac: -h để copy skill thật thay vì symlink vào ~/.codex/skills
+cd ~/.hcodex && tar -chzf ~/hcodex-config.tgz config.toml *.config.toml AGENTS.md hooks.json \
+  agents skills rules provider-credentials jira.env proxy 2>/dev/null
+# chép ~/hcodex-config.tgz sang Windows (\\wsl$\Ubuntu\home\<user>\ hoặc scp), rồi trong WSL:
+cd ~/.hcodex && tar -xzf ~/hcodex-config.tgz
+sed -i "s#/Users/hiepln/.cargo/bin/hcodex#$HOME/.cargo/bin/hcodex#; s#/Users/hiepln/.local/bin/uvx#$HOME/.local/bin/uvx#; s#/Users/hiepln/#$HOME/#g" config.toml *.config.toml
+```
+
+Provider: `local-proxy` (Kiro `:8181`) và `hibox` (Fusebox `:8318`) chạy trên Mac, máy
+Windows không có → dùng `cliproxy` (HTTPS, key nằm trong `config.toml`): `hcodex -p cliproxy`
+hoặc đổi `model_provider = "cliproxy"` ở đầu `config.toml`. Role đang pin `local-proxy`/`hibox`
+(`agents/design|plan|advisor|reviewer.toml`) phải đổi `model_provider = "cliproxy"` (model id:
+`claude-opus-5-5-high`, `gpt-6.1-terra`, `gemini-3.8-flash-high`). Cùng mạng với Mac thì có
+thể tunnel thay vì đổi: `ssh -N -L 8181:127.0.0.1:8181 -L 8318:127.0.0.1:8318 <user>@<mac>`.
+
+Chưa test thật trên WSL (05/11/2026). Sandbox Linux của codex cần Landlock/seccomp; kernel WSL2
+mới có Landlock, nếu lệnh báo lỗi sandbox thì chạy `hcodex --sandbox danger-full-access` hoặc
+`-c sandbox_mode="danger-full-access"` tạm và báo lại. Cập nhật sau này: `cd ~/github/codex &&
+git pull && scripts/sync-upstream.sh --build-only` (không có launchd, muốn tự động thì cron).
+
 ## Dùng hằng ngày (trong terminal IntelliJ hoặc bất kỳ terminal nào)
 
 ```bash
