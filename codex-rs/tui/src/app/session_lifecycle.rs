@@ -21,8 +21,10 @@ use crate::app_server_session::thread_blocks_direct_input;
 use crate::bottom_pane::MentionBinding;
 use crate::chatwidget::ThreadInputStateRestoreMode;
 use crate::chatwidget::UserMessage;
+use crate::multi_agents::AgentPickerThreadEntry;
 use crate::startup_draft::StartupDraftPump;
 use crate::streaming::commit_tick::CommitTickScope;
+use crate::text_formatting::truncate_text;
 use codex_app_server_protocol::SkillScope;
 use codex_app_server_protocol::ThreadPrepareApprovedPlanParams;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
@@ -196,7 +198,21 @@ impl App {
     ) -> SelectionViewParams {
         let mut threads = self.agent_navigation.visible_threads();
         let pending = &self.agent_navigation.pending_approvals;
-        threads.sort_by_key(|(id, _)| !pending.contains(id));
+        // Threads waiting for approval come first (upstream). hcodex: within each group, main
+        // first, then running agents, then finished ones, closed last; the right-hand column
+        // shows status/model/activity instead of the thread uuid.
+        threads.sort_by_key(|(thread_id, entry)| {
+            let rank = if self.primary_thread_id == Some(*thread_id) {
+                0
+            } else if entry.is_running {
+                1
+            } else if entry.is_closed {
+                3
+            } else {
+                2
+            };
+            (!pending.contains(thread_id), rank)
+        });
         let mut row_ids = Vec::with_capacity(threads.len());
         let mut initial_selected_idx = None;
         let items: Vec<SelectionItem> = threads
@@ -211,6 +227,9 @@ impl App {
                 {
                     initial_selected_idx = Some(idx);
                 }
+                let is_primary = self.primary_thread_id == Some(thread_id);
+                let (status, status_detail) =
+                    self.agent_picker_status(thread_id, entry, is_primary);
                 let name = self.thread_label(thread_id);
                 let uuid = thread_id.to_string();
                 SelectionItem {
@@ -219,14 +238,14 @@ impl App {
                     } else {
                         name.clone()
                     },
-                    name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
-                    description: Some(uuid.clone()),
+                    name_prefix_spans: agent_picker_status_spans(status),
+                    description: Some(status_detail),
                     is_current,
                     actions: vec![Box::new(move |tx| {
                         tx.send(AppEvent::SelectAgentThread(thread_id));
                     })],
                     dismiss_on_select: true,
-                    search_value: Some(format!("{name} {uuid}")),
+                    search_value: Some(format!("{name} {uuid} {}", status.search_word())),
                     ..Default::default()
                 }
             })
@@ -242,6 +261,61 @@ impl App {
             initial_selected_idx,
             ..SelectionViewParams::picker()
         }
+    }
+
+    /// hcodex: status plus the picker's right-hand column for one agent row.
+    fn agent_picker_status(
+        &self,
+        thread_id: ThreadId,
+        entry: &AgentPickerThreadEntry,
+        is_primary: bool,
+    ) -> (AgentPickerStatus, String) {
+        const DETAIL_GRAPHEMES: usize = 70;
+        let (started, stopped) = super::agents_live::agent_timing(thread_id);
+        if is_primary {
+            let status = if entry.is_running {
+                AgentPickerStatus::Running
+            } else {
+                AgentPickerStatus::Idle
+            };
+            let mut parts = vec![if entry.is_running { "working" } else { "idle" }.to_string()];
+            if let Some(model) = self.chat_widget.config_ref().model.as_deref() {
+                parts.push(model.to_string());
+            }
+            return (status, parts.join(" · "));
+        }
+        if entry.is_closed {
+            return (AgentPickerStatus::Closed, "closed".to_string());
+        }
+        let glance = super::agents_live::glance_thread(self, thread_id);
+        if entry.is_running {
+            let mut parts = vec!["running".to_string()];
+            parts.extend(glance.model.clone());
+            parts.extend(started.map(super::agents_live::elapsed_label));
+            if let Some(tool) = &glance.running_tool {
+                parts.push(format!("$ {}", truncate_text(tool, DETAIL_GRAPHEMES)));
+            } else if let Some(text) = &glance.last_activity {
+                parts.push(truncate_text(text, DETAIL_GRAPHEMES));
+            }
+            return (AgentPickerStatus::Running, parts.join(" · "));
+        }
+        let status = if stopped.is_some() || glance.last_activity.is_some() {
+            AgentPickerStatus::Done
+        } else {
+            AgentPickerStatus::Idle
+        };
+        let mut parts = vec![match (status, stopped) {
+            (AgentPickerStatus::Done, Some(at)) => {
+                format!("done {}", super::agents_live::ago_label(at))
+            }
+            (AgentPickerStatus::Done, None) => "done".to_string(),
+            _ => "idle".to_string(),
+        }];
+        parts.extend(glance.model.clone());
+        if let Some(text) = &glance.last_activity {
+            parts.push(truncate_text(text, DETAIL_GRAPHEMES));
+        }
+        (status, parts.join(" · "))
     }
 
     pub(super) fn is_terminal_thread_read_error(err: &color_eyre::Report) -> bool {
