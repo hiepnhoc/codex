@@ -73,13 +73,36 @@ pub(crate) struct SpawnRequestSummary {
     pub(crate) reasoning_effort: ReasoningEffortConfig,
 }
 
-pub(crate) fn agent_picker_status_dot_spans(is_closed: bool) -> Vec<Span<'static>> {
-    let dot = if is_closed {
-        "•".into()
-    } else {
-        "•".green()
+/// hcodex: picker row status, derived from thread liveness plus the live block's timing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AgentPickerStatus {
+    Running,
+    Idle,
+    Done,
+    Closed,
+}
+
+impl AgentPickerStatus {
+    /// Word appended to the row's search value so typing it filters the picker.
+    pub(crate) fn search_word(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Idle => "idle",
+            Self::Done => "done",
+            Self::Closed => "closed",
+        }
+    }
+}
+
+/// hcodex: `●` running, `•` idle, `✓` done, `✗` closed (dim).
+pub(crate) fn agent_picker_status_spans(status: AgentPickerStatus) -> Vec<Span<'static>> {
+    let glyph: Span<'static> = match status {
+        AgentPickerStatus::Running => "●".green(),
+        AgentPickerStatus::Idle => "•".green(),
+        AgentPickerStatus::Done => "✓".dim(),
+        AgentPickerStatus::Closed => "✗".dim(),
     };
-    vec![dot, " ".into()]
+    vec![glyph, " ".into()]
 }
 
 pub(crate) fn format_agent_picker_item_name(

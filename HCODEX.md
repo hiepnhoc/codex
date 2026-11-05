@@ -1042,6 +1042,29 @@ vẽ sau phần details, cắt theo bề rộng. Thời điểm bắt đầu gi�
 không thêm field vào `App` upstream. Khác với `hc-agents.sh` (pane riêng, đọc rollout, thấy cả
 lịch sử), khối này chỉ là cái nhìn nhanh trong session.
 
+## `/subagents` có trạng thái, sắp xếp và lọc (05/11/2026)
+
+Picker upstream chỉ có chấm xanh/xám (thread còn mở/đã đóng) và cột uuid. hcodex
+(`tui/src/app/session_lifecycle.rs::agent_picker_selection_view_params`, dữ liệu từ
+`app/agents_live.rs`) đổi thành:
+
+```
+  1. ● Main [default] (current)   working · claude-opus-5.5
+  2. ● /root/dev_4                running · gemini-3.8-flash-high · 3m 12s · $ go test ./...
+  3. ✓ /root/review_3             done 18m ago · VERDICT PASS …
+  4. ✗ /root/review_1             closed
+```
+
+- Thứ tự: main, rồi đang chạy, rồi xong/idle, đóng xuống cuối. `⌥→`/`⌥←` vẫn đi theo thứ tự
+  spawn như cũ.
+- Cột phải: `running` + model + thời gian chạy + lệnh đang chạy (hoặc câu cuối); `done N ago` +
+  câu cuối; `idle` khi chưa thấy chạy lần nào trong tiến trình này (vd session vừa resume);
+  `closed`.
+- Lọc: gõ `running` / `done` / `idle` / `closed` ngay trong picker (search có sẵn của
+  SelectionView, từ khoá nằm trong `search_value` cùng tên và uuid).
+- Thời gian chỉ tính từ lúc tiến trình TUI này thấy agent chạy; resume phiên cũ thì agent cũ
+  hiện `idle`/`done` không có "N ago".
+
 ## Tìm lại session (`/resume` không thấy phiên cũ)
 
 Ba lý do thường gặp và cách xử lý:
