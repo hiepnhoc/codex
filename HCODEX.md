@@ -12,6 +12,7 @@ Branch `my-harness` trong repo này. Binary tên `hcodex`, tách hoàn toàn kh�
 | Provider built-in `local-proxy` và là provider **mặc định** | `codex-rs/model-provider-info/src/lib.rs` |
 | Model mặc định `claude-sonnet-5.5` khi dùng `local-proxy` (đổi từ `claude-sonnet-5` ngày 09/10/2026 vì Kiro bỏ model cũ) | `codex-rs/model-provider-info/src/lib.rs` (`LOCAL_PROXY_DEFAULT_MODEL`), `codex-rs/core/src/config/mod.rs` |
 | Branding `OpenAI Codex` → `hcodex` | `codex-rs/tui/...`, `codex-rs/exec/...` |
+| Check update + nút *Update now* trỏ về GitHub Release của fork (tag `hcodex-v*`), cập nhật bằng `install.sh` / `install.ps1` của release | `codex-rs/tui/src/updates.rs`, `update_action.rs`, `update_versions.rs`, `codex-rs/cli/src/doctor/updates.rs` |
 | `/model` liệt kê model từ provider (`GET {base_url}/models`, mọi provider OpenAI-compatible) + effort low/medium/high/xhigh | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/models-manager/src/manager.rs` |
 | Catalog của proxy được chuẩn hoá thành prompt harness trung lập cho mọi model (GPT, Claude, Gemini, Qwen, GLM…), kể cả catalog file; cache model gắn identity provider+auth (cơ chế upstream) và không trộn catalog OpenAI bundled vào | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/model-provider/src/provider.rs`, `codex-rs/models-manager/src/manager.rs` |
 | `/provider` trong TUI: thêm provider (id, base URL, key) → kiểm tra `/models` → chọn model → ghi config + profile; `/model` gộp model của mọi provider, chọn là đổi provider **giữ nguyên hội thoại** (fork thread); `/provider use <id> [model]` là đường tắt | `codex-rs/tui/src/bottom_pane/provider_setup_view.rs`, `codex-rs/tui/src/chatwidget/provider_setup.rs`, `codex-rs/tui/src/app/provider_setup.rs` |
@@ -80,7 +81,58 @@ which hcodex && hcodex --version
 Mỗi lần sửa code harness chỉ cần `cargo build --release --bin hcodex` lại —
 symlink tự trỏ vào binary mới, không cần cài lại.
 
-## Cài trên máy Windows (WSL2) (05/11/2026)
+## Bản dựng sẵn cho Mac + Windows: GitHub Release (07/11/2026)
+
+Không cần build trên từng máy nữa. Sửa source ở máy nào cũng được (Mac hay Windows), push
+`my-harness`, đánh tag `hcodex-vX.Y.Z` → GitHub Actions (runner của GitHub, fork public nên
+miễn phí) build **cả 2 bản** và đăng lên
+<https://github.com/hiepnhoc/codex/releases>:
+
+| Asset | Nội dung |
+|---|---|
+| `hcodex-aarch64-apple-darwin.tar.gz` | `hcodex`, `codex-code-mode-host` (Mac Apple Silicon) |
+| `hcodex-x86_64-pc-windows-msvc.zip` | `hcodex.exe`, `codex-code-mode-host.exe`, 3 helper sandbox Windows |
+| `install.sh`, `install.ps1`, `SHA256SUMS.txt` | installer + checksum |
+
+Workflow: `.github/workflows/hcodex-release.yml` (chạy khi push tag, hoặc bấm *Run workflow*
+trong tab Actions và nhập version). Nó ghi version từ tag vào `codex-rs/Cargo.toml` **chỉ trong
+lúc build** (repo vẫn `0.0.0`) để `hcodex --version` ra số thật và check update hoạt động;
+bản build từ source (`0.0.0`) không bao giờ check update.
+
+```bash
+# phát hành: từ my-harness đã push
+git tag hcodex-v0.1.0 && git push origin hcodex-v0.1.0
+# ~1–3 giờ trên runner miễn phí (lần đầu lâu nhất, có cache cargo cho lần sau)
+```
+
+Cài lần đầu / cập nhật tay:
+
+```bash
+# Mac
+curl -fsSL https://github.com/hiepnhoc/codex/releases/latest/download/install.sh | sh
+HCODEX_RELEASE=0.1.0 sh -c "$(curl -fsSL https://github.com/hiepnhoc/codex/releases/download/hcodex-v0.1.0/install.sh)"  # bản cụ thể
+```
+
+```powershell
+# Windows (PowerShell thường, không cần Admin)
+irm https://github.com/hiepnhoc/codex/releases/latest/download/install.ps1 | iex
+```
+
+Installer tải asset + `.sha256`, kiểm checksum, backup binary cũ vào `~/.hcodex/backup`, cài
+vào `~/.hcodex/bin` (Mac symlink sang `~/.cargo/bin` hoặc `~/.local/bin`; Windows thêm
+`%USERPROFILE%\.hcodexin` vào PATH user), xoá `models_cache*.json`. Trên Windows, exe đang
+chạy được rename thành `.old` rồi mới ghi exe mới (nên *Update now* từ trong hcodex vẫn được).
+
+Tự cập nhật: hcodex (bản release, không phải `0.0.0`) check
+`api.github.com/repos/hiepnhoc/codex/releases/latest` tối đa 1 lần / 20 giờ, có bản mới thì
+hiện prompt lúc khởi động; chọn *Update now* là nó chạy đúng installer trên khi thoát. Tắt bằng
+`check_for_update_on_startup = false`.
+
+Lưu ý Windows native: hooks, `scripts/*.sh`, `ocr-safe.sh` của harness là bash → cài
+**Git for Windows** để có `bash` trên PATH; sandbox dùng helper Windows đi kèm zip. Bản
+Linux/WSL2 không còn trong release (build từ source theo mục dưới nếu cần).
+
+## Cách cũ: cài trên Windows qua WSL2 (05/11/2026, thay bằng mục trên)
 
 Dùng **WSL2 Ubuntu**, không build native Windows: script (`scripts/*.sh`, `ocr-safe.sh`,
 hooks), skills và symlink đều là bash/POSIX; V8 prebuilt cho `x86_64-unknown-linux-gnu`
@@ -957,6 +1009,9 @@ scripts/sync-upstream.sh --build-only  # sau khi tự sửa conflict: build + ga
 scripts/sync-upstream.sh --rollback  # cài lại binary đã backup ở ~/.hcodex/backup (build mới bị lỗi)
 SKIP_TESTS=1 scripts/sync-upstream.sh  # bỏ qua cargo test (vẫn chạy smoke)
 ```
+
+Phát hành bản dựng sẵn cho máy khác sau khi sync xong (xem "Bản dựng sẵn cho Mac + Windows"):
+`git push origin my-harness && git tag hcodex-vX.Y.Z && git push origin hcodex-vX.Y.Z`.
 
 Script bảo vệ mày thế nào:
 
