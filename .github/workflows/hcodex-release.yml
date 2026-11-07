@@ -187,6 +187,8 @@ jobs:
           name: hcodex-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
+          # The release keeps the files; the artifact is only a hand-off to the publish job.
+          retention-days: 2
 
   release:
     name: Publish GitHub Release
