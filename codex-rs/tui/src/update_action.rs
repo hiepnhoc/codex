@@ -20,9 +20,9 @@ pub enum UpdateAction {
     PnpmGlobalLatest,
     /// Update via `brew upgrade codex`.
     BrewUpgrade,
-    /// Update via the standalone Unix installer.
+    /// Update via the hcodex installer for macOS (`install.sh` on the latest GitHub Release).
     StandaloneUnix,
-    /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
+    /// Update via the hcodex installer for Windows (`install.ps1` on the latest GitHub Release).
     StandaloneWindows,
 }
 
@@ -39,7 +39,14 @@ impl UpdateAction {
                 StandalonePlatform::Unix => UpdateAction::StandaloneUnix,
                 StandalonePlatform::Windows => UpdateAction::StandaloneWindows,
             }),
-            InstallMethod::Other => None,
+            // hcodex is installed by scripts/install/hcodex-install.{sh,ps1} into
+            // ~/.hcodex/bin, which upstream classifies as `Other`; re-running that
+            // installer is the update.
+            InstallMethod::Other => Some(if cfg!(windows) {
+                UpdateAction::StandaloneWindows
+            } else {
+                UpdateAction::StandaloneUnix
+            }),
         }
     }
 
@@ -56,7 +63,7 @@ impl UpdateAction {
                 "sh",
                 &[
                     "-c",
-                    r#"s=$(curl -fsSL https://chatgpt.com/codex/install.sh) && CODEX_NON_INTERACTIVE=1 eval "$s""#,
+                    r#"s=$(curl -fsSL https://github.com/hiepnhoc/codex/releases/latest/download/install.sh) && eval "$s""#,
                 ],
             ),
             UpdateAction::StandaloneWindows => (
@@ -65,7 +72,7 @@ impl UpdateAction {
                     "-ExecutionPolicy",
                     "Bypass",
                     "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
+                    "irm https://github.com/hiepnhoc/codex/releases/latest/download/install.ps1 | iex",
                 ],
             ),
         }
@@ -101,7 +108,11 @@ mod tests {
                 method: InstallMethod::Other,
                 package_layout: None,
             }),
-            None
+            Some(if cfg!(windows) {
+                UpdateAction::StandaloneWindows
+            } else {
+                UpdateAction::StandaloneUnix
+            })
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
@@ -165,7 +176,7 @@ mod tests {
                     "-ExecutionPolicy",
                     "Bypass",
                     "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
+                    "irm https://github.com/hiepnhoc/codex/releases/latest/download/install.ps1 | iex"
                 ][..],
             )
         );
@@ -175,7 +186,7 @@ mod tests {
     #[test]
     fn standalone_unix_update_fails_when_installer_download_fails() {
         let (command, args) = UpdateAction::StandaloneUnix.command_args();
-        let offline_command = args[1].replace("https://chatgpt.com", "file:///dev/null");
+        let offline_command = args[1].replace("https://github.com", "file:///dev/null");
         assert_ne!(offline_command, args[1], "installer URL must be replaced");
         let output = std::process::Command::new(command)
             .args([args[0], &offline_command])

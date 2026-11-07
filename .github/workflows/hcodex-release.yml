@@ -1,0 +1,263 @@
+# hcodex release: build the harness for macOS (Apple Silicon) and Windows (x64)
+# on GitHub-hosted runners and publish both as one GitHub Release.
+#
+#   git tag hcodex-v0.1.0 && git push origin hcodex-v0.1.0
+#
+# or run it by hand from the Actions tab with a version. Install / update:
+#
+#   macOS:   curl -fsSL https://github.com/hiepnhoc/codex/releases/latest/download/install.sh | sh
+#   Windows: irm https://github.com/hiepnhoc/codex/releases/latest/download/install.ps1 | iex
+#
+# The upstream rust-release.yml is not reusable here: it needs OpenAI's
+# self-hosted runners, Apple code signing and npm/winget publishing.
+
+name: hcodex-release
+
+on:
+  push:
+    tags:
+      - "hcodex-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build and release (x.y.z); creates tag hcodex-v<version>"
+        required: true
+        type: string
+
+concurrency:
+  group: hcodex-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - id: v
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#hcodex-v}"
+          else
+            version="${INPUT_VERSION#hcodex-v}"
+            version="${version#v}"
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
+            || { echo "::error::version '$version' must look like x.y.z"; exit 1; }
+          [[ "$version" != "0.0.0" ]] || { echo "::error::0.0.0 means 'source build' and disables update checks"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=hcodex-v$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 330
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: codex-rs
+    env:
+      HCODEX_VERSION: ${{ needs.version.outputs.version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            binaries: "hcodex codex-code-mode-host"
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binaries: "hcodex codex-code-mode-host codex-windows-sandbox-setup codex-windows-sandbox-service codex-command-runner"
+            archive: zip
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Stamp version into Cargo.toml
+        run: |
+          set -euo pipefail
+          # The workspace version is 0.0.0 (= "source build", no update checks).
+          # Stamp the release version so `hcodex --version` and the update
+          # prompt see a real number. Not committed; only this checkout.
+          python3 - "$HCODEX_VERSION" <<'PY'
+          import pathlib, re, sys
+          p = pathlib.Path("Cargo.toml")
+          s, n = re.subn(r'^version = "0\.0\.0"', f'version = "{sys.argv[1]}"', p.read_text(), count=1, flags=re.M)
+          assert n == 1, "workspace version 0.0.0 not found in Cargo.toml"
+          p.write_text(s)
+          PY
+          grep -m1 '^version' Cargo.toml
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          set -euo pipefail
+          channel="$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)"
+          rustup toolchain install "$channel" --profile minimal --no-self-update -c clippy -c rustfmt -c rust-src
+          rustup target add --toolchain "$channel" "${{ matrix.target }}"
+          rustc --version && cargo --version
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: codex-rs
+          key: hcodex-${{ matrix.target }}
+          cache-on-failure: true
+
+      - name: Configure rusty_v8 prebuilt artifacts
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Print runner specs
+        run: |
+          echo "OS: $(uname -a)"
+          echo "CPUs: $(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc)"
+          df -h . | tail -1
+
+      - name: Cargo build (release)
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if [[ "$TARGET" == "x86_64-pc-windows-msvc" ]]; then
+            export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+          fi
+          build_args=()
+          for binary in ${{ matrix.binaries }}; do
+            build_args+=(--bin "$binary")
+          done
+          STABLE_GIT_COMMIT="$(git rev-parse HEAD)"
+          export STABLE_GIT_COMMIT
+          cargo build --release --target "$TARGET" "${build_args[@]}"
+
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          release_dir="target/${TARGET}/release"
+          stage="$RUNNER_TEMP/hcodex-${TARGET}"
+          rm -rf "$stage" && mkdir -p "$stage" "$GITHUB_WORKSPACE/dist"
+          ext=""
+          [[ "$TARGET" == *windows* ]] && ext=".exe"
+          for binary in ${{ matrix.binaries }}; do
+            cp "$release_dir/${binary}${ext}" "$stage/${binary}${ext}"
+          done
+          "$stage/hcodex${ext}" --version
+          name="hcodex-${TARGET}.${ARCHIVE}"
+          if [[ "$ARCHIVE" == "zip" ]]; then
+            (cd "$stage" && 7z a -tzip -mx=9 "$GITHUB_WORKSPACE/dist/$name" ./* >/dev/null)
+          else
+            # Strip debug info on macOS: the sidecar symbols are not shipped.
+            for binary in ${{ matrix.binaries }}; do strip -x "$stage/$binary" || true; done
+            tar -C "$stage" -czf "$GITHUB_WORKSPACE/dist/$name" .
+          fi
+          cd "$GITHUB_WORKSPACE/dist"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$name" > "$name.sha256"
+          else
+            shasum -a 256 "$name" > "$name.sha256"
+          fi
+          cat "$name.sha256"
+          ls -la
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: hcodex-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: hcodex-*
+          path: dist
+          merge-multiple: true
+
+      - name: Stage installers and notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp scripts/install/hcodex-install.sh dist/install.sh
+          cp scripts/install/hcodex-install.ps1 dist/install.ps1
+          (cd dist && cat ./*.sha256 > SHA256SUMS.txt && rm -f ./*.sha256)
+          ls -la dist
+
+          prev="$(git tag --list 'hcodex-v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
+          {
+            echo "hcodex ${VERSION} (ref \`${GITHUB_REF_NAME}\`, commit ${GITHUB_SHA::9})"
+            echo
+            echo "Install or update:"
+            echo
+            echo '```sh'
+            echo "curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/install.sh | sh"
+            echo '```'
+            echo '```powershell'
+            echo "irm https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/install.ps1 | iex"
+            echo '```'
+            echo
+            if [[ -n "$prev" ]]; then
+              echo "Changes since ${prev}:"
+              echo
+              git log --no-merges --format='- %s' "${prev}..HEAD" | head -60
+            fi
+            echo
+            echo "Upstream base: $(git merge-base HEAD origin/main 2>/dev/null | cut -c1-9 || echo unknown)"
+          } > notes.md
+          cat notes.md
+
+      - name: Create or update release
+        shell: bash
+        run: |
+          set -euo pipefail
+          prerelease=false
+          [[ "$VERSION" == *-* ]] && prerelease=true
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          else
+            gh release create "$TAG" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "hcodex ${VERSION}" \
+              --notes-file notes.md \
+              --prerelease="$prerelease" \
+              --latest="$([[ "$prerelease" == true ]] && echo false || echo true)"
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,assets --jq '.url, (.assets[].name)'
