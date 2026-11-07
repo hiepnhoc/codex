@@ -108,6 +108,18 @@ jobs:
           PY
           grep -m1 '^version' Cargo.toml
 
+      - name: Enable long paths and a short CARGO_HOME (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # cargo checks out the `v8` git dependency with its Chromium submodules;
+          # some vendored test files exceed MAX_PATH (260) under ~/.cargo/git.
+          reg.exe add 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem' /v LongPathsEnabled /t REG_DWORD /d 1 /f
+          git config --system core.longpaths true
+          git config --global core.longpaths true
+          New-Item -ItemType Directory -Force -Path 'C:\c' | Out-Null
+          "CARGO_HOME=C:\c" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Install Rust toolchain from rust-toolchain.toml
         run: |
           set -euo pipefail
