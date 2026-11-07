@@ -178,12 +178,12 @@ cd ~/.hcodex && tar -xzf ~/hcodex-config.tgz
 sed -i "s#/Users/hiepln/.cargo/bin/hcodex#$HOME/.cargo/bin/hcodex#; s#/Users/hiepln/.local/bin/uvx#$HOME/.local/bin/uvx#; s#/Users/hiepln/#$HOME/#g" config.toml *.config.toml
 ```
 
-Provider: `local-proxy` (Kiro `:8181`) và `hibox` (Fusebox `:8318`) chạy trên Mac, máy
+Provider: `local-proxy` (Kiro `:8181`) và `hibox` (Fusebox `:8317`) chạy trên Mac, máy
 Windows không có → dùng `cliproxy` (HTTPS, key nằm trong `config.toml`): `hcodex -p cliproxy`
 hoặc đổi `model_provider = "cliproxy"` ở đầu `config.toml`. Role đang pin `local-proxy`/`hibox`
 (`agents/design|plan|advisor|reviewer.toml`) phải đổi `model_provider = "cliproxy"` (model id:
 `claude-opus-5-5-high`, `gpt-6.1-terra`, `gemini-3.8-flash-high`). Cùng mạng với Mac thì có
-thể tunnel thay vì đổi: `ssh -N -L 8181:127.0.0.1:8181 -L 8318:127.0.0.1:8318 <user>@<mac>`.
+thể tunnel thay vì đổi: `ssh -N -L 8181:127.0.0.1:8181 -L 8317:127.0.0.1:8317 <user>@<mac>`.
 
 Chưa test thật trên WSL (05/11/2026). Sandbox Linux của codex cần Landlock/seccomp; kernel WSL2
 mới có Landlock, nếu lệnh báo lỗi sandbox thì chạy `hcodex --sandbox danger-full-access` hoặc
@@ -326,7 +326,7 @@ có `/chat/completions` hoặc API riêng (Anthropic, Gemini, Groq, DeepSeek…)
 | Provider | Cách bật | Ghi chú |
 |---|---|---|
 | `local-proxy` | (mặc định, không cần gì) | proxy `:8181`, 16 model claude/gpt |
-| `hibox` | key trong `~/.hcodex/provider-credentials/hibox.token` (0600, đọc qua `hcodex provider-credential hibox`) | proxy local `:8318`, 27 model (gpt-6-*, gemini-3.x, claude-*); `hcodex -p hibox` = gpt-6-sol; có trong `/model` gộp (thêm 20/10/2026) |
+| `hibox` | key trong `~/.hcodex/provider-credentials/hibox.token` (0600, đọc qua `hcodex provider-credential hibox`) | proxy local `:8317`, 27 model (gpt-6-*, gemini-3.x, claude-*); `hcodex -p hibox` = gpt-6-sol; có trong `/model` gộp (thêm 20/10/2026) |
 | `openrouter` | `export OPENROUTER_API_KEY=sk-or-...` | Responses API native (đã verify); ~427 model; list model không cần key, chạy turn mới cần |
 | `litellm` | chạy LiteLLM ở `:4000` (xem dưới) | gateway sang Anthropic/Gemini/Groq/DeepSeek… |
 | `azure` | bỏ comment trong config, điền resource + `AZURE_OPENAI_API_KEY` | có `query_params.api-version` |
@@ -633,7 +633,7 @@ lại một lần, rồi model chính tự review và ghi "reviewer fallback: se
 
 Lưu ý: một turn `hcodex exec` chỉ spawn 1 agent tốn ~99k token ở model chính (bảng skill +
 OpenViking context), nên đừng dùng `$daily-dev` cho việc một dòng. hibox (= Fusebox
-`~/github/Fusebox`, :8318) có account `codex` chết token 27/10 (`401 invalidated oauth token`
+`~/github/Fusebox`, :8317) có account `codex` chết token 27/10 (`401 invalidated oauth token`
 → mọi gpt-6 trả 429/404); không dùng trong workflow này; chữa khi cần bằng
 `./target/debug/fusebox login codex`.
 
