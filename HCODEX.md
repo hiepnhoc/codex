@@ -738,6 +738,80 @@ thêm mục **Repo Orientation** chạy trước mọi route:
    ngay trong lượt và báo "codemap updated". Map là gợi ý, code là sự thật.
 Map của `digital-monorepo` đã được đóng dấu commit `aedda8cf2` (20/10).
 
+### SRS cho mỗi chức năng: skill `$to-srs` (18/11/2026)
+
+Mục tiêu: chức năng mới nào cũng có một file SRS theo mẫu công ty (`SRS-Template.docx`),
+và file đó khớp với code đã làm chứ không phải với ý định ban đầu.
+
+Skill local `~/.hcodex/skills/to-srs/` (thư mục thật, không symlink sang `~/.codex`):
+
+| File | Việc |
+|---|---|
+| `SKILL.md` | quy trình: chốt phạm vi → gom bằng chứng → điền mẫu → `reviewer` soát → báo cáo |
+| `TEMPLATE.md` | mẫu docx chuyển sang Markdown, giữ đúng tên và thứ tự mục, sơ đồ bằng Mermaid |
+| `agents/openai.yaml` | `allow_implicit_invocation: false` → không nằm trong bảng skill, không tốn token mỗi request |
+
+Bản chép có version nằm ở `docs/hcodex-skills/to-srs/`. Bản live là bản trong
+`~/.hcodex`; sửa ở đó rồi chép lại vào repo.
+
+**Dùng**: đứng ở nhánh của chức năng, gõ `$to-srs PAY-123`. File ra ở
+`docs/srs/PAY-123-<tên>.md` (repo có quy ước khác thì theo quy ước đó). Chưa có file thì
+tạo bản 0.1 trạng thái Nháp; có rồi thì sửa tại chỗ, tăng phiên bản 0.1 và thêm một dòng
+lịch sử. Gọi lúc nào cũng cùng một logic, nên làm xong mới gọi vẫn ra đúng cái đã làm.
+
+**Phạm vi** (xác định cơ học): mã ticket lấy từ câu lệnh → tên nhánh → commit. Khoảng
+thay đổi = `git merge-base HEAD <nhánh mặc định>`..`HEAD` cộng phần chưa commit. Nhánh đã
+merge thì tìm bằng `git log --grep=<mã>`; không thấy thì hỏi một câu rồi dừng.
+
+**Nguồn, mạnh trước yếu sau**: code trong khoảng thay đổi → migration → định nghĩa API →
+file design/plan trong `.agents/tasks/` → hội thoại → ticket Jira (đọc qua MCP `jira`,
+không ghi). Mục chưa có code thì lấy từ design và gắn dòng `_Theo thiết kế, chưa có code._`
+
+**Luật cứng trong skill**:
+- Mỗi mục kết bằng `<!-- nguồn: path:line -->`. Không dẫn được nguồn thì ghi
+  `CẦN ĐIỀN: <cần gì>`, không đoán. Người review, đầu mối, ngưỡng cảnh báo thường rơi vào đây.
+- Mục không liên quan ghi `Không áp dụng — <lý do>`, không xoá heading.
+- DDL chép nguyên văn từ migration. Không chép secret dù có trong config.
+- Chỉ mô tả repo đang đứng; phần của repo khác là `CẦN ĐIỀN` trừ khi mày chỉ đường dẫn.
+- Không tự đặt trạng thái `Đã duyệt`; file đã duyệt mà đổi nội dung kỹ thuật thì về `Đang review`.
+- SRS do model chính viết (cần lý do thiết kế trong phiên), không giao `dev`; `reviewer`
+  soát SRS với diff, tối đa 2 vòng.
+
+**Khác mẫu gốc** ba chỗ: thêm mục Phụ lục (quy tắc nghiệp vụ, sơ đồ trạng thái, bảng mã
+lỗi; tự bỏ khi không có bằng chứng), mục Đặc tả API có thêm bảng endpoint mới/sửa, và
+file ra là Markdown (chưa có bước xuất `.docx` hay đẩy Google Docs).
+
+**Nối vào `$daily-dev` bản hcodex** (`~/.hcodex/skills/daily-dev/SKILL.md`, bản trước khi
+sửa: `~/.hcodex/backup/daily-dev-SKILL.md.bak-20261118`):
+
+| Chỗ | Thêm gì |
+|---|---|
+| Execution contract đầu file | design/plan, ADR và SRS do model chính viết; mọi sửa khác vẫn giao `dev` (trước đó dòng "docs edits → dev" mâu thuẫn với "Docs/ADR steps stay with you") |
+| Bảng Classification | dòng `to-srs`, kèm đường dẫn `SKILL.md` vì skill bị ẩn khỏi bảng skill |
+| Mandatory Rules, luật 13 | hễ cổng duyệt thiết kế của `brainstorming` đã chạy thì gọi `to-srs` hai lần: nháp sau khi duyệt, bản theo code thật trước báo cáo cuối. Kiểm tra cơ học: chỉ bỏ khi câu của mày có chữ "không cần SRS" |
+| Recipe Non-Trivial Feature, API / UI Change | hai bước `to-srs` |
+| Delegated Execution, luật 5 | brief của `reviewer` có đường dẫn SRS làm tiêu chí nghiệm thu: code lệch SRS là finding |
+| Delegated Execution, luật 8 | bước SRS do model chính làm |
+| Completion Report | dòng `SRS:` (đường dẫn + phiên bản + mục `CẦN ĐIỀN` / skipped / not required) |
+
+Sửa lỗi, sửa vặt, refactor thuần không qua `brainstorming` nên không sinh SRS, trừ khi mày
+gọi `$to-srs`.
+
+**Cài trên máy khác** (bản hcodex của `daily-dev` không nằm trong repo; nó đi theo bước
+"Mang cấu hình từ Mac sang", hoặc sửa tay theo bảng trên):
+
+```bash
+cp -R docs/hcodex-skills/to-srs ~/.hcodex/skills/
+```
+
+```powershell
+Copy-Item -Recurse -Force docs\hcodex-skills\to-srs "$env:USERPROFILE\.hcodex\skills\"
+```
+
+Đã kiểm 18/11: `skills/list` của `hcodex app-server` trả về `to-srs` (`enabled`, scope
+`user`, `errors: []`) và `daily-dev` vẫn nạp được. **Chưa** chạy thử với model trên một
+chức năng thật.
+
 ## Memory + RAG cho repo lớn: OpenViking (07/10/2026)
 
 Vấn đề: mỗi session mới lại phải quét các module trong `digital-monorepo` → tốn
