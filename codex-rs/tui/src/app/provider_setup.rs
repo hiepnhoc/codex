@@ -225,8 +225,11 @@ impl App {
 
         let Some(thread_id) = self.chat_widget.thread_id() else {
             self.start_fresh_session(
-                tui, app_server, /*session_start_source*/ None,
-                /*initial_user_message*/ None, /*new_thread_name*/ None,
+                tui,
+                app_server,
+                super::session_lifecycle::FreshSessionStart::PreserveCurrentView(None),
+                /*initial_user_message*/ None,
+                /*new_thread_name*/ None,
             )
             .await;
             return;
@@ -319,8 +322,11 @@ impl App {
             Err(err) if err.to_string().contains("no rollout found") => {
                 self.chat_widget.fork_in_progress = false;
                 self.start_fresh_session(
-                    tui, app_server, /*session_start_source*/ None,
-                    /*initial_user_message*/ None, /*new_thread_name*/ None,
+                    tui,
+                    app_server,
+                    super::session_lifecycle::FreshSessionStart::PreserveCurrentView(None),
+                    /*initial_user_message*/ None,
+                    /*new_thread_name*/ None,
                 )
                 .await;
                 self.refresh_model_catalog_for_provider(&provider_id, &provider_info)

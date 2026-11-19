@@ -288,7 +288,8 @@ name = "Gateway"
     assert_eq!(gateway_thread.model_provider_id, "gateway");
 
     // The profile on disk selects `openai`; the thread recorded on `gateway` stays writable.
-    let default_manager = ConfigManager::without_managed_config_for_tests(home.path().to_path_buf());
+    let default_manager =
+        ConfigManager::without_managed_config_for_tests(home.path().to_path_buf());
     default_manager
         .check_thread_model_provider(&gateway_thread)
         .await?;
