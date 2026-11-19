@@ -1,11 +1,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
-import { invoke } from "@tauri-apps/api/core";
+import { transport } from "./lib/transport";
 
 // Forward errors + console.error/warn to the Rust side (visible in `pnpm tauri dev` output).
 const fwd = (level: string, ...args: unknown[]) =>
-  invoke("frontend_log", { level, message: args.map((a) => (a instanceof Error ? a.stack ?? a.message : typeof a === "string" ? a : JSON.stringify(a))).join(" ") }).catch(() => {});
+  transport.log(level, args.map((a) => (a instanceof Error ? a.stack ?? a.message : typeof a === "string" ? a : JSON.stringify(a))).join(" "));
 window.addEventListener("error", (e) => fwd("error", e.message, e.error));
 window.addEventListener("unhandledrejection", (e) => fwd("unhandledrejection", e.reason));
 for (const level of ["error", "warn"] as const) {

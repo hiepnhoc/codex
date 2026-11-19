@@ -1,30 +1,41 @@
-import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { rpc } from "./lib/rpc";
+import { transport } from "./lib/transport";
 import { readFile } from "./lib/fs";
-import type { ModelListResponse } from "./protocol/v2/ModelListResponse";
-import type { ConfigReadResponse } from "./protocol/v2/ConfigReadResponse";
+import { loadCatalog, type Catalog } from "./lib/models";
+import { resumeThread, useDiff, useThread, wireStore, type ModelChoice } from "./lib/store";
+import type { Thread } from "./protocol/v2/Thread";
 import { FileTree } from "./components/FileTree";
 import { Editor, CHANGES_TAB, type Tab } from "./components/Editor";
 import { Terminal } from "./components/Terminal";
-import { AgentPanel, type AgentStatus } from "./components/AgentPanel";
+import { AgentPanel } from "./components/AgentPanel";
+import { ModelPicker } from "./components/ModelPicker";
+import { Sessions } from "./components/Sessions";
 import "./app.css";
 
 type Boot = "booting" | "ready" | "error";
+type SideTab = "sessions" | "files";
+
+const EMPTY_CATALOG: Catalog = { defaultChoice: { provider: "", model: "" }, providers: [] };
 
 export default function App() {
   const [boot, setBoot] = useState<Boot>("booting");
   const [bootMsg, setBootMsg] = useState("starting app-server…");
   const [cwd, setCwd] = useState("");
   const [cwdInput, setCwdInput] = useState("");
-  const [models, setModels] = useState<string[]>([]);
-  const [model, setModel] = useState("");
+  const [catalog, setCatalog] = useState<Catalog>(EMPTY_CATALOG);
+  const [choice, setChoice] = useState<ModelChoice>(EMPTY_CATALOG.defaultChoice);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [active, setActive] = useState<string | null>(null);
-  const [turnDiff, setTurnDiff] = useState<string | null>(null);
   const [showTerminal, setShowTerminal] = useState(true);
-  const [agentStatus, setAgentStatus] = useState<AgentStatus>("ready");
+  const [sideTab, setSideTab] = useState<SideTab>("sessions");
+  const [rootId, setRootId] = useState<string | null>(null);
+  const [viewId, setViewId] = useState<string | null>(null);
+  const [sessionsKey, setSessionsKey] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
+
+  const root = useThread(rootId);
+  const turnDiff = useDiff(rootId);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,16 +44,14 @@ export default function App() {
         const info = await rpc.start();
         setBootMsg(`pid ${info.pid} · ${info.codex_bin} · CODEX_HOME=${info.codex_home ?? "default"}`);
         await rpc.initialize({ name: "codex-ide", title: "Codex IDE", version: "0.1.0" });
-        const wd = await invoke<string>("default_cwd");
-        const cfg = await rpc.request<ConfigReadResponse>("config/read", { cwd: wd });
-        const configured = cfg.config.model ?? "";
-        const list = await rpc.request<ModelListResponse>("model/list", { includeHidden: true }).catch(() => null);
-        const ids = Array.from(new Set([configured, ...(list?.data.map((m) => m.model) ?? [])].filter(Boolean)));
+        wireStore();
+        const wd = await transport.defaultCwd();
+        const cat = await loadCatalog(wd);
         if (cancelled) return;
         setCwd(wd);
         setCwdInput(wd);
-        setModels(ids);
-        setModel(configured || ids[0] || "");
+        setCatalog(cat);
+        setChoice(cat.defaultChoice);
         setBoot("ready");
       } catch (e) {
         console.error("boot failed:", e);
@@ -78,20 +87,58 @@ export default function App() {
     [tabs],
   );
 
-  const onTurnDiff = useCallback((d: string | null) => {
-    setTurnDiff(d);
-    if (d) setActive((a) => a ?? CHANGES_TAB);
-  }, []);
+  // Show the agent's diff as soon as a turn produces one.
+  useEffect(() => {
+    if (turnDiff) setActive((a) => a ?? CHANGES_TAB);
+  }, [turnDiff]);
 
-  const onAgentStatus = useCallback((s: AgentStatus) => setAgentStatus(s), []);
+  // The session list changes when the main thread finishes a turn (new title, new order).
+  const rootState = root?.state;
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    const running = rootState === "running" || rootState === "waiting";
+    if (wasRunning.current && !running) setSessionsKey((k) => k + 1);
+    wasRunning.current = running;
+  }, [rootState]);
 
-  const applyCwd = () => {
-    if (cwdInput && cwdInput !== cwd) {
-      setCwd(cwdInput);
+  const switchWorkspace = useCallback(
+    (dir: string) => {
+      if (!dir || dir === cwd) return;
+      setCwd(dir);
+      setCwdInput(dir);
       setTabs([]);
       setActive(null);
-    }
-  };
+    },
+    [cwd],
+  );
+
+  const changeRoot = useCallback((id: string | null) => {
+    setRootId(id);
+    setViewId(null);
+    if (id) setSessionsKey((k) => k + 1);
+  }, []);
+
+  const openSession = useCallback(
+    async (t: Thread) => {
+      try {
+        switchWorkspace(t.cwd);
+        const id = await resumeThread(t.id);
+        setRootId(id);
+        setViewId(null);
+        // Keep the thread on the provider and model it was recorded with.
+        if (t.modelProvider) setChoice({ provider: t.modelProvider, model: t.model ?? "" });
+      } catch (e) {
+        setBootMsg(`open session failed: ${e}`);
+      }
+    },
+    [switchWorkspace],
+  );
+
+  const newSession = useCallback(() => {
+    setRootId(null);
+    setViewId(null);
+    setChoice((c) => (c.model ? c : catalog.defaultChoice));
+  }, [catalog]);
 
   if (boot !== "ready") {
     return (
@@ -106,19 +153,30 @@ export default function App() {
   return (
     <div className="layout">
       <aside className="sidebar">
-        <div className="sidebar-title">Codex IDE</div>
+        <div className="side-tabs">
+          <span className={`side-tab ${sideTab === "sessions" ? "active" : ""}`} onClick={() => setSideTab("sessions")}>
+            Sessions
+          </span>
+          <span className={`side-tab ${sideTab === "files" ? "active" : ""}`} onClick={() => setSideTab("files")}>
+            Files
+          </span>
+        </div>
         <div className="row">
           <input
             className="mono small grow"
             value={cwdInput}
             onChange={(e) => setCwdInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && applyCwd()}
+            onKeyDown={(e) => e.key === "Enter" && switchWorkspace(cwdInput)}
             title="workspace root (Enter to apply)"
           />
         </div>
-        <div className="tree-scroll">
-          <FileTree root={cwd} selected={active} onOpen={openFile} />
-        </div>
+        {sideTab === "sessions" ? (
+          <Sessions cwd={cwd} activeRootId={rootId} refreshKey={sessionsKey} onOpen={openSession} onNew={newSession} />
+        ) : (
+          <div className="tree-scroll">
+            <FileTree root={cwd} selected={active} onOpen={openFile} />
+          </div>
+        )}
         <details className="logs">
           <summary className="muted tiny">server logs ({logs.length})</summary>
           <pre className="mono tiny logs-pre">{logs.slice(-40).join("\n")}</pre>
@@ -140,15 +198,22 @@ export default function App() {
 
       <aside className="right">
         <div className="row model-row">
-          <input className="mono small grow" list="models" value={model} onChange={(e) => setModel(e.target.value)} placeholder="model id" />
-          <datalist id="models">
-            {models.map((m) => (
-              <option key={m} value={m} />
-            ))}
-          </datalist>
-          <span className={`dot status-${agentStatus}`} title={agentStatus} />
+          <ModelPicker catalog={catalog} value={choice} onChange={setChoice} />
+          {root && choice.provider && root.provider && choice.provider !== root.provider && (
+            <span className="tiny warn" title="the next message continues this conversation on the new provider">
+              switches provider
+            </span>
+          )}
         </div>
-        <AgentPanel cwd={cwd} model={model} onTurnDiff={onTurnDiff} onOpenFile={openFile} onStatus={onAgentStatus} />
+        <AgentPanel
+          cwd={cwd}
+          choice={choice}
+          rootId={rootId}
+          viewId={viewId}
+          onRootChange={changeRoot}
+          onViewChange={setViewId}
+          onOpenFile={openFile}
+        />
       </aside>
     </div>
   );

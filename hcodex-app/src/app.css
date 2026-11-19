@@ -45,7 +45,7 @@ button.danger { border-color: var(--err); }
 .logs-pre { max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-all; color: var(--muted); margin: 0; }
 
 /* ---- layout ---- */
-.layout { display: grid; grid-template-columns: 240px 1fr 380px; height: 100vh; }
+.layout { display: grid; grid-template-columns: 260px 1fr 420px; height: 100vh; }
 
 .sidebar {
   background: var(--bg-alt); border-right: 1px solid var(--border);
@@ -95,3 +95,42 @@ button.danger { border-color: var(--err); }
 
 .composer { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
 .composer textarea { flex: 1; min-height: 56px; resize: vertical; }
+
+/* ---- shared ---- */
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pad { padding: 6px 4px; }
+.warn { color: var(--warn); white-space: nowrap; }
+button:disabled, textarea:disabled { opacity: .5; cursor: default; }
+
+/* ---- sidebar tabs + sessions ---- */
+.side-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: -8px -8px 2px; }
+.side-tab { flex: 1; text-align: center; padding: 7px 0; font-size: 12px; color: var(--muted); cursor: pointer; }
+.side-tab.active { color: var(--fg); box-shadow: inset 0 -2px 0 var(--accent); }
+.sessions { flex: 1; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.session-group { margin-bottom: 4px; }
+.session-group-title { padding: 3px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-group-title.current { color: var(--fg); }
+.session-row { display: flex; align-items: center; gap: 6px; padding: 3px 4px 3px 12px; border-radius: 3px; cursor: pointer; font-size: 12px; }
+.session-row:hover { background: var(--panel); }
+.session-row.selected { background: #37373d; }
+.session-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- agent tree ---- */
+.agents { border-bottom: 1px solid var(--border); max-height: 38%; overflow: auto; flex-shrink: 0; }
+.agents-title { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; position: sticky; top: 0; background: var(--bg-alt); }
+.agents-summary { margin-left: auto; }
+.agent-row { padding: 3px 10px 3px 8px; cursor: pointer; }
+.agent-row:hover { background: var(--panel); }
+.agent-row.selected { background: #37373d; }
+.agent-row-head { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.agent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.agent-detail { margin-left: auto; white-space: nowrap; padding-left: 8px; }
+.agent-activity { padding-left: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot.agent-running { background: var(--warn); animation: pulse 1s infinite; }
+.dot.agent-waiting { background: var(--accent); animation: pulse 1s infinite; }
+.dot.agent-idle { background: var(--ok); }
+.dot.agent-done { background: var(--ok); opacity: .55; }
+.dot.agent-error { background: var(--err); }
+.item.subagent { border-style: dashed; }
+.item.subagent .label { display: inline; }
+.item.command .label, .approval .label { text-transform: none; letter-spacing: 0; }
