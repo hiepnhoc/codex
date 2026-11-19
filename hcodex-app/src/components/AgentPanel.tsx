@@ -1,164 +1,105 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { rpc } from "../lib/rpc";
-import type { ThreadStartResponse } from "../protocol/v2/ThreadStartResponse";
-import type { TurnStartParams } from "../protocol/v2/TurnStartParams";
-import type { ThreadItem } from "../protocol/v2/ThreadItem";
-import type { ItemStartedNotification } from "../protocol/v2/ItemStartedNotification";
-import type { ItemCompletedNotification } from "../protocol/v2/ItemCompletedNotification";
-import type { AgentMessageDeltaNotification } from "../protocol/v2/AgentMessageDeltaNotification";
-import type { CommandExecutionOutputDeltaNotification } from "../protocol/v2/CommandExecutionOutputDeltaNotification";
-import type { TurnCompletedNotification } from "../protocol/v2/TurnCompletedNotification";
-import type { TurnDiffUpdatedNotification } from "../protocol/v2/TurnDiffUpdatedNotification";
-import type { CommandExecutionRequestApprovalParams } from "../protocol/v2/CommandExecutionRequestApprovalParams";
-import type { FileChangeRequestApprovalParams } from "../protocol/v2/FileChangeRequestApprovalParams";
-
-type UiItem = { item: ThreadItem; stream: string; done: boolean };
-
-type Approval =
-  | { kind: "command"; params: CommandExecutionRequestApprovalParams; resolve: (d: string) => void }
-  | { kind: "file"; params: FileChangeRequestApprovalParams; resolve: (d: string) => void };
-
-export type AgentStatus = "ready" | "running" | "error";
+import {
+  agentLabel,
+  interrupt,
+  loadHistory,
+  sendTurn,
+  startThread,
+  switchProvider,
+  useApprovals,
+  useError,
+  useItems,
+  useThread,
+  useThreads,
+  type Approval,
+  type ModelChoice,
+  type UiItem,
+} from "../lib/store";
+import { AgentTree } from "./AgentTree";
 
 type Props = {
   cwd: string;
-  model: string;
-  onTurnDiff: (diff: string | null) => void;
+  choice: ModelChoice;
+  /** Main thread of the open session; null before the first message. */
+  rootId: string | null;
+  /** Thread shown in the transcript: the root, or one of its sub-agents. */
+  viewId: string | null;
+  onRootChange: (threadId: string | null) => void;
+  onViewChange: (threadId: string | null) => void;
   onOpenFile: (path: string) => void;
-  onStatus?: (s: AgentStatus, msg?: string) => void;
 };
 
-export function AgentPanel({ cwd, model, onTurnDiff, onOpenFile, onStatus }: Props) {
-  const [status, setStatus] = useState<AgentStatus>("ready");
-  const [thread, setThread] = useState<ThreadStartResponse | null>(null);
-  const [items, setItems] = useState<UiItem[]>([]);
-  const [approval, setApproval] = useState<Approval | null>(null);
+export function AgentPanel({ cwd, choice, rootId, viewId, onRootChange, onViewChange, onOpenFile }: Props) {
+  const shownId = viewId ?? rootId;
+  const root = useThread(rootId);
+  const shown = useThread(shownId);
+  const items = useItems(shownId);
+  const rootError = useError(rootId);
+  const shownError = useError(shownId);
+  const approvals = useApprovals(rootId);
   const [input, setInput] = useState("");
-  const [error, setError] = useState("");
+  const [localError, setLocalError] = useState("");
+  const [busy, setBusy] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const setStat = useCallback(
-    (s: AgentStatus, msg?: string) => {
-      setStatus(s);
-      setError(s === "error" ? (msg ?? "error") : "");
-      onStatus?.(s, msg);
-    },
-    [onStatus],
-  );
-
-  useEffect(() => {
-    const appendStream = (itemId: string, delta: string) =>
-      setItems((prev) => {
-        const i = prev.findIndex((x) => x.item.id === itemId);
-        if (i < 0) return prev;
-        const next = prev.slice();
-        next[i] = { ...next[i], stream: next[i].stream + delta };
-        return next;
-      });
-
-    const offs = [
-      rpc.onNotification("item/started", (p) => {
-        const { item } = p as ItemStartedNotification;
-        setItems((prev) => [...prev, { item, stream: "", done: false }]);
-      }),
-      rpc.onNotification("item/completed", (p) => {
-        const { item } = p as ItemCompletedNotification;
-        setItems((prev) => {
-          const i = prev.findIndex((x) => x.item.id === item.id);
-          if (i < 0) return [...prev, { item, stream: "", done: true }];
-          const next = prev.slice();
-          next[i] = { ...next[i], item, done: true };
-          return next;
-        });
-      }),
-      rpc.onNotification("item/agentMessage/delta", (p) => {
-        const { itemId, delta } = p as AgentMessageDeltaNotification;
-        appendStream(itemId, delta);
-      }),
-      rpc.onNotification("item/commandExecution/outputDelta", (p) => {
-        const { itemId, delta } = p as CommandExecutionOutputDeltaNotification;
-        appendStream(itemId, delta);
-      }),
-      rpc.onNotification("turn/diff/updated", (p) => {
-        const { diff } = p as TurnDiffUpdatedNotification;
-        onTurnDiff(diff || null);
-      }),
-      rpc.onNotification("turn/completed", (p) => {
-        const { turn } = p as TurnCompletedNotification;
-        if (turn.status === "failed") setStat("error", `turn failed: ${turn.error?.message ?? "unknown"}`);
-        else setStat("ready");
-      }),
-    ];
-
-    const ask = (kind: Approval["kind"]) => (params: unknown) =>
-      new Promise((resolve) =>
-        setApproval({
-          kind,
-          params: params as never,
-          resolve: (decision) => {
-            setApproval(null);
-            resolve({ decision });
-          },
-        } as Approval),
-      );
-    rpc.onServerRequest("item/commandExecution/requestApproval", ask("command"));
-    rpc.onServerRequest("item/fileChange/requestApproval", ask("file"));
-
-    return () => offs.forEach((o) => o());
-  }, [onTurnDiff, setStat]);
+  const watchingSub = rootId != null && shownId !== rootId;
+  const running = root?.state === "running" || root?.state === "waiting" || busy;
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [items]);
+  }, [items, shownId]);
 
-  const ensureThread = useCallback(async () => {
-    if (thread) return thread;
-    const t = await rpc.request<ThreadStartResponse>("thread/start", {
-      cwd,
-      model: model || null,
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
-    });
-    setThread(t);
-    return t;
-  }, [thread, cwd, model]);
+  // A sub-agent's task prompt and earlier turns are only in its saved history.
+  useEffect(() => {
+    if (watchingSub && shown && !shown.historyLoaded) loadHistory(shown.id);
+  }, [watchingSub, shown]);
 
   const send = useCallback(async () => {
     const text = input.trim();
-    if (!text || status === "running") return;
+    if (!text || running) return;
     setInput("");
-    setStat("running");
-    onTurnDiff(null);
+    setLocalError("");
+    setBusy(true);
     try {
-      const t = await ensureThread();
-      const params: TurnStartParams = {
-        threadId: t.thread.id,
-        input: [{ type: "text", text, text_elements: [] }],
-        model: model || null,
-      };
-      await rpc.request("turn/start", params);
+      let id = rootId;
+      if (!id) {
+        id = await startThread(cwd, choice);
+        onRootChange(id);
+      } else if (root && choice.provider && root.provider && choice.provider !== root.provider) {
+        // Same conversation, different provider: fork it there and continue.
+        id = await switchProvider(id, cwd, choice);
+        onRootChange(id);
+      }
+      onViewChange(null);
+      await sendTurn(id, text, choice.model);
     } catch (e) {
-      setStat("error", String(e));
+      setLocalError(String(e));
+    } finally {
+      setBusy(false);
     }
-  }, [input, status, ensureThread, model, onTurnDiff, setStat]);
+  }, [input, running, rootId, root, cwd, choice, onRootChange, onViewChange]);
 
-  const interrupt = useCallback(() => {
-    if (thread) rpc.request("turn/interrupt", { threadId: thread.thread.id }).catch(() => {});
-  }, [thread]);
-
-  const newThread = () => {
-    setThread(null);
-    setItems([]);
-    onTurnDiff(null);
-    setStat("ready");
-  };
+  const error = localError || shownError || (watchingSub ? "" : rootError);
 
   return (
     <div className="agent">
+      <AgentTree rootId={rootId} viewId={viewId} onSelect={(id) => onViewChange(id === rootId ? null : id)} />
+
       <div className="agent-header">
-        <span className={`dot status-${status}`} />
-        <span className="small">{thread ? `${thread.modelProvider} · ${thread.model}` : "new thread"}</span>
-        <button className="link" onClick={newThread} disabled={status === "running"}>
+        <span className={`dot agent-${shown?.state ?? "idle"}`} />
+        {watchingSub && shown ? (
+          <>
+            <button className="link" onClick={() => onViewChange(null)} title="back to the main thread">
+              ← Main
+            </button>
+            <span className="small grow ellipsis">
+              {agentLabel(shown)} <span className="muted">· {shown.model ?? "?"} · watch only</span>
+            </span>
+          </>
+        ) : (
+          <span className="small grow ellipsis">{root ? `${root.provider} · ${root.model ?? "?"}` : "new session"}</span>
+        )}
+        <button className="link" onClick={() => onRootChange(null)} disabled={running}>
           new
         </button>
       </div>
@@ -166,29 +107,43 @@ export function AgentPanel({ cwd, model, onTurnDiff, onOpenFile, onStatus }: Pro
 
       <div className="items" ref={listRef}>
         {items.map((ui) => (
-          <ItemView key={ui.item.id} ui={ui} onOpenFile={onOpenFile} />
+          <ItemView key={ui.item.id} ui={ui} onOpenFile={onOpenFile} onOpenAgent={onViewChange} />
         ))}
+        {watchingSub && items.length === 0 && <div className="muted small">Nothing from this agent yet.</div>}
       </div>
 
-      {approval && <ApprovalView approval={approval} />}
+      {approvals.map((a) => (
+        <ApprovalView key={a.key} approval={a} />
+      ))}
 
       <div className="composer">
         <textarea
           value={input}
-          placeholder="Ask Codex… (⌘/Ctrl+Enter)"
+          disabled={watchingSub}
+          placeholder={watchingSub ? "Watching a sub-agent. Go back to Main to send a message." : "Ask Codex… (⌘/Ctrl+Enter)"}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send();
           }}
         />
-        {status === "running" ? <button onClick={interrupt}>Stop</button> : <button onClick={send}>Send</button>}
+        {running && rootId ? (
+          <button onClick={() => interrupt(rootId)}>Stop</button>
+        ) : (
+          <button onClick={send} disabled={watchingSub}>
+            Send
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-function ItemView({ ui, onOpenFile }: { ui: UiItem; onOpenFile: (p: string) => void }) {
+type ItemProps = { ui: UiItem; onOpenFile: (p: string) => void; onOpenAgent: (threadId: string) => void };
+
+function ItemView({ ui, onOpenFile, onOpenAgent }: ItemProps) {
   const { item, stream, done } = ui;
+  const threads = useThreads();
+  const agentName = (id: string) => (threads[id] ? agentLabel(threads[id]) : `agent ${id.slice(-6)}`);
   switch (item.type) {
     case "userMessage":
       return (
@@ -240,6 +195,29 @@ function ItemView({ ui, onOpenFile }: { ui: UiItem; onOpenFile: (p: string) => v
           <pre className="body">{item.text}</pre>
         </div>
       );
+    case "subAgentActivity":
+      return (
+        <div className="item subagent link-row" onClick={() => onOpenAgent(item.agentThreadId)} title="watch this agent">
+          <span className="label">sub-agent {item.kind}</span>{" "}
+          <span className="mono small">{item.agentPath || agentName(item.agentThreadId)}</span>
+          {item.model && <span className="muted tiny"> · {item.model}</span>}
+        </div>
+      );
+    case "collabAgentToolCall":
+      return (
+        <div className="item subagent">
+          <div className="label">
+            {item.tool} <span className="muted">[{item.status}]</span>
+          </div>
+          {item.receiverThreadIds.map((id) => (
+            <div key={id} className="mono small link-row" onClick={() => onOpenAgent(id)} title="watch this agent">
+              {agentName(id)}
+              {item.agentsStates[id] && <span className="muted"> · {item.agentsStates[id]?.status}</span>}
+            </div>
+          ))}
+          {item.prompt && <pre className="mono small">{item.prompt}</pre>}
+        </div>
+      );
     default:
       return (
         <details className="item other">
@@ -252,15 +230,17 @@ function ItemView({ ui, onOpenFile }: { ui: UiItem; onOpenFile: (p: string) => v
 
 function ApprovalView({ approval }: { approval: Approval }) {
   const { resolve } = approval;
+  const thread = useThread(approval.threadId);
+  const who = thread && thread.parentId ? agentLabel(thread) : "Codex";
   return (
     <div className="approval">
       {approval.kind === "command" ? (
         <>
-          <div className="label">Codex wants to run:</div>
+          <div className="label">{who} wants to run:</div>
           <pre className="mono small">{approval.params.command ?? "(command)"}</pre>
         </>
       ) : (
-        <div className="label">Codex wants to change files</div>
+        <div className="label">{who} wants to change files</div>
       )}
       {approval.params.reason && <div className="muted small">{approval.params.reason}</div>}
       <div className="row">

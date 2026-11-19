@@ -1,13 +1,12 @@
 /**
- * JSON-RPC 2.0 client over the Tauri bridge to `codex app-server`.
+ * JSON-RPC 2.0 client for `hcodex app-server` (over the transport in `transport.ts`).
  *
  * - request(method, params)  -> Promise<result>
  * - onNotification(method, cb)
  * - onServerRequest(method, handler) : handler must return the response payload
  *   (used for approvals / requestUserInput / tool calls).
  */
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { transport, type ServerInfo } from "./transport";
 import type { InitializeParams } from "../protocol/InitializeParams";
 import type { InitializeResponse } from "../protocol/InitializeResponse";
 
@@ -28,10 +27,9 @@ export class CodexRpc {
   private notifHandlers = new Map<string, Set<NotificationHandler>>();
   private anyHandlers = new Set<NotificationHandler>();
   private serverReqHandlers = new Map<string, ServerRequestHandler>();
-  private unlisten: UnlistenFn[] = [];
   private logHandlers = new Set<(line: string) => void>();
   private exitHandlers = new Set<() => void>();
-  private starting: Promise<{ codex_bin: string; codex_home: string | null; pid: number }> | null = null;
+  private starting: Promise<ServerInfo> | null = null;
 
   /** Spawn app-server once; concurrent/repeated calls (React StrictMode) share the same start. */
   start(opts?: { codexBin?: string; codexHome?: string }) {
@@ -44,17 +42,15 @@ export class CodexRpc {
     return this.starting;
   }
 
-  private async doStart(opts?: { codexBin?: string; codexHome?: string }) {
-    this.unlisten.push(
-      await listen<string>("codex-rpc", (e) => this.onLine(e.payload)),
-      await listen<string>("codex-log", (e) => this.logHandlers.forEach((h) => h(e.payload))),
-      await listen("codex-exit", () => this.exitHandlers.forEach((h) => h())),
+  private doStart(opts?: { codexBin?: string; codexHome?: string }) {
+    return transport.start(
+      {
+        onLine: (line) => this.onLine(line),
+        onLog: (line) => this.logHandlers.forEach((h) => h(line)),
+        onExit: () => this.exitHandlers.forEach((h) => h()),
+      },
+      opts,
     );
-    const info = await invoke<{ codex_bin: string; codex_home: string | null; pid: number }>(
-      "start_server",
-      { codexBin: opts?.codexBin ?? null, codexHome: opts?.codexHome ?? null },
-    );
-    return info;
   }
 
   private initialized: Promise<InitializeResponse> | null = null;
@@ -73,11 +69,9 @@ export class CodexRpc {
   }
 
   async stop() {
-    this.unlisten.forEach((u) => u());
-    this.unlisten = [];
     this.starting = null;
     this.initialized = null;
-    await invoke("stop_server");
+    await transport.stop();
   }
 
   request<T = Json>(method: string, params?: Json): Promise<T> {
@@ -85,7 +79,7 @@ export class CodexRpc {
     const line = JSON.stringify({ id, method, params: params ?? {} });
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: Json) => void, reject, method });
-      invoke("rpc_send", { line }).catch((e) => {
+      transport.send(line).catch((e) => {
         this.pending.delete(id);
         reject(e instanceof Error ? e : new Error(String(e)));
       });
@@ -94,7 +88,7 @@ export class CodexRpc {
 
   notify(method: string, params?: Json) {
     const line = JSON.stringify(params === undefined ? { method } : { method, params });
-    return invoke("rpc_send", { line });
+    return transport.send(line);
   }
 
   onNotification(method: string, cb: NotificationHandler): () => void {
@@ -139,18 +133,14 @@ export class CodexRpc {
       const id = msg.id as number | string;
       const handler = this.serverReqHandlers.get(method);
       if (!handler) {
-        await invoke("rpc_send", {
-          line: JSON.stringify({ id, error: { code: -32601, message: `unhandled server request ${method}` } }),
-        });
+        await transport.send(JSON.stringify({ id, error: { code: -32601, message: `unhandled server request ${method}` } }));
         return;
       }
       try {
         const result = await handler(msg.params, id);
-        await invoke("rpc_send", { line: JSON.stringify({ id, result }) });
+        await transport.send(JSON.stringify({ id, result }));
       } catch (e) {
-        await invoke("rpc_send", {
-          line: JSON.stringify({ id, error: { code: -32000, message: String(e) } }),
-        });
+        await transport.send(JSON.stringify({ id, error: { code: -32000, message: String(e) } }));
       }
       return;
     }
