@@ -1,0 +1,6 @@
+packages:
+  - "."
+
+# Same policy as the repo root: do not run esbuild's install script (the prebuilt binary is enough).
+ignoredBuiltDependencies:
+  - esbuild

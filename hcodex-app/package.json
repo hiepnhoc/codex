@@ -1,11 +1,12 @@
 {
-  "name": "codex-ide",
+  "name": "hcodex-app",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "gen:protocol": "node scripts/gen-protocol.mjs",
+    "dev": "node scripts/gen-protocol.mjs && vite",
+    "build": "node scripts/gen-protocol.mjs && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
   },

@@ -4,12 +4,12 @@ import react from "@vitejs/plugin-react";
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
-// Browser-only UI development (`CODEX_IDE_WS=ws://127.0.0.1:4599 pnpm dev`): app-server refuses
+// Browser-only UI development (`HCODEX_APP_WS=ws://127.0.0.1:4599 pnpm dev`): app-server refuses
 // WebSocket handshakes that carry an Origin header, so a page cannot connect to it directly.
 // This opt-in proxy forwards `/codex-ws` to it for this dev page only; any other origin is
 // dropped, which keeps app-server's guard against arbitrary web pages intact.
 // @ts-expect-error process is a nodejs global
-const wsTarget: string | undefined = process.env.CODEX_IDE_WS;
+const wsTarget: string | undefined = process.env.HCODEX_APP_WS;
 const DEV_ORIGINS = ["http://localhost:1420", "http://127.0.0.1:1420"];
 
 // https://vite.dev/config/

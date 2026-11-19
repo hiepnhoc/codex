@@ -4,7 +4,7 @@
  * - In the desktop app: the Tauri backend spawns app-server and bridges its stdio.
  * - In a plain browser, for developing and testing the UI without the native shell:
  *     hcodex app-server --listen ws://127.0.0.1:4599
- *     CODEX_IDE_WS=ws://127.0.0.1:4599 pnpm dev
+ *     HCODEX_APP_WS=ws://127.0.0.1:4599 pnpm dev
  *   then open http://localhost:1420/?cwd=<workspace>. The page talks to `/codex-ws`, which
  *   the dev server forwards (see vite.config.ts); `?ws=<url>` overrides the endpoint.
  */

@@ -9,6 +9,8 @@ lerna-debug.log*
 
 node_modules
 dist
+# generated from the hcodex binary by scripts/gen-protocol.mjs
+src/protocol/
 dist-ssr
 *.local
 

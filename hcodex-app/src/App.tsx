@@ -43,7 +43,7 @@ export default function App() {
       try {
         const info = await rpc.start();
         setBootMsg(`pid ${info.pid} · ${info.codex_bin} · CODEX_HOME=${info.codex_home ?? "default"}`);
-        await rpc.initialize({ name: "codex-ide", title: "Codex IDE", version: "0.1.0" });
+        await rpc.initialize({ name: "hcodex-app", title: "hcodex", version: "0.1.0" });
         wireStore();
         const wd = await transport.defaultCwd();
         const cat = await loadCatalog(wd);
@@ -143,7 +143,7 @@ export default function App() {
   if (boot !== "ready") {
     return (
       <div className={`boot status-${boot}`}>
-        <div className="sidebar-title">Codex IDE</div>
+        <div className="sidebar-title">hcodex</div>
         <div className="mono small">{bootMsg}</div>
         {boot === "error" && <pre className="mono tiny logs-pre">{logs.slice(-30).join("\n")}</pre>}
       </div>

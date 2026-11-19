@@ -24,31 +24,43 @@ struct ServerInfo {
     pid: u32,
 }
 
+/// The user's home directory on macOS/Linux (`HOME`) and Windows (`USERPROFILE`).
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+}
+
 fn default_codex_bin() -> String {
     if let Ok(v) = std::env::var("CODEX_BIN") {
         return v;
     }
-    // hcodex harness install (symlink kept fresh by its build scripts), then the
-    // sibling checkout's release build, then whatever is on PATH.
-    let home = std::env::var("HOME").unwrap_or_default();
-    for candidate in [
-        format!("{home}/.cargo/bin/hcodex"),
-        format!("{home}/github/codex/codex-rs/target/release/hcodex"),
-    ] {
-        if std::path::Path::new(&candidate).exists() {
-            return candidate;
-        }
+    let exe = if cfg!(windows) { "hcodex.exe" } else { "hcodex" };
+    // The installed harness (`~/.hcodex/bin`, where the install scripts and the sync script
+    // put it), its symlink in `~/.cargo/bin`, then this checkout's own release build, then PATH.
+    let mut candidates = Vec::new();
+    if let Some(home) = home_dir() {
+        candidates.push(home.join(".hcodex").join("bin").join(exe));
+        candidates.push(home.join(".cargo").join("bin").join(exe));
     }
-    "hcodex".to_string()
+    candidates.push(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../codex-rs/target/release")
+            .join(exe),
+    );
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.exists())
+        .map(|candidate| candidate.display().to_string())
+        .unwrap_or_else(|| "hcodex".to_string())
 }
 
 fn default_codex_home() -> Option<String> {
     if let Ok(v) = std::env::var("CODEX_HOME") {
         return Some(v);
     }
-    let home = std::env::var("HOME").ok()?;
-    let candidate = format!("{home}/.hcodex");
-    std::path::Path::new(&candidate).exists().then_some(candidate)
+    let candidate = home_dir()?.join(".hcodex");
+    candidate.exists().then(|| candidate.display().to_string())
 }
 
 /// Start (or restart) the app-server child process.
@@ -138,7 +150,7 @@ fn rpc_send(state: State<'_, ServerState>, line: String) -> Result<(), String> {
 
 #[tauri::command]
 fn default_cwd() -> String {
-    std::env::var("CODEX_IDE_CWD")
+    std::env::var("HCODEX_APP_CWD")
         .ok()
         .or_else(|| std::env::current_dir().ok().map(|p| p.display().to_string()))
         .unwrap_or_else(|| "/".into())

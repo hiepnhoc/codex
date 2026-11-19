@@ -5,7 +5,7 @@ import readline from "node:readline";
 import os from "node:os";
 import path from "node:path";
 
-const bin = process.env.CODEX_BIN ?? path.join(os.homedir(), ".cargo/bin/hcodex");
+const bin = process.env.CODEX_BIN ?? path.join(os.homedir(), ".hcodex/bin/hcodex");
 const home = process.env.CODEX_HOME ?? path.join(os.homedir(), ".hcodex");
 const cwd = process.argv[2] ?? os.tmpdir();
 const prompt = process.argv[3] ?? "Reply with exactly: pong";
@@ -48,7 +48,7 @@ const done = new Promise((resolve) => {
 });
 
 const t0 = Date.now();
-const init = await request("initialize", { clientInfo: { name: "codex-ide-smoke", title: null, version: "0.1.0" }, capabilities: null });
+const init = await request("initialize", { clientInfo: { name: "hcodex-app-smoke", title: null, version: "0.1.0" }, capabilities: null });
 send({ method: "initialized" });
 console.log("initialize ->", init.userAgent);
 
