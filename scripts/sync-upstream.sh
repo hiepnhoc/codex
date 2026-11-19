@@ -218,7 +218,7 @@ build_gate_install() {
     rm -rf target/debug
     echo "cleaned target/debug (disk free: $(df -h . | awk 'NR==2{print $4}'))"
   fi
-  echo "reminder: codex-ide types -> cd ~/github/codex-ide && hcodex app-server generate-ts --out src/protocol && pnpm exec tsc --noEmit"
+  echo "reminder: check the desktop app against the new protocol -> cd $ROOT/hcodex-app && pnpm build"
   if [[ "$UNATTENDED" == "1" ]]; then
     git push -q origin "$BRANCH" 2>/dev/null && echo "pushed $BRANCH to origin" || echo "(push to origin skipped/failed)"
     echo "===== $(date '+%F %T') unattended sync: OK, installed $(git -C "$ROOT" rev-parse --short HEAD) ====="

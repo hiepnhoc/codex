@@ -8,7 +8,7 @@ import fs from "node:fs";
 
 const bin = process.env.CODEX_BIN ?? path.join(os.homedir(), ".cargo/bin/hcodex");
 const home = process.env.CODEX_HOME ?? path.join(os.homedir(), ".hcodex");
-const dir = process.argv[2] ?? fs.mkdtempSync(path.join(os.tmpdir(), "codex-ide-smoke-"));
+const dir = process.argv[2] ?? fs.mkdtempSync(path.join(os.tmpdir(), "hcodex-app-smoke-"));
 
 const child = spawn(bin, ["app-server"], { env: { ...process.env, CODEX_HOME: home }, stdio: ["pipe", "pipe", "ignore"] });
 const rl = readline.createInterface({ input: child.stdout });

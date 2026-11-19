@@ -33,6 +33,74 @@ Lưu ý: codex chỉ hỗ trợ **OpenAI Responses API** (`wire_api = "chat"` đ
 xoá). Provider nào chỉ có `/chat/completions` (Anthropic, Gemini, Groq…) phải đi
 qua gateway nói được `/v1/responses` (proxy local ở dưới, LiteLLM, OpenRouter…).
 
+## Nguyên tắc: một harness riêng, lõi vẫn theo upstream (chốt 19/11/2026)
+
+Mục tiêu của repo này: **một** harness cá nhân gồm CLI, app desktop, plugin, proxy, không tách
+nhiều repo để khỏi phải bảo trì. Ràng buộc đi kèm: lõi harness (`codex-rs/`) tiếp tục nhận cập
+nhật từ openai/codex, vì một người không phát triển nổi toàn bộ lõi; ý tưởng riêng được thêm
+vào miễn là **không làm lần sync sau conflict ở phần lõi**.
+
+Vì vậy mỗi ý tưởng mới đặt ở chỗ ít đụng upstream nhất, theo thứ tự:
+
+1. **Ngoài repo, trong `~/.hcodex`**: skill, role agent, profile, hook, plugin. Không bao giờ conflict.
+2. **Thư mục hoặc file mới mà upstream không có**: `hcodex-app/`, `docs/hcodex-skills/`,
+   `scripts/…`, file Rust mới (`local_proxy_models.rs`, `flat_namespaces.rs`, `provider_setup*.rs`).
+   Rebase không conflict vì upstream không sửa các đường dẫn này.
+3. **Sửa file của upstream**: chỉ khi hai cách trên không làm được. Giữ móc thật nhỏ (vài dòng gọi
+   sang file mới), đặt sau cờ `[features]` mặc định tắt, có test nằm trong gate của
+   `sync-upstream.sh`, và ghi một dòng vào bảng "Khác gì so với codex gốc".
+
+Trước khi vá lõi, xem upstream đã hoặc sắp có chưa. Hai ví dụ từ lần sync 19/11: bản vá
+`thread_keeps_provider` bị upstream thay thế sau hai tuần, và `/provider` giờ trùng một phần
+với màn quản lý provider của upstream.
+
+Số đo lần sync 19/11 (880 commit upstream): 75 commit harness, chỉ 12 commit đụng file bị
+conflict, 16 file conflict; `hcodex-app/` và `docs/hcodex-skills/` không gây conflict nào.
+
+## App desktop: `hcodex-app/` (gộp vào repo 19/11/2026)
+
+Trước đây là repo riêng `~/github/codex-ide` (không có remote). Gộp vào đây bằng
+`git format-patch --root` bên đó rồi `git am --directory=hcodex-app
+--exclude='hcodex-app/src/protocol/*'` bên này: 6 commit giữ nguyên tác giả và ngày, 7 commit chỉ
+sinh lại kiểu giao thức bị bỏ. Đổi tên từ `codex-ide` thành `hcodex` (binary `hcodex-app`,
+bundle `com.hiepln.hcodex-app`).
+
+App **không link mã của lõi**: vỏ Tauri gọi `hcodex app-server` làm tiến trình con và nói
+JSON-RPC. Thứ duy nhất lấy từ lõi là bộ kiểu TypeScript trong `hcodex-app/src/protocol/`, giờ
+**không commit** mà do `scripts/gen-protocol.mjs` sinh từ binary hcodex đang cài ở đầu
+`pnpm dev` / `pnpm build` (chỉ sinh lại khi binary đổi). Sau mỗi lần sync:
+`cd hcodex-app && pnpm build` vừa sinh lại kiểu vừa để `tsc` báo chỗ giao thức đổi.
+
+```bash
+cd hcodex-app && pnpm install
+pnpm tauri dev        # chạy app; pnpm tauri build để đóng gói
+```
+
+Có gì (đợt 1, 19/11):
+
+| Phần | Dùng lệnh app-server nào |
+|---|---|
+| Tab Sessions: phiên gom theo project, tìm kiếm, mở lại đúng provider/model | `thread/list` (phải gửi `modelProviders: []`, không thì chỉ ra phiên của provider mặc định), `thread/resume` |
+| Ô chọn model gộp mọi provider; đổi provider giữa chừng thì fork thread | `modelProvider/list`, `model/list { modelProvider }`, `thread/fork` |
+| Cây Agents: Main + subagent, trạng thái, model, thời gian, lệnh đang chạy, đếm running/done | item `subAgentActivity` của thread cha, `thread/status/changed`, `turn/*`, `thread/read` |
+| Bấm subagent để xem luồng của nó (chỉ xem) | event `item/*` gắn `threadId` của subagent |
+
+Điều rút ra khi làm: subagent (multi_agent_v2) **không** có `thread/started`; nó xuất hiện qua
+`subAgentActivity` trong thread cha và qua event mang `threadId` lạ. `modelProvider/list` của
+upstream không liệt kê `local-proxy` và báo mặc định là `openai`; app đi vòng bằng `model/list`
+không kèm provider, chưa sửa trong lõi.
+
+Phát triển giao diện không cần vỏ desktop (app-server từ chối WebSocket có header `Origin`, nên
+đi qua proxy dev chỉ nhận đúng origin của trang dev):
+
+```bash
+hcodex app-server --listen ws://127.0.0.1:4599
+cd hcodex-app && HCODEX_APP_WS=ws://127.0.0.1:4599 pnpm dev   # mở http://localhost:1420/?cwd=<thư mục>
+```
+
+Chưa làm: bảng thay đổi theo lượt, trang plugin/MCP/skill, gói proxy vào app, đóng gói trong
+workflow `hcodex-release`.
+
 ## Yêu cầu
 
 - Rust toolchain: repo pin `1.95.0` trong `codex-rs/rust-toolchain.toml`
@@ -1428,9 +1496,5 @@ Hệ quả: `hcodex agents` (command center dùng chung daemon) không dùng đ�
 
 ## Liên quan
 
-- `~/github/codex-ide` — IDE desktop (Tauri + React) chạy trên
-  `hcodex app-server`. Đã trỏ sang harness (commit `af4e65c` bên đó):
-  bin mặc định `~/.cargo/bin/hcodex`, home `~/.hcodex`, protocol types
-  regenerate từ hcodex. Chạy: `cd ~/github/codex-ide && pnpm tauri dev`.
-  Sau mỗi lần `scripts/sync-upstream.sh`, chạy lại bên IDE:
-  `hcodex app-server generate-ts --out src/protocol && pnpm exec tsc --noEmit`.
+- App desktop giờ nằm ngay trong repo này ở `hcodex-app/` (xem mục "App desktop: `hcodex-app/`").
+  Repo cũ `~/github/codex-ide` còn nguyên trên máy Mac nhưng không dùng nữa.
