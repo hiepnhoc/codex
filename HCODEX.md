@@ -14,7 +14,7 @@ Branch `my-harness` trong repo này. Binary tên `hcodex`, tách hoàn toàn kh�
 | Branding `OpenAI Codex` → `hcodex` | `codex-rs/tui/...`, `codex-rs/exec/...` |
 | Check update + nút *Update now* trỏ về GitHub Release của fork (tag `hcodex-v*`), cập nhật bằng `install.sh` / `install.ps1` của release | `codex-rs/tui/src/updates.rs`, `update_action.rs`, `update_versions.rs`, `codex-rs/cli/src/doctor/updates.rs` |
 | `/model` liệt kê model từ provider (`GET {base_url}/models`, mọi provider OpenAI-compatible) + effort low/medium/high/xhigh | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/models-manager/src/manager.rs` |
-| Catalog của proxy được chuẩn hoá thành prompt harness trung lập cho mọi model (GPT, Claude, Gemini, Qwen, GLM…), kể cả catalog file; cache model gắn identity provider+auth (cơ chế upstream) và không trộn catalog OpenAI bundled vào | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/model-provider/src/provider.rs`, `codex-rs/models-manager/src/manager.rs` |
+| Catalog của proxy được chuẩn hoá thành prompt harness trung lập cho mọi model (GPT, Claude, Gemini, Qwen, GLM…), kể cả catalog file và prompt mặc định "running in the Codex CLI… led by OpenAI" (20/11/2026); cache model gắn identity provider+auth (cơ chế upstream) và không trộn catalog OpenAI bundled vào | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/model-provider/src/provider.rs`, `codex-rs/models-manager/src/manager.rs` |
 | `/provider` trong TUI: thêm provider (id, base URL, key) → kiểm tra `/models` → chọn model → ghi config + profile; `/model` gộp model của mọi provider, chọn là đổi provider **giữ nguyên hội thoại** (fork thread); `/provider use <id> [model]` là đường tắt | `codex-rs/tui/src/bottom_pane/provider_setup_view.rs`, `codex-rs/tui/src/chatwidget/provider_setup.rs`, `codex-rs/tui/src/app/provider_setup.rs` |
 | ~~Thread chạy tiếp trên provider nó đã ghi khi profile/`/model` chọn provider khác~~: từ sync 19/11/2026 upstream tự làm việc này (`e115d5f90d`), bản vá hcodex đã gỡ. Cờ `[features] thread_keeps_provider` còn lại như cờ rỗng để config cũ không báo lỗi | `codex-rs/features/src/lib.rs` (cờ rỗng), test canh `thread_on_other_configured_provider_stays_writable` trong `codex-rs/app-server/src/config_manager_provider_tests.rs` |
 | HTTP 429 từ provider **không phải OpenAI** được retry ở lớp HTTP, tôn trọng `Retry-After` (codex gốc không retry 429) | `codex-rs/model-provider-info/src/lib.rs` (`retry_429`), `codex-rs/codex-client/src/retry.rs` (1 dòng gọi) + `retry/hcodex_rate_limit.rs` |
@@ -1227,9 +1227,12 @@ Script bảo vệ mày thế nào:
 - `rerere` bật: conflict đã resolve một lần sẽ tự resolve lại lần sau.
 - Trước khi cài: backup binary đang dùng vào `~/.hcodex/backup/`, chạy unit test
   harness (`codex-model-provider`, `provider_setup`, `command_popup`), build release,
-  rồi `scripts/harness-smoke.sh` trên binary **mới build** (version, `/model` phải
-  lấy list từ proxy, 1 turn `exec` qua proxy). Fail ở bước nào thì binary cũ vẫn
-  nguyên, không symlink đè.
+  rồi `scripts/harness-smoke.sh` trên binary **mới build**: version, danh tính trong
+  request cho 3 họ model (không cần mạng), `/model` phải lấy list từ proxy, 1 turn
+  `exec` qua proxy mặc định, và 1 turn thật cho từng dòng `provider model` trong
+  `~/.hcodex/smoke-turns.txt`. Fail ở bước nào thì binary cũ vẫn nguyên, không
+  symlink đè. Provider tự chết hoặc hết quota chỉ là WARN, không chặn cài (chi tiết
+  ở mục "Sự cố thường gặp").
 - Cảnh báo nếu `Cargo.lock` nâng `v8` khác với artifact V8 đang cache.
 - File untracked (như `docs/open-skills/scripts/`) không chặn sync; chỉ file đã
   sửa chưa commit mới chặn.
@@ -1325,7 +1328,10 @@ git push --force-with-lease origin my-harness
 ```
 
 Chạy smoke test lẻ bất cứ lúc nào: `scripts/harness-smoke.sh` (mặc định test
-`hcodex` trên PATH).
+`hcodex` trên PATH). Thêm provider/model nào đang dùng hằng ngày vào
+`~/.hcodex/smoke-turns.txt` (mỗi dòng `provider model`) để nó được thử thật sau mỗi
+lần build. Quy ước: mỗi sự cố provider đã mất công dò thì thêm một kiểm tra vào
+script này, để lần sau máy bắt chứ không phải người.
 
 Muốn gửi thay đổi ngược lên upstream thì tách commit đó ra branch riêng từ `main`
 và mở PR — không PR từ `my-harness`.
@@ -1440,6 +1446,45 @@ In ra ngày, thư mục, thread id, câu hỏi đầu tiên, mới nhất trư�
 (`/rename`-tương đương: `hcodex resume` nhận cả tên) giúp tìm bằng picker về sau.
 
 ## Sự cố thường gặp
+
+**Gemini qua proxy trả 429 "Resource has been exhausted" dù chat thẳng model thì được**
+(20/11/2026, Fusebox `127.0.0.1:8317`, `gemini-3.8-flash-high`, provider upstream `antigravity`):
+không phải quota và không phải kích thước. Bắt nguyên request của hcodex bằng một server ghi
+lại rồi gửi lại vào proxy, cắt dần: bỏ tool vẫn 429, bỏ danh sách skill vẫn 429, chỉ khi đổi
+**đoạn mở đầu của prompt hệ thống** thì cùng request 84 KB đó trả 200 (3 lần đổi đều 200, 3 lần
+giữ đều 429). Đoạn đó là mở đầu của prompt mặc định `models-manager/prompt.md`: "You are a
+coding agent running in the Codex CLI ... led by OpenAI". Backend của Google từ chối request
+Gemini mang câu này và trả 429 thay vì lỗi nội dung.
+
+hcodex vốn thay đoạn mở đầu mang danh tính OpenAI bằng câu trung lập
+(`normalize_proxy_model_instructions` trong `model-provider/src/local_proxy_models.rs`), nhưng
+chỉ nhận ra "You are Codex", "You are GPT", "based on GPT". Prompt mặc định không khớp cả ba
+nên lọt. Đã thêm "Codex CLI" và "OpenAI" vào điều kiện, có test
+`proxy_models_replace_the_fallback_prompt_opening` dùng đúng prompt mặc định.
+
+Để lần sau không mất nửa ngày, `scripts/harness-smoke.sh` (chạy sau mỗi lần build, trước khi
+cài) có thêm hai kiểm tra:
+
+- **Danh tính trong request (không cần mạng)**: dựng một server ghi lại đóng vai provider,
+  chạy `hcodex exec` qua nó cho 3 họ model (`gemini-*`, `claude-*`, `gpt-*`), rồi kiểm đoạn mở
+  đầu prompt hệ thống không chứa `Codex`, `OpenAI`, `GPT`. Hỏng là FAIL. Bắt được ca upstream đổi
+  câu chữ prompt mặc định.
+- **Lượt thật theo từng provider/model**: mỗi dòng `provider model` trong
+  `~/.hcodex/smoke-turns.txt` (hiện có `hibox gemini-3.8-flash-high`, `hibox claude-haiku-5-5`;
+  hoặc `HCODEX_SMOKE_TURNS="hibox:gemini-3.8-flash-high,..."`). Trước tiên **hỏi thẳng provider**
+  một request nhỏ: không trả 200 thì WARN và bỏ qua (provider chết hoặc hết quota, không phải lỗi
+  harness). Trả 200 mà lượt qua hcodex không ra `pong` trong 90 giây thì FAIL. Lượt qua proxy mặc
+  định cũng theo đúng luật này, nên proxy chết không còn chặn việc cài bản mới.
+
+Chạy trên bản **chưa sửa**, smoke mới báo đúng cả hai: 3 dòng "system prompt … opens with an
+OpenAI identity" và "hibox/gemini-3.8-flash-high answers directly, but the turn through hcodex
+did not answer".
+
+Lỗi này trông giống rate limit thật vì hcodex retry 429 rồi treo vài phút ("Reconnecting…
+n/5"), và mỗi lần 429 làm Fusebox khoá tài khoản khoảng 10 giây ("all accounts for … are rate
+limited"), nên gọi thẳng ngay sau đó cũng 429. Cách kiểm nhanh khi gặp lại: xem
+`~/Library/Logs/fusebox.log`, nếu `client_app="Codex"` toàn 429 còn client khác 200 trong cùng
+phút thì là do nội dung request, không phải quota.
 
 **MCP Jira không có tool / agent tự `curl` Atlassian bằng token trong config** (phát hiện
 16/10/2026): config cũ khai `npx -y @sooperset/mcp-atlassian`, package này **không tồn tại

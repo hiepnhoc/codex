@@ -46,6 +46,25 @@ fn proxy_models_replace_openai_identity_without_changing_guidance() {
     }
 }
 
+/// The prompt a proxy model gets when the proxy sends no instructions of its own.
+#[test]
+fn proxy_models_replace_the_fallback_prompt_opening() {
+    let fallback = model_info_from_slug("gemini-3.8-flash-high");
+    let original = codex_prompts::render_model_instructions(&fallback);
+    let (original_opening, guidance) = original
+        .split_once("\n\n")
+        .expect("fallback prompt has an opening paragraph");
+    assert!(original_opening.contains("Codex CLI"));
+    assert!(original_opening.contains("OpenAI"));
+
+    let normalized = normalize_proxy_model_instructions(fallback);
+
+    assert_eq!(
+        codex_prompts::render_model_instructions(&normalized),
+        format!("{HCODEX_INSTRUCTIONS_OPENING}\n\n{guidance}")
+    );
+}
+
 #[test]
 fn command_auth_identity_hides_the_command_line() {
     use codex_protocol::config_types::ModelProviderAuthInfo;

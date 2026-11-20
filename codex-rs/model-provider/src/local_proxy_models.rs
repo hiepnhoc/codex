@@ -327,9 +327,19 @@ fn normalize_proxy_model_instructions(mut info: ModelInfo) -> ModelInfo {
     let opening_end = instructions.find("\n\n").unwrap_or(instructions.len());
     let opening = &instructions[..opening_end];
     let opening_lowercase = opening.to_ascii_lowercase();
-    let has_openai_identity = opening_lowercase.contains("you are codex")
-        || opening_lowercase.contains("you are gpt")
-        || opening_lowercase.contains("based on gpt");
+    // The fallback prompt (`models-manager/prompt.md`) opens with "You are a coding agent
+    // running in the Codex CLI ... led by OpenAI", which names neither Codex nor GPT as the
+    // agent. Google's backend answers a Gemini request carrying that opening with
+    // 429 "Resource has been exhausted" (seen through a local proxy, 20/11/2026).
+    let has_openai_identity = [
+        "you are codex",
+        "you are gpt",
+        "based on gpt",
+        "codex cli",
+        "openai",
+    ]
+    .iter()
+    .any(|needle| opening_lowercase.contains(needle));
     if !has_openai_identity {
         return info;
     }
