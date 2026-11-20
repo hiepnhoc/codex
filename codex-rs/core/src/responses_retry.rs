@@ -22,6 +22,12 @@ use tracing::warn;
 
 const INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
 const MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);
+/// hcodex: longest server `Retry-After` honored for third-party providers. A proxy
+/// (cliproxy, 03/11/2026) answered a 503 with `Retry-After: 12353`; sleeping that long
+/// parks a sub-agent for hours while the parent's `wait_agent` sees nothing. Capped
+/// advice still counts against `stream_max_retries`, so a provider that keeps
+/// refusing surfaces as an error within minutes instead.
+const MAX_PROVIDER_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
@@ -47,6 +53,23 @@ pub(crate) struct ResponsesStreamRetryState {
     retries: u64,
     connection_retries: u64,
     connection_retry_delay: Duration,
+}
+
+pub(crate) fn is_transient_provider_capacity_error(
+    err: &CodexErr,
+    turn_context: &TurnContext,
+) -> bool {
+    let provider = turn_context.provider.info();
+    if provider.requires_openai_auth || provider.aws.is_some() || err.is_from_http_response() {
+        return false;
+    }
+
+    match err.details() {
+        CodexErrorDetails::ServerOverloaded
+        | CodexErrorDetails::RateLimitExceeded(_)
+        | CodexErrorDetails::UsageLimitReached(_) => true,
+        _ => false,
+    }
 }
 
 impl Default for ResponsesStreamRetryState {
@@ -100,10 +123,21 @@ pub(crate) async fn handle_response_stream_error(
         ResponsesStreamRequest::RemoteCompactionV2 => RetryOperation::RemoteCompactionV2,
     };
     let retry_count = retry_state.retries.saturating_add(1);
-    let Some(delay) = err.retry_delay(retry_count) else {
-        return Err(err);
+    // hcodex: proxy/gateway overload and quota-probe responses are transient for
+    // non-OpenAI providers; they clear in seconds, not the ~200ms generic backoff.
+    let provider_capacity = is_transient_provider_capacity_error(&err, turn_context);
+    let retry_after = cap_provider_retry_after(
+        err.retry_after(),
+        turn_context.provider.info().requires_openai_auth,
+    );
+    let delay = match err.retry_delay(retry_count) {
+        Some(delay) if provider_capacity && retry_after.is_none() => {
+            delay.max(provider_capacity_backoff(retry_count))
+        }
+        Some(delay) => delay,
+        None if provider_capacity => provider_capacity_backoff(retry_count),
+        None => return Err(err),
     };
-    let retry_after = err.retry_after();
 
     if turn_context
         .config
@@ -169,12 +203,19 @@ pub(crate) async fn handle_response_stream_error(
         if report_error {
             // Surface retry information to any UI/front-end so the user understands what is
             // happening instead of staring at a seemingly frozen screen.
-            sess.notify_stream_error(
-                turn_context,
-                format!("Reconnecting... {retry_count}/{max_retries}"),
-                err,
-            )
-            .await;
+            let status = match err.details() {
+                CodexErrorDetails::ServerOverloaded if provider_capacity => {
+                    format!("Model at capacity, retrying... {retry_count}/{max_retries}")
+                }
+                CodexErrorDetails::RateLimitExceeded(_)
+                | CodexErrorDetails::UsageLimitReached(_)
+                    if provider_capacity =>
+                {
+                    format!("Provider rate limit, retrying... {retry_count}/{max_retries}")
+                }
+                _ => format!("Reconnecting... {retry_count}/{max_retries}"),
+            };
+            sess.notify_stream_error(turn_context, status, err).await;
         }
         // Use one clock sample so local backoff telemetry retains the selected delay.
         let now = Instant::now();
@@ -192,6 +233,36 @@ pub(crate) async fn handle_response_stream_error(
             retry_at: retry_after.map(RetryAfter::deadline),
         });
     Err(err)
+}
+
+/// hcodex: clamps third-party `Retry-After` advice to [`MAX_PROVIDER_RETRY_AFTER`].
+/// OpenAI's own advice is left untouched; `None` passes through.
+pub(crate) fn cap_provider_retry_after(
+    retry_after: Option<RetryAfter>,
+    requires_openai_auth: bool,
+) -> Option<RetryAfter> {
+    let retry_after = retry_after?;
+    if requires_openai_auth {
+        return Some(retry_after);
+    }
+    let advised = retry_after.remaining_delay();
+    if advised <= MAX_PROVIDER_RETRY_AFTER {
+        return Some(retry_after);
+    }
+    warn!(
+        advised_secs = advised.as_secs(),
+        capped_secs = MAX_PROVIDER_RETRY_AFTER.as_secs(),
+        "provider Retry-After exceeds the hcodex ceiling; retrying sooner"
+    );
+    RetryAfter::from_delay(MAX_PROVIDER_RETRY_AFTER).or(Some(retry_after))
+}
+
+/// hcodex: retry delay for provider capacity and quota-probe responses.
+fn provider_capacity_backoff(attempt: u64) -> Duration {
+    const BASE: Duration = Duration::from_secs(2);
+    const MAX: Duration = Duration::from_secs(30);
+    BASE.saturating_mul(1u32 << attempt.saturating_sub(1).min(4) as u32)
+        .min(MAX)
 }
 
 fn log_retry(
@@ -227,3 +298,7 @@ fn log_retry(
 #[cfg(test)]
 #[path = "responses_retry_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "responses_retry_hcodex_tests.rs"]
+mod hcodex_tests;

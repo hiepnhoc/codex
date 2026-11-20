@@ -1,0 +1,6 @@
+interface:
+  display_name: "Zoom Out"
+  short_description: "Map broader context and unresolved decisions"
+  default_prompt: "Use $zoom-out to create a context map or decision map for this effort."
+policy:
+  allow_implicit_invocation: false

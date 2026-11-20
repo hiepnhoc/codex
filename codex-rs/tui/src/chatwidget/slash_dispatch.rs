@@ -380,6 +380,9 @@ impl ChatWidget {
             SlashCommand::Presets => {
                 self.open_quick_dial_menu();
             }
+            SlashCommand::Provider => {
+                self.open_provider_setup(/*inline_args*/ None);
+            }
             SlashCommand::Plan => {
                 self.apply_plan_slash_command();
             }
@@ -844,6 +847,7 @@ impl ChatWidget {
                 });
             }
             SlashCommand::Cd => self.request_working_directory_change(trimmed),
+            SlashCommand::Provider => self.open_provider_setup(Some(trimmed)),
             SlashCommand::Pwd => {
                 self.add_error_message("Usage: /pwd".to_string());
             }
@@ -1377,6 +1381,7 @@ impl ChatWidget {
             | SlashCommand::Review
             | SlashCommand::Model
             | SlashCommand::Presets
+            | SlashCommand::Provider
             | SlashCommand::Plan
             | SlashCommand::Goal
             | SlashCommand::Side

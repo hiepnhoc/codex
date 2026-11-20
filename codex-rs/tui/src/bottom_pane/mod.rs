@@ -125,6 +125,7 @@ pub(crate) use async_questions::QuestionState;
 pub(crate) use async_questions::QuestionSubmission;
 pub(crate) use mcp_server_elicitation::McpServerElicitationFormRequest;
 pub(crate) use mcp_server_elicitation::McpServerElicitationOverlay;
+pub(crate) use provider_setup_view::ProviderSetupView;
 pub(crate) use request_user_input::RequestUserInputOverlay;
 pub(crate) use status_line_style::StatusLineAccent;
 pub(crate) use status_line_style::status_line_from_segments;
@@ -200,6 +201,7 @@ use slash_commands::ServiceTierCommand;
 mod feedback_note_view;
 mod feedback_view;
 mod hooks_browser_view;
+pub(crate) mod provider_setup_view;
 pub(crate) use feedback_view::FeedbackAudience;
 pub(crate) use feedback_view::feedback_classification;
 pub(crate) use feedback_view::feedback_consent_params;
@@ -334,6 +336,8 @@ pub(crate) struct BottomPane {
     status: Option<StatusIndicatorWidget>,
     /// Running-hook summary supplied by the lifecycle owner after its reveal delay.
     hook_status_message: Option<String>,
+    /// hcodex: live sub-agents block shown under the status row.
+    agents_live_block: Vec<Line<'static>>,
     inline_banner: Option<actionable_banner::InlineBanner>,
     /// Streaming may drop the row without losing its elapsed time or modal pause.
     status_timer: crate::status_indicator_widget::StatusTimer,
@@ -427,6 +431,7 @@ impl BottomPane {
             is_task_running: false,
             status: None,
             hook_status_message: None,
+            agents_live_block: Vec::new(),
             inline_banner: None,
             status_timer: crate::status_indicator_widget::StatusTimer::default(),
             unified_exec_footer: UnifiedExecFooter::new(),
@@ -1849,7 +1854,24 @@ impl BottomPane {
         if let Some(status) = self.status.as_mut() {
             status.update_inline_message(self.unified_exec_footer.summary_text());
             status.update_hook_status_message(self.hook_status_message.clone());
+            status.update_agents_block(self.agents_live_block.clone());
         }
+    }
+
+    /// hcodex: replace the live sub-agents block (empty clears it).
+    pub(crate) fn set_agents_live_block(&mut self, lines: Vec<Line<'static>>) {
+        if self.agents_live_block == lines {
+            return;
+        }
+        self.agents_live_block = lines;
+        // Upstream hides the status row once an assistant message is committed and
+        // does not bring it back for a following `wait_agent`; the block lives in that
+        // row, so re-show it while agents run and a task is still in flight.
+        if !self.agents_live_block.is_empty() && self.status.is_none() && self.is_task_running() {
+            self.ensure_status_indicator();
+        }
+        self.sync_status_inline_message();
+        self.request_redraw();
     }
 
     pub(crate) fn composer_is_empty(&self) -> bool {

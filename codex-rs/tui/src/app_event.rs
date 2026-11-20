@@ -1867,6 +1867,51 @@ pub(crate) enum AppEvent {
     FullScreenUserVerificationRequest(
         crate::bottom_pane::user_verification::UserVerificationRequest,
     ),
+    /// hcodex `/provider`: id / base URL / key collected; go fetch the model list.
+    ProviderSetupSubmitted {
+        draft: ProviderSetupDraft,
+    },
+
+    /// hcodex `/provider`: model list fetched for the draft provider.
+    ProviderModelsFetched {
+        draft: ProviderSetupDraft,
+        result: Result<Vec<String>, String>,
+    },
+
+    /// hcodex `/provider`: a model was picked; ask whether to make it the default.
+    ProviderModelChosen {
+        draft: ProviderSetupDraft,
+        model: String,
+    },
+
+    /// hcodex `/provider use <id> [model]`: continue this conversation on another
+    /// configured provider. The thread is forked with the new provider/model so
+    /// the whole history carries over.
+    ProviderSwitch {
+        provider_id: String,
+        model: Option<String>,
+    },
+
+    /// hcodex `/model`: model lists of the other configured providers arrived.
+    OtherProviderModelsFetched {
+        request_id: uuid::Uuid,
+        entries: Vec<OtherProviderModels>,
+    },
+
+    /// hcodex `/provider use <id>` without a model: the provider's model list.
+    ProviderSwitchModelsFetched {
+        provider_id: String,
+        result: Result<Vec<String>, String>,
+    },
+
+    /// hcodex `/provider`: persist the provider table and its profile file.
+    ProviderSave {
+        draft: ProviderSetupDraft,
+        model: String,
+        make_default: bool,
+        /// Start a fresh thread on the new provider right away.
+        use_now: bool,
+    },
 
     /// Open feedback for the active connection.
     OpenFeedback,
@@ -2087,6 +2132,34 @@ pub(crate) enum RunningTaskExitAction {
     CancelTask,
     RunInBackground,
     Exit,
+}
+
+/// hcodex: one provider's catalog for the merged `/model` picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OtherProviderModels {
+    pub(crate) provider_id: String,
+    pub(crate) models: Vec<String>,
+    /// Set when the provider could not be listed (offline, no key, timeout).
+    pub(crate) error: Option<String>,
+}
+
+/// hcodex: provider being added through `/provider` (id is the
+/// `[model_providers.<id>]` key and the profile name).
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ProviderSetupDraft {
+    pub id: String,
+    pub base_url: String,
+    pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for ProviderSetupDraft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderSetupDraft")
+            .field("id", &self.id)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

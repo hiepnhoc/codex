@@ -67,7 +67,8 @@ use crate::model_catalog::ModelCatalog;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
-use crate::multi_agents::agent_picker_status_dot_spans;
+use crate::multi_agents::AgentPickerStatus;
+use crate::multi_agents::agent_picker_status_spans;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut_matches;
 use crate::multi_agents::previous_agent_shortcut_matches;
@@ -202,6 +203,8 @@ mod agent_message_consolidation;
 mod agent_navigation;
 mod agent_picker;
 mod agent_status_feed;
+/// hcodex: live sub-agents block under the status row.
+mod agents_live;
 #[cfg(any(unix, windows))]
 mod agents_overview;
 mod agents_overview_actions;
@@ -262,6 +265,7 @@ mod pets;
 mod platform_actions;
 mod plugin_mentions;
 pub(crate) mod provider;
+mod provider_setup;
 mod rate_limit_refresh;
 mod realtime_delivery;
 mod realtime_settings;

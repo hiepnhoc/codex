@@ -5,6 +5,8 @@ use rand::Rng;
 use std::future::Future;
 use std::time::Duration;
 
+mod hcodex_rate_limit;
+
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
     pub max_attempts: u64,
@@ -103,6 +105,7 @@ where
                 let retry_after = err.retry_after();
                 let delay = retry_after
                     .map(RetryAfter::remaining_delay)
+                    .or_else(|| hcodex_rate_limit::rate_limit_delay(&err, retry_attempt))
                     .unwrap_or_else(|| backoff(policy.base_delay, retry_attempt));
                 crate::record_retry!(retry_attempt, delay, RetryOperation::HttpRequest);
                 if let Some(retry_after) = retry_after {

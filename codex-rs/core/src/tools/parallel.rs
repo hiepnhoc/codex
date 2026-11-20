@@ -149,6 +149,8 @@ impl ToolCallRuntime {
         call: ToolCall,
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = Result<ResponseItemEnvelope, CodexErr>> {
+        // hcodex: calls from flattened namespace tools arrive under the flat name.
+        let call = self.step_context.tool_router.canonicalize_flat_call(call);
         let error_call = call.clone();
         let source = call.direct_source();
         let file_backed_tool_audio = self

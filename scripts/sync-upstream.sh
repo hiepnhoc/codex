@@ -1,0 +1,388 @@
+#!/usr/bin/env bash
+# Sync the hcodex harness with openai/codex and reinstall it.
+#
+#   main        <- fast-forward to upstream/main (never commit here)
+#   my-harness  <- rebased on top of main
+#   release build -> tests + smoke gate -> install (symlinks in ~/.cargo/bin)
+#
+# Usage:
+#   scripts/sync-upstream.sh              full sync + build + gate + install
+#   scripts/sync-upstream.sh --dry-run    fetch and report what would change
+#   scripts/sync-upstream.sh --check      fetch, simulate the merge, report how far behind and which files
+#                                         would conflict (changes nothing; this is what the nightly job runs)
+#   scripts/sync-upstream.sh --install-nightly / --uninstall-nightly
+#                                         add/remove the launchd job that runs --check every night
+#   scripts/sync-upstream.sh --no-build   git sync only
+#   scripts/sync-upstream.sh --build-only skip git, just build + gate + install
+#   scripts/sync-upstream.sh --rollback   reinstall the binaries backed up by the last run
+#   scripts/sync-upstream.sh --unattended non-interactive (launchd): rebase cleanly -> build + gate + install;
+#                                         any conflict -> abort, reset to the pre-sync tag, report, exit 2
+#   env SKIP_TESTS=1                      skip the cargo test gate (still smoke-tests)
+#   env BUILD_JOBS=4 BUILD_NICE=15         parallelism / niceness for cargo (keeps the machine usable)
+#   env KEEP_DEBUG=1                        keep target/debug after install (default: removed to save ~20 GB)
+#   env HARNESS_BRANCH=<name>             harness branch (default my-harness)
+#
+# Every run tags the pre-sync harness commit as harness-pre-sync-<UTC>; undo a
+# bad sync with:  git checkout my-harness && git reset --hard <that tag>
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+ROOT="$PWD"
+BRANCH="${HARNESS_BRANCH:-my-harness}"
+BIN_DIR="$HOME/.cargo/bin"          # symlinks on PATH
+# hcodex state lives in ~/.hcodex regardless of a CODEX_HOME set by the calling
+# shell (some launchers export one); use it for backups and the models cache.
+HCODEX_HOME="$HOME/.hcodex"
+BACKUP_DIR="$HCODEX_HOME/backup"
+INSTALL_DIR="$HCODEX_HOME/bin"       # real binaries live here, independent of target/
+if [[ -n "${CODEX_HOME:-}" && "$CODEX_HOME" != "$HCODEX_HOME" ]]; then
+  echo "note: CODEX_HOME=$CODEX_HOME is set in this shell; backups/cache still use $HCODEX_HOME" >&2
+fi
+MODE="${1:-}"
+UNATTENDED=0
+if [[ "$MODE" == "--unattended" ]]; then
+  UNATTENDED=1; MODE=""
+  export BUILD_JOBS="${BUILD_JOBS:-2}"
+  mkdir -p "$HCODEX_HOME/log"
+  echo "===== $(date '+%F %T') unattended sync start ====="
+fi
+
+# Files the harness changes vs upstream; upstream commits touching these are
+# the ones that can break a rebase or a hook point.
+harness_files() {
+  git diff --name-only "main...$BRANCH" -- codex-rs scripts 2>/dev/null | grep -v '^docs/' || true
+}
+
+say() { printf '\n==> %s\n' "$*"; }
+
+# Files that are generated from the code. A conflict in one of these is never
+# merged by hand: the sync takes upstream's copy and regenerates it afterwards.
+GENERATED_RE='^codex-rs/core/config\.schema\.json$|^codex-rs/Cargo\.lock$|^codex-rs/.*/snapshots/.*\.snap$'
+REGEN_MARKER="$(git rev-parse --absolute-git-dir)/hcodex-regen"
+NIGHTLY_LABEL="com.hiepln.hcodex-sync"
+NIGHTLY_PLIST="$HOME/Library/LaunchAgents/$NIGHTLY_LABEL.plist"
+
+# --check: no working-tree or branch change. Fetches upstream, simulates merging
+# it into the harness, and reports the distance and the files that would conflict.
+check_only() {
+  git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/openai/codex.git
+  mkdir -p "$HCODEX_HOME/log"
+  local status="$HCODEX_HOME/sync-status.txt" stamp behind conflicts real n_real n_gen msg
+  stamp="$(date '+%F %T')"
+  if ! git fetch -q upstream --prune; then
+    msg="$stamp check: fetch upstream failed"
+    echo "$msg"; echo "$msg" >"$status"
+    exit 1
+  fi
+  behind="$(git rev-list --count "$BRANCH..upstream/main")"
+  conflicts="$(git merge-tree --write-tree --name-only upstream/main "$BRANCH" 2>/dev/null | sed -n '2,/^$/p' | sed '/^$/d' || true)"
+  real="$(grep -vE "$GENERATED_RE" <<<"$conflicts" | sed '/^$/d' || true)"
+  n_real="$(sed '/^$/d' <<<"$real" | wc -l | tr -d ' ')"
+  n_gen="$(grep -cE "$GENERATED_RE" <<<"$conflicts" || true)"
+  msg="$stamp check: upstream is $behind commit(s) ahead; $n_real file(s) would conflict"
+  [[ "$n_gen" != "0" ]] && msg="$msg (+$n_gen generated, handled automatically)"
+  echo "$msg"
+  [[ -n "$real" ]] && sed 's/^/  conflict: /' <<<"$real"
+  { echo "$msg"; [[ -n "$real" ]] && sed 's/^/  conflict: /' <<<"$real"; true; } >"$status"
+  if [[ "$behind" != "0" ]] && command -v osascript >/dev/null 2>&1; then
+    osascript -e "display notification \"upstream +$behind commit, $n_real file conflict\" with title \"hcodex sync\"" >/dev/null 2>&1 || true
+  fi
+  [[ "$n_real" == "0" ]] || exit 2
+  exit 0
+}
+
+install_nightly() {
+  mkdir -p "$HOME/Library/LaunchAgents" "$HCODEX_HOME/log"
+  cat >"$NIGHTLY_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$NIGHTLY_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$ROOT/scripts/sync-upstream.sh</string>
+    <string>--check</string>
+  </array>
+  <key>WorkingDirectory</key><string>$ROOT</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>7</integer></dict>
+  <key>StandardOutPath</key><string>$HCODEX_HOME/log/sync-check.log</string>
+  <key>StandardErrorPath</key><string>$HCODEX_HOME/log/sync-check.log</string>
+</dict>
+</plist>
+PLIST
+  launchctl bootout "gui/$(id -u)/$NIGHTLY_LABEL" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$NIGHTLY_PLIST"
+  echo "installed $NIGHTLY_PLIST: runs --check daily at 02:07 (or at the next wake)"
+  echo "log: $HCODEX_HOME/log/sync-check.log   last result: $HCODEX_HOME/sync-status.txt"
+  exit 0
+}
+
+uninstall_nightly() {
+  launchctl bootout "gui/$(id -u)/$NIGHTLY_LABEL" 2>/dev/null || true
+  rm -f "$NIGHTLY_PLIST"
+  echo "removed $NIGHTLY_PLIST"
+  exit 0
+}
+
+# Called when `git rebase` stops. While every conflicted file is a generated one,
+# take upstream's copy, remember the file for regen_generated, and carry on.
+# Returns 1 as soon as a hand-written file conflicts (left for a human).
+resolve_generated_conflicts() {
+  local git_dir conflicted other f
+  git_dir="$(git rev-parse --absolute-git-dir)"
+  while [[ -d "$git_dir/rebase-merge" || -d "$git_dir/rebase-apply" ]]; do
+    conflicted="$(git diff --name-only --diff-filter=U)"
+    [[ -n "$conflicted" ]] || return 1
+    other="$(grep -vE "$GENERATED_RE" <<<"$conflicted" || true)"
+    [[ -z "$other" ]] || return 1
+    while IFS= read -r f; do
+      git checkout --ours -- "$f" && git add -- "$f" || return 1
+      echo "$f" >>"$REGEN_MARKER"
+      echo "generated file conflicted; took upstream's copy, will regenerate: $f"
+    done <<<"$conflicted"
+    if git diff --cached --quiet; then
+      git rebase --skip || true
+    else
+      GIT_EDITOR=true git rebase --continue || true
+    fi
+  done
+  return 0
+}
+
+# Rebuild the generated files recorded by resolve_generated_conflicts from the
+# harness code and commit them. Runs inside build_gate_install (cargo env is set).
+regen_generated() {
+  [[ -s "$REGEN_MARKER" ]] || return 0
+  say "regenerate generated files"
+  local files f name filters=()
+  files="$(sort -u "$REGEN_MARKER")"
+  sed 's/^/  /' <<<"$files"
+  if grep -q 'config\.schema\.json$' <<<"$files"; then
+    cargo run -q -p codex-config-schema --bin codex-write-config-schema
+  fi
+  while IFS= read -r f; do
+    [[ "$f" == codex-rs/tui/*.snap ]] || continue
+    name="${f##*/}"; name="${name%.snap}"
+    filters+=("${name##*__}")
+  done <<<"$files"
+  if (( ${#filters[@]} > 0 )); then
+    # insta rewrites the .snap files in place; a failing assertion elsewhere is the gate's job.
+    INSTA_UPDATE=always RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}" \
+      cargo test -q -j "${BUILD_JOBS:-4}" -p codex-tui -- "${filters[@]}" || true
+  fi
+  cargo metadata --format-version 1 >/dev/null   # completes Cargo.lock for harness-only deps
+  (
+    cd "$ROOT"
+    while IFS= read -r f; do git add -- "$f"; done <<<"$files"
+    if ! git diff --cached --quiet; then
+      git commit -q -m "Regenerate generated files after sync onto $(git rev-parse --short main)"
+      echo "committed regenerated files"
+    fi
+  )
+  rm -f "$REGEN_MARKER"
+}
+
+rollback() {
+  [[ -x "$BACKUP_DIR/hcodex" ]] || { echo "no backup in $BACKUP_DIR" >&2; exit 1; }
+  say "rollback: restoring $BACKUP_DIR/* into $INSTALL_DIR"
+  mkdir -p "$INSTALL_DIR"
+  cp -f "$BACKUP_DIR/hcodex" "$INSTALL_DIR/hcodex"
+  cp -f "$BACKUP_DIR/codex-code-mode-host" "$INSTALL_DIR/codex-code-mode-host"
+  ln -sf "$INSTALL_DIR/hcodex" "$BIN_DIR/hcodex"
+  ln -sf "$INSTALL_DIR/codex-code-mode-host" "$BIN_DIR/codex-code-mode-host"
+  rm -f "$HCODEX_HOME"/models_cache*.json
+  echo "restored: $("$BIN_DIR/hcodex" --version)"
+  exit 0
+}
+[[ "$MODE" == "--rollback" ]] && rollback
+
+git_sync() {
+  if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+    echo "working tree has uncommitted changes — commit or stash first (untracked files are fine)" >&2
+    git status --short --untracked-files=no >&2
+    exit 1
+  fi
+  git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/openai/codex.git
+  # Remember conflict resolutions so a re-run (or a re-rebase) replays them.
+  git config rerere.enabled true
+
+  say "fetch upstream"
+  git fetch upstream --prune
+  local behind
+  behind="$(git rev-list --count main..upstream/main)"
+  echo "main is $behind commit(s) behind upstream/main"
+
+  local touched
+  touched="$(git log --oneline main..upstream/main -- $(harness_files) | wc -l | tr -d ' ')"
+  echo "upstream commits touching harness files: $touched"
+  if [[ "$MODE" == "--dry-run" ]]; then
+    git log --oneline main..upstream/main -- $(harness_files) | head -30 | cat
+    echo
+    echo "harness files:"; harness_files | sed 's/^/  /'
+    exit 0
+  fi
+  [[ "$behind" == "0" ]] && { echo "already up to date"; return 0; }
+
+  local tag="harness-pre-sync-$(date -u +%Y%m%dT%H%M%SZ)"
+  git tag -f "$tag" "$BRANCH" >/dev/null
+  echo "tagged current $BRANCH as $tag (rollback: git reset --hard $tag)"
+
+  say "update main"
+  git checkout -q main
+  git merge --ff-only upstream/main
+  git push -q origin main 2>/dev/null || echo "(skip push main to origin)"
+
+  say "rebase $BRANCH onto main"
+  git checkout -q "$BRANCH"
+  if ! git rebase main && ! resolve_generated_conflicts; then
+    if [[ "$UNATTENDED" == "1" ]]; then
+      echo "rebase conflict in unattended mode; aborting and restoring $tag" >&2
+      git diff --name-only --diff-filter=U | sed 's/^/  conflict: /' >&2
+      git rebase --abort || true
+      git checkout -q "$BRANCH"
+      git reset -q --hard "$tag"
+      echo "===== $(date '+%F %T') unattended sync: CONFLICT, harness left at $tag (main is already fast-forwarded). Run the sync manually. =====" >&2
+      exit 2
+    fi
+    cat >&2 <<MSG
+
+Rebase conflict. Resolve the files above, then:
+  git add <files> && git rebase --continue
+  scripts/sync-upstream.sh --build-only      # finish build + gate + install
+Abort and go back:
+  git rebase --abort && git reset --hard $tag
+Harness files (the usual suspects):
+$(harness_files | sed 's/^/  /')
+MSG
+    exit 1
+  fi
+  say "harness commits on top of main:"
+  git log --oneline "main..$BRANCH" | cat
+}
+
+build_gate_install() {
+  cd "$ROOT/codex-rs"
+  # Pick the cached V8 prebuilt matching Cargo.lock (dirs are ~/.cargo/.rusty_v8/codex-v<ver>).
+  local v8_lock v8_dir
+  v8_lock="$(grep -A1 '^name = "v8"$' Cargo.lock | grep version | head -1 | cut -d'"' -f2 || true)"
+  v8_dir="$HOME/.cargo/.rusty_v8/codex-v${v8_lock:-150.4.0}"
+  if [[ ! -d "$v8_dir" ]]; then
+    v8_dir="$(ls -d "$HOME"/.cargo/.rusty_v8/codex-v* 2>/dev/null | sort -V | tail -1 || true)"
+    echo "WARNING: Cargo.lock pins v8 ${v8_lock:-?} but no cached artifacts for it; using ${v8_dir:-none}" >&2
+    echo "         download the matching rusty-v8-v$v8_lock assets first (see HCODEX.md)" >&2
+    if [[ "$UNATTENDED" == "1" && -n "$v8_lock" ]]; then
+      echo "===== unattended sync: V8 $v8_lock assets missing, not building. Git is synced; run --build-only after fetching V8. =====" >&2
+      exit 3
+    fi
+  fi
+  if [[ -n "$v8_dir" && -d "$v8_dir" ]]; then
+    export RUSTY_V8_ARCHIVE="$v8_dir/librusty_v8_ptrcomp_sandbox_release_aarch64-apple-darwin.a.gz"
+    export RUSTY_V8_SRC_BINDING_PATH="$v8_dir/src_binding_ptrcomp_sandbox_release_aarch64-apple-darwin.rs"
+  fi
+
+  # The toolchain pinned by rust-toolchain.toml must be installed (rustup would prompt/download otherwise).
+  local chan
+  chan="$(grep -E '^channel' rust-toolchain.toml 2>/dev/null | cut -d'"' -f2 || true)"
+  if [[ -n "$chan" ]] && ! rustup toolchain list | grep -q "^$chan"; then
+    echo "toolchain $chan missing; installing" >&2
+    rustup toolchain install "$chan" --profile minimal -c rustfmt -c clippy
+  fi
+
+  # Back up what is installed now so --rollback can restore it after a bad build.
+  if [[ -x "$BIN_DIR/hcodex" ]]; then
+    mkdir -p "$BACKUP_DIR"
+    cp -fL "$BIN_DIR/hcodex" "$BACKUP_DIR/hcodex"
+    [[ -x "$BIN_DIR/codex-code-mode-host" ]] && cp -fL "$BIN_DIR/codex-code-mode-host" "$BACKUP_DIR/codex-code-mode-host"
+    echo "backed up installed binaries to $BACKUP_DIR"
+  fi
+
+  regen_generated
+
+  if [[ "${SKIP_TESTS:-}" != "1" ]]; then
+    say "test gate (harness unit tests)"
+    export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"   # core/tui tests overflow the default stack (see justfile)
+    # Full output goes to the gate log (the console only shows the summary), and a
+    # failing group is re-run once: timeout-sensitive tests flake when the machine swaps.
+    GATE_LOG="$HOME/.hcodex/log/sync-gate-$(date +%Y%m%d-%H%M%S).log"
+    echo "gate log: $GATE_LOG"
+    gate_run() {
+      local attempt
+      for attempt in 1 2; do
+        if RUST_MIN_STACK="$RUST_MIN_STACK" nice -n "${BUILD_NICE:-15}" cargo test -q -j "${BUILD_JOBS:-4}" "$@" >>"$GATE_LOG" 2>&1; then
+          grep "^test result" "$GATE_LOG" | tail -1
+          return 0
+        fi
+        echo "gate: '$*' failed (attempt $attempt):"
+        grep -E "^test .* FAILED|^test result" "$GATE_LOG" | tail -8
+        [[ $attempt -eq 1 ]] && echo "gate: retrying once"
+      done
+      return 1
+    }
+    gate_run -p codex-core --test all -- hcodex_overload_retry model_overrides first_turn_model_change
+    # `hcodex_tests` matches the harness-only test modules (`*_hcodex_tests.rs`).
+    gate_run -p codex-core --lib -- flat_namespaces hcodex_namespace spec_plan::tests::multi_agent agent::role::tests hcodex_tests
+    # Skip upstream GCP/Bedrock credential-process tests: they spawn `sh` with a 5 s
+    # deadline and time out whenever this machine is swapping (not harness code).
+    gate_run -p codex-models-manager -p codex-model-provider -p codex-model-provider-info -p codex-features -- --skip credential_export --skip credential_files_scope_token
+    gate_run -p codex-tui -- provider_setup command_popup
+  fi
+
+  # Keep the machine usable while building: low priority and a bounded job count
+  # (override with BUILD_JOBS / BUILD_NICE).
+  local jobs="${BUILD_JOBS:-4}" nice_level="${BUILD_NICE:-15}"
+  say "release build (nice $nice_level, -j $jobs)"
+  nice -n "$nice_level" cargo build --release -j "$jobs" --bin hcodex --bin codex-code-mode-host
+
+  say "smoke test (built binary, not yet installed)"
+  "$ROOT/scripts/harness-smoke.sh" "$PWD/target/release/hcodex"
+
+  say "install"
+  # Copy, don't symlink: the installed hcodex must survive `rm -rf target` (31/10/2026).
+  mkdir -p "$INSTALL_DIR"
+  cp -f "$PWD/target/release/hcodex" "$INSTALL_DIR/hcodex.new" && mv -f "$INSTALL_DIR/hcodex.new" "$INSTALL_DIR/hcodex"
+  cp -f "$PWD/target/release/codex-code-mode-host" "$INSTALL_DIR/codex-code-mode-host.new" && mv -f "$INSTALL_DIR/codex-code-mode-host.new" "$INSTALL_DIR/codex-code-mode-host"
+  ln -sf "$INSTALL_DIR/hcodex" "$BIN_DIR/hcodex"
+  ln -sf "$INSTALL_DIR/codex-code-mode-host" "$BIN_DIR/codex-code-mode-host"
+  rm -f "$HCODEX_HOME"/models_cache*.json
+  echo "installed: $("$BIN_DIR/hcodex" --version) -> $INSTALL_DIR"
+  # Disk hygiene after a good install: the debug tree (test/check gate, ~20 GB) is
+  # rebuilt by the next gate anyway; release deps stay so rebuilds take ~40 min.
+  # Set KEEP_DEBUG=1 to skip (e.g. when iterating on tests during the day).
+  if [[ "${KEEP_DEBUG:-}" != "1" ]]; then
+    rm -rf target/debug
+    echo "cleaned target/debug (disk free: $(df -h . | awk 'NR==2{print $4}'))"
+  fi
+  # The desktop app generates its protocol types from the hcodex just installed;
+  # a failed build here means upstream changed something the app uses.
+  if [[ -d "$ROOT/hcodex-app/node_modules" ]] && command -v pnpm >/dev/null 2>&1; then
+    say "desktop app against the new protocol (hcodex-app: pnpm build)"
+    mkdir -p "$HCODEX_HOME/log"
+    if (cd "$ROOT/hcodex-app" && pnpm -s build) >"$HCODEX_HOME/log/hcodex-app-build.log" 2>&1; then
+      echo "hcodex-app: builds against the new hcodex"
+    else
+      echo "WARNING: hcodex-app no longer builds against this hcodex (protocol changed?)." >&2
+      echo "         log: $HCODEX_HOME/log/hcodex-app-build.log" >&2
+    fi
+  else
+    echo "reminder: check the desktop app against the new protocol -> cd $ROOT/hcodex-app && pnpm install && pnpm build"
+  fi
+  if [[ "$UNATTENDED" == "1" ]]; then
+    git push -q origin "$BRANCH" 2>/dev/null && echo "pushed $BRANCH to origin" || echo "(push to origin skipped/failed)"
+    echo "===== $(date '+%F %T') unattended sync: OK, installed $(git -C "$ROOT" rev-parse --short HEAD) ====="
+  fi
+}
+
+case "$MODE" in
+  --check) check_only ;;
+  --install-nightly) install_nightly ;;
+  --uninstall-nightly) uninstall_nightly ;;
+  --build-only) build_gate_install ;;
+  --no-build|--dry-run) git_sync ;;
+  "") git_sync; build_gate_install ;;
+  *) echo "unknown option: $MODE" >&2; exit 2 ;;
+esac

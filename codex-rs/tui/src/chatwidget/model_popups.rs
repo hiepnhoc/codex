@@ -30,7 +30,15 @@ impl ChatWidget {
         }
 
         let presets: Vec<ModelPreset> = match self.model_catalog.try_list_models() {
-            Ok(models) => models,
+            Ok(models) => {
+                tracing::info!(
+                    provider = %self.config.model_provider_id,
+                    count = models.len(),
+                    first = models.first().map(|p| p.model.as_str()),
+                    "hcodex: /model opened with catalog"
+                );
+                models
+            }
             Err(_) => {
                 self.add_info_message(
                     "Models are being updated; please try /model again in a moment.".to_string(),
@@ -41,7 +49,10 @@ impl ChatWidget {
         };
         let request_id = uuid::Uuid::new_v4();
         self.model_popup_request_id = Some(request_id);
-        if presets.is_empty() {
+        // hcodex: list the other configured providers too (cached 5 min).
+        self.refresh_other_provider_models();
+        // hcodex: models already cached from other providers are enough to open the picker.
+        if presets.is_empty() && self.other_provider_models.is_empty() {
             self.bottom_pane.show_selection_view(SelectionViewParams {
                 view_id: Some(MODEL_LOADING_VIEW_ID),
                 title: Some("Loading models…".into()),
@@ -261,7 +272,9 @@ impl ChatWidget {
         presets: Vec<ModelPreset>,
         view_id: &'static str,
     ) {
-        if presets.is_empty() {
+        // hcodex: rows for every other configured provider.
+        let (other_model_ids, other_items) = self.other_provider_model_items();
+        if presets.is_empty() && other_items.is_empty() {
             self.bottom_pane.dismiss_view_by_id(view_id);
             self.add_info_message(
                 "No additional models are available right now.".to_string(),
@@ -271,7 +284,9 @@ impl ChatWidget {
         }
 
         let mut items: Vec<SelectionItem> = Vec::new();
-        let model_ids = presets.iter().map(|preset| preset.model.clone()).collect();
+        let mut model_ids: Vec<String> =
+            presets.iter().map(|preset| preset.model.clone()).collect();
+        let current_provider = self.config.model_provider_id.clone();
         for preset in presets.into_iter() {
             let description =
                 (!preset.description.is_empty()).then_some(preset.description.to_string());
@@ -293,6 +308,8 @@ impl ChatWidget {
             })];
             items.push(SelectionItem {
                 name: preset.display_name.clone(),
+                search_value: Some(format!("{} {current_provider}", preset.model)),
+                category_tag: Some(current_provider.clone()),
                 description,
                 is_current,
                 secondary_action: direct_effort.and_then(|effort| {
@@ -305,13 +322,23 @@ impl ChatWidget {
             });
         }
 
-        let header = self.model_menu_header("Select Model and Effort", "");
+        model_ids.extend(other_model_ids);
+        let current_index = items.iter().position(|item| item.is_current);
+        items.extend(other_items);
+        let header = self.model_menu_header(
+            "Select Model and Effort",
+            "Type to filter by model or provider; picking another provider keeps this conversation",
+        );
         self.show_model_selection_view(
             model_ids,
             SelectionViewParams {
                 view_id: Some(view_id),
                 items,
                 header,
+                // hcodex: the merged list is long; typing filters instead of number shortcuts.
+                is_searchable: true,
+                search_placeholder: Some("Type to filter models…".to_string()),
+                initial_selected_idx: current_index,
                 ..SelectionViewParams::picker()
             },
         );

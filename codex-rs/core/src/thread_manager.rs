@@ -83,6 +83,7 @@ use codex_model_provider::ModelCatalogFactory;
 use codex_model_provider::ProviderAuthContext;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_models_manager::ModelsManagerConfig;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_protocol::ThreadId;
@@ -610,6 +611,8 @@ pub(crate) struct ThreadManagerState {
     auth_manager: Arc<AuthManager>,
     runtime_auth: crate::runtime_auth::RuntimeAuthSlot,
     model_catalog: model_catalog::ThreadModelCatalog,
+    // hcodex: per-model metadata overrides applied when listing picker models.
+    models_manager_config: ModelsManagerConfig,
     git_root_discovery: Arc<GitRootDiscovery>,
     environment_manager: Arc<EnvironmentManager>,
     starting_mcp_runtimes: std::sync::Mutex<Vec<std::sync::Weak<StartupMcpInvalidations>>>,
@@ -712,6 +715,7 @@ impl ThreadManager {
                 thread_id_generator: default_thread_id_generator(),
                 agent_control_factory: None,
                 model_catalog,
+                models_manager_config: config.to_models_manager_config(),
                 git_root_discovery: Arc::default(),
                 environment_manager,
                 starting_mcp_runtimes: std::sync::Mutex::new(Vec::new()),
@@ -937,6 +941,7 @@ impl ThreadManager {
                         runtime_auth: None,
                     },
                 ),
+                models_manager_config: ModelsManagerConfig::default(),
                 git_root_discovery: Arc::default(),
                 environment_manager,
                 starting_mcp_runtimes: std::sync::Mutex::new(Vec::new()),
@@ -1242,7 +1247,11 @@ impl ThreadManager {
         self.state
             .model_catalog
             .manager
-            .list_models(refresh_strategy, http_client_factory)
+            .list_models_with_config(
+                refresh_strategy,
+                http_client_factory,
+                &self.state.models_manager_config,
+            )
             .await
     }
 

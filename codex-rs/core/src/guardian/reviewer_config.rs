@@ -282,6 +282,23 @@ async fn resolve_catalog_review_model(
         parent_model.auto_review_model_override.as_deref(),
     )
     .await;
+    // hcodex: apply local per-model metadata overrides before selecting the reviewer.
+    let models_config = config.to_models_manager_config();
+    let catalog: Vec<_> = catalog
+        .into_iter()
+        .map(|mut entry| {
+            let slug = entry.model.slug.clone();
+            entry.model = models_config
+                .model_overrides
+                .apply_to_model(
+                    models_config.model_provider_id.as_deref(),
+                    &slug,
+                    Arc::unwrap_or_clone(entry.model),
+                )
+                .into();
+            entry
+        })
+        .collect();
     let (review_model, reviewer) = codex_guardian_reviewer::select_review_model(
         parent_model,
         reasoning_effort,

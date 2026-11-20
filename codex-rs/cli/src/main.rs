@@ -241,11 +241,20 @@ enum Subcommand {
     #[clap(hide = true)]
     ResponsesApiProxy(ResponsesApiProxyArgs),
 
+    /// Internal: print an owner-only provider credential for command auth.
+    #[clap(hide = true, name = "provider-credential")]
+    ProviderCredential(ProviderCredentialCommand),
+
     /// [EXPERIMENTAL] Run the standalone exec-server service.
     ExecServer(ExecServerCommand),
 
     /// Inspect feature flags.
     Features(FeaturesCli),
+}
+
+#[derive(Debug, Parser)]
+struct ProviderCredentialCommand {
+    provider_id: String,
 }
 
 #[derive(Debug, Parser)]
@@ -1960,6 +1969,12 @@ async fn dispatch_cli(
             tokio::task::spawn_blocking(move || codex_responses_api_proxy::run_main(args))
                 .await??;
         }
+        Some(Subcommand::ProviderCredential(cmd)) => {
+            let codex_home = find_codex_home()?;
+            let token = read_provider_credential(codex_home.as_path(), &cmd.provider_id)?;
+            print!("{token}");
+            std::io::stdout().flush()?;
+        }
         Some(Subcommand::ExecServer(mut cmd)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -2023,6 +2038,39 @@ async fn dispatch_cli(
     }
 
     Ok(None)
+}
+
+fn read_provider_credential(
+    codex_home: &std::path::Path,
+    provider_id: &str,
+) -> anyhow::Result<String> {
+    if provider_id.is_empty()
+        || !provider_id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+    {
+        anyhow::bail!("invalid provider credential id");
+    }
+    let path = codex_home
+        .join("provider-credentials")
+        .join(format!("{provider_id}.token"));
+    let metadata = std::fs::symlink_metadata(&path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        anyhow::bail!("provider credential is not a regular file");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            anyhow::bail!("provider credential permissions must be 0600 or stricter");
+        }
+    }
+    let token = std::fs::read_to_string(path)?;
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        anyhow::bail!("provider credential is empty");
+    }
+    Ok(token)
 }
 
 fn profile_v2_for_subcommand<'a>(
@@ -2457,6 +2505,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Execpolicy(_)) => Some("execpolicy"),
         Some(Subcommand::Apply(_)) => Some("apply"),
         Some(Subcommand::ResponsesApiProxy(_)) => Some("responses-api-proxy"),
+        Some(Subcommand::ProviderCredential(_)) => Some("provider-credential"),
         Some(Subcommand::Features(_)) => Some("features"),
         Some(Subcommand::TcpTunnel(_)) => Some("tcp-tunnel"),
     }

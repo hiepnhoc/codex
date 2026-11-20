@@ -33,7 +33,7 @@ use super::network;
 const MAX_VERSION_RESPONSE_BYTES: usize = 1024 * 1024;
 
 const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
+const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/hiepnhoc/codex/releases/latest";
 const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const DESKTOP_UPDATE_URL: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml";
@@ -424,7 +424,8 @@ async fn fetch_latest_github_release_version(
 
     let info = http_get_json::<ReleaseInfo>(client, GITHUB_LATEST_RELEASE_URL).await?;
     info.tag_name
-        .strip_prefix("rust-v")
+        .strip_prefix("hcodex-v")
+        .or_else(|| info.tag_name.strip_prefix("rust-v"))
         .map(str::to_string)
         .ok_or_else(|| format!("failed to parse latest tag {}", info.tag_name))
 }

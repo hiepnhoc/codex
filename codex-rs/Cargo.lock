@@ -4458,6 +4458,7 @@ dependencies = [
  "codex-model-provider-info",
  "codex-models-manager",
  "codex-otel",
+ "codex-prompts",
  "codex-protocol",
  "codex-response-debug-context",
  "codex-runtime-agent-instance",
@@ -4514,6 +4515,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml 0.9.11+spec-1.1.0",
  "tracing",
 ]
 
@@ -5360,6 +5362,7 @@ dependencies = [
  "codex-utils-path",
  "codex-utils-path-uri",
  "codex-utils-plugins",
+ "codex-utils-redacted-string",
  "codex-utils-sandbox-summary",
  "codex-utils-sleep-inhibitor",
  "codex-utils-string",

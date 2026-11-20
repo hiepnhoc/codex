@@ -2885,6 +2885,41 @@ impl App {
             AppEvent::OpenFeedbackConsent { category } => {
                 self.chat_widget.open_feedback_consent(category, !app_server.uses_remote_workspace());
             }
+            AppEvent::ProviderSetupSubmitted { draft } => {
+                self.probe_provider_models(draft);
+            }
+            AppEvent::ProviderModelsFetched { draft, result } => {
+                self.handle_provider_models_fetched(draft, result);
+            }
+            AppEvent::ProviderModelChosen { draft, model } => {
+                self.chat_widget.open_provider_default_prompt(draft, model);
+            }
+            AppEvent::ProviderSwitch { provider_id, model } => {
+                self.handle_provider_switch(tui, app_server, provider_id, model)
+                    .await;
+            }
+            AppEvent::OtherProviderModelsFetched {
+                request_id,
+                entries,
+            } => {
+                self.chat_widget
+                    .on_other_provider_models_fetched(request_id, entries);
+            }
+            AppEvent::ProviderSwitchModelsFetched {
+                provider_id,
+                result,
+            } => {
+                self.handle_provider_switch_models_fetched(provider_id, result);
+            }
+            AppEvent::ProviderSave {
+                draft,
+                model,
+                make_default,
+                use_now,
+            } => {
+                self.save_provider(tui, app_server, draft, model, make_default, use_now)
+                    .await;
+            }
             AppEvent::SubmitFeedback {
                 category,
                 reason,

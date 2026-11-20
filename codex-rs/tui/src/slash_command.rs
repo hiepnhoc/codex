@@ -15,6 +15,7 @@ pub enum SlashCommand {
     Model,
     Presets,
     Daybreak,
+    Provider,
     Ide,
     Permissions,
     Keymap,
@@ -138,6 +139,9 @@ impl SlashCommand {
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Presets => "run or save reusable prompts and slash commands",
             SlashCommand::Daybreak => "turn Daybreak on or off",
+            SlashCommand::Provider => {
+                "add an OpenAI-compatible provider (id, base URL, API key) and save a profile"
+            }
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
             }
@@ -180,6 +184,7 @@ impl SlashCommand {
                 | SlashCommand::Permissions
                 | SlashCommand::Title
                 | SlashCommand::Statusline
+                | SlashCommand::Provider
                 | SlashCommand::Rename
                 | SlashCommand::New
                 | SlashCommand::Clear
@@ -283,6 +288,7 @@ impl SlashCommand {
             | SlashCommand::Model
             | SlashCommand::Presets
             | SlashCommand::Daybreak
+            | SlashCommand::Provider
             | SlashCommand::Permissions
             | SlashCommand::Copy
             | SlashCommand::Raw

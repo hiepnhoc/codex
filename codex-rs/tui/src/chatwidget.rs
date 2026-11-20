@@ -255,6 +255,8 @@ use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 mod activity_groups;
 mod activity_presentation;
+/// hcodex: live sub-agents block pass-through to the bottom pane.
+mod agents_live;
 mod command_lifecycle;
 mod config_panel;
 mod connector_mentions;
@@ -329,6 +331,8 @@ mod model_command;
 mod model_popup_state;
 mod model_popups;
 mod notifications;
+mod provider_models;
+mod provider_setup;
 pub(crate) mod quick_dials;
 mod session_model_selection;
 use self::notifications::Notification;
@@ -564,6 +568,10 @@ pub(crate) struct ChatWidget {
         Option<crate::app_server_session::user_message_submission::PendingCloudTurnSettings>,
     /// An app event has been queued to open the permissions picker, but no view exists yet.
     pub(crate) permission_popup_pending: bool,
+    /// hcodex: catalogs of the other configured providers for the merged `/model` picker.
+    other_provider_models: Vec<crate::app_event::OtherProviderModels>,
+    other_provider_models_fetched_at: Option<std::time::Instant>,
+    other_provider_models_request_id: Option<uuid::Uuid>,
     permission_popup_request_id: Option<uuid::Uuid>,
     permission_discovery: Option<crate::permission_discovery::PermissionDiscovery>,
     inline_permission_profile_selection:
