@@ -17,7 +17,8 @@
 #   scripts/sync-upstream.sh --rollback   reinstall the binaries backed up by the last run
 #   scripts/sync-upstream.sh --unattended non-interactive (launchd): rebase cleanly -> build + gate + install;
 #                                         any conflict -> abort, reset to the pre-sync tag, report, exit 2
-#   env SKIP_TESTS=1                      skip the cargo test gate (still smoke-tests)
+#   env SKIP_TESTS=1                      skip the cargo test gate (still smoke-tests and runs the harness tests)
+#   env SKIP_HARNESS_TESTS=1              skip scripts/harness-test.sh on the built binary
 #   env BUILD_JOBS=4 BUILD_NICE=15         parallelism / niceness for cargo (keeps the machine usable)
 #   env KEEP_DEBUG=1                        keep target/debug after install (default: removed to save ~20 GB)
 #   env HARNESS_BRANCH=<name>             harness branch (default my-harness)
@@ -340,6 +341,16 @@ build_gate_install() {
 
   say "smoke test (built binary, not yet installed)"
   "$ROOT/scripts/harness-smoke.sh" "$PWD/target/release/hcodex"
+
+  # Black-box contract of the harness against a stand-in provider (about a minute, no
+  # network). Independent of the cargo gate above, so it still guards a SKIP_TESTS=1 build.
+  if [[ "${SKIP_HARNESS_TESTS:-}" != "1" ]]; then
+    say "harness tests (built binary, stand-in provider)"
+    "$ROOT/scripts/harness-test.sh" "$PWD/target/release/hcodex" | grep -Ev '^ok ' || {
+      echo "harness tests failed: the installed binary is unchanged. Details: scripts/harness-test.sh $PWD/target/release/hcodex"
+      exit 1
+    }
+  fi
 
   say "install"
   # Copy, don't symlink: the installed hcodex must survive `rm -rf target` (31/10/2026).

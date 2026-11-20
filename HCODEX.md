@@ -1251,9 +1251,10 @@ Script bảo vệ mày thế nào:
   rồi `scripts/harness-smoke.sh` trên binary **mới build**: version, danh tính trong
   request cho 3 họ model (không cần mạng), `/model` phải lấy list từ proxy, 1 turn
   `exec` qua proxy mặc định, và 1 turn thật cho từng dòng `provider model` trong
-  `~/.hcodex/smoke-turns.txt`. Fail ở bước nào thì binary cũ vẫn nguyên, không
-  symlink đè. Provider tự chết hoặc hết quota chỉ là WARN, không chặn cài (chi tiết
-  ở mục "Sự cố thường gặp").
+  `~/.hcodex/smoke-turns.txt`. Sau smoke là `scripts/harness-test.sh` trên cùng binary
+  (113 ca với provider giả lập, khoảng 1 phút; xem mục "Bộ test của harness"). Fail ở
+  bước nào thì binary cũ vẫn nguyên, không symlink đè. Provider tự chết hoặc hết quota
+  chỉ là WARN, không chặn cài (chi tiết ở mục "Sự cố thường gặp").
 - Cảnh báo nếu `Cargo.lock` nâng `v8` khác với artifact V8 đang cache.
 - File untracked (như `docs/open-skills/scripts/`) không chặn sync; chỉ file đã
   sửa chưa commit mới chặn.
@@ -1356,6 +1357,92 @@ script này, để lần sau máy bắt chứ không phải người.
 
 Muốn gửi thay đổi ngược lên upstream thì tách commit đó ra branch riêng từ `main`
 và mở PR — không PR từ `my-harness`.
+
+## Bộ test của harness: `scripts/harness-test.sh` (20/11/2026)
+
+Mục tiêu: mọi thứ hcodex thêm vào trên codex gốc đều có test chạy tự động, để lỗi kiểu "Gemini
+429" bị máy bắt chứ không phải dò tay nửa ngày. Bộ test nằm trong `scripts/harness-tests/`
+(Python chuẩn, không cần cài gì), chạy trên **binary đã build**, không cần mạng, không cần
+provider thật, không build lại, không đụng `~/.hcodex` hay `~/.codex`.
+
+Cách làm: một **provider giả lập** (`MockProvider` trong `harness_lib.py`) nói đúng giao thức
+OpenAI-compatible (`GET /models`, `POST /responses` dạng SSE), trả lời theo kịch bản của từng
+test và **ghi lại mọi request** hcodex gửi tới. Test chạy `hcodex exec` hoặc `hcodex app-server`
+trong một home tạm trỏ vào provider đó, rồi kiểm cả hai đầu: hcodex gửi gì đi và làm gì với câu
+trả lời (kể cả 429, 500, stream đứt, tool call, sub-agent).
+
+```bash
+scripts/harness-test.sh                 # 113 ca offline, khoảng 1 phút, test hcodex trên PATH
+scripts/harness-test.sh --live          # thêm 21 ca kiểm ~/.hcodex thật của máy này
+scripts/harness-test.sh --list          # in toàn bộ ca test: mã, mô tả
+scripts/harness-test.sh -k RT -k AS21   # chỉ chạy ca có mã/tên chứa chuỗi đó
+scripts/harness-test.sh path/to/hcodex  # test một binary khác (bản vừa build, bản backup)
+```
+
+| Nhóm | Số ca | File | Canh cái gì |
+|---|---|---|---|
+| `ID` danh tính | 8 | `test_identity.py` | home mặc định `~/.hcodex`, không tạo `~/.codex`; provider mặc định `local-proxy`, model mặc định `claude-sonnet-5.5`; `HCODEX_PROXY_URL` / `HCODEX_PROXY_API_KEY`; `CODEX_HOME`; banner `hcodex` |
+| `RQ` request gửi provider | 8 | `test_request.py` | prompt hệ thống mở đầu trung lập cho 5 họ model (gemini, claude, gpt, qwen, glm); không có tool kiểu `namespace`; tool multi-agent và MCP được trải phẳng, call MCP trải phẳng về đúng server; tên model giữ nguyên; gọi `POST /responses` có `stream` |
+| `TN` lượt chạy | 9 | `test_turn.py` | trả lời, tool shell khứ hồi, sandbox chỉ đọc chặn ghi, `workspace-write` ghi được trong và không ghi được ngoài workspace, `resume` mang đủ hội thoại cũ, `--ephemeral`, đếm token |
+| `RT` lỗi provider và retry | 11 | `test_retry.py` | 429 được retry và tôn trọng `Retry-After`; 429 mãi thì báo lỗi chứ không treo; `server_is_overloaded` và rate limit trong stream được retry cấp turn; 500 và stream đứt giữa chừng được retry; 400 và 401 không retry; provider chết thì báo "Reconnecting" |
+| `MD` model | 16 | `test_models.py` | danh sách model lấy từ provider, không trộn catalog OpenAI; gộp id `-effort-*`; effort mặc định; `context_window` và `input_modalities` từ `/models`; `model_overrides.toml` (chung, theo provider, `instructions`, `instructions_file`); `/models` hỏng vẫn chạy được turn |
+| `PV` provider | 11 | `test_providers.py` | turn chỉ tới đúng provider; `-c model_provider=`; profile `<tên>.config.toml`; `provider-credential`; key qua `auth.command` gửi cả ở `/responses` lẫn `/models`; `env_key`; `experimental_bearer_token`; key không lọt sang provider khác; các cờ harness nạp sạch |
+| `AG` sub-agent | 8 | `test_agents.py` | task tới sub-agent dưới dạng message `user` thuần; không còn item `agent_message`; cha nhận được câu trả lời của con; `default_subagent_model`; role chạy trên provider riêng khi bật `agent_role_provider` và bị bỏ qua khi tắt; `developer_instructions` của role |
+| `AS` hợp đồng app-server của app desktop | 34 | `test_app_server.py` | đúng các lệnh `hcodex-app` gọi: `initialize`, phiên Chat chỉ đọc, phiên Code ghi được, xin duyệt khi lệnh đòi thoát sandbox, item và token của một turn, lỗi provider, `turn/interrupt`, `thread/list` mọi provider và lọc theo thư mục, `thread/read`, resume sau khi khởi động lại, fork sang provider khác giữ hội thoại và giữ quyền, đổi model theo turn, sub-agent hiện trong thread cha, `fs/*`, `fs/watch`, `command/exec`, terminal `process/*`, trang Skills/Plugins/MCP |
+| `SC` script | 8 | `test_scripts.py` | mọi script harness qua `bash -n` và có quyền chạy; `hc-find-session.sh`; skill trong `docs/hcodex-skills` đúng định dạng; app `hcodex-app` type-check với giao thức sinh từ binary đang test, và luôn gửi quyền Chat/Code khi start, resume, fork |
+| `LV` máy thật (`--live`) | 21 | `test_live.py` | `~/.hcodex/config.toml` hợp lệ và hcodex nạp được; provider nào cũng có `base_url`; profile và role trỏ tới provider có thật; **model của từng role và `default_subagent_model` có trong `/models` của provider đó** (hỏi provider thật, provider chết thì bỏ qua); `auth.command` chạy được và có key; file token mode 600; skill không có symlink gãy; `hcodex` trên PATH đúng là bản đã cài; job kiểm upstream hằng đêm còn chạy. Chỉ đọc, không in key |
+
+Bốn lớp test của harness, từ rẻ đến đắt:
+
+| Lớp | Chạy bằng | Cần | Bắt được |
+|---|---|---|---|
+| Unit test Rust của bản vá lõi | gate trong `sync-upstream.sh` | build debug (lâu) | logic bên trong lõi |
+| **Bộ test này** | `scripts/harness-test.sh`, và tự chạy trong `sync-upstream.sh` sau smoke, trước khi cài | binary, 1 phút, không mạng | hành vi nhìn từ ngoài của binary; **không phụ thuộc gate cargo**, nên bản build bằng `SKIP_TESTS=1` vẫn được canh |
+| Smoke | `scripts/harness-smoke.sh` | provider thật đang sống | provider thật trả lời qua hcodex |
+| Kiểm máy | `scripts/harness-test.sh --live` | `~/.hcodex` | cấu hình trôi: role trỏ model đã bị provider gỡ, key mất, symlink gãy |
+
+Bộ test hỏng thì `sync-upstream.sh` **không cài** bản mới (bỏ qua bằng `SKIP_HARNESS_TESTS=1`).
+Kiểm chứng ngược ngày 20/11: chạy trên bản backup trước khi vá 429 thì `RQ-01` và `AG-08` báo
+FAIL với đúng câu "running in the Codex CLI … led by OpenAI"; trên bản hiện tại 3 lần chạy liền
+đều 109 qua, 0 hỏng, 2 lỗ hổng đã biết, 55 giây (sau khi sửa `AS-33` bên dưới: 112 qua, 1 lỗ
+hổng đã biết).
+
+Quy ước khi thêm test:
+
+- Mỗi ca là một hàm `test_<NHÓM><số>_<tên>` có docstring một dòng nói điều nó khẳng định;
+  `--list` in ra từ đó, nên danh sách ca luôn khớp với code.
+- Sự cố nào đã mất công dò thì thêm một ca ở đây (nếu tái hiện được bằng provider giả lập) hoặc
+  vào `harness-smoke.sh` (nếu chỉ provider thật mới lộ).
+- Lỗi đã biết nhưng chưa sửa: đánh dấu `@unittest.expectedFailure`, docstring bắt đầu bằng
+  `KNOWN GAP`. Nó hiện là `gap`, không chặn cài; khi sửa xong nó hiện `fixed` để nhắc gỡ dấu.
+- Không thêm thư viện ngoài, không gọi mạng trong các nhóm offline.
+
+Lần chạy đầu (20/11/2026) bộ test tìm ra:
+
+- **`hc-find-session.sh` thoát mã 1 khi không tìm thấy gì** (grep không khớp dưới `pipefail`).
+  Đã sửa.
+- **Lỗ hổng `MD-16`**: `supported_reasoning_efforts` / `default_reasoning_effort` trong
+  `model_overrides.toml` có tác dụng lên request (`MD-10` qua) nhưng `model/list` của app-server
+  vẫn trả thang effort của provider, nên ô chọn model của app hiện cả mức đã bị override bỏ.
+  Chưa sửa (cần vá lõi và build lại).
+- **`thread/resume` và `thread/fork` không kèm `sandbox` lấy mặc định của config cho thư mục
+  đó** (chỉ đọc nếu thư mục chưa là project tin cậy), không lấy sandbox đã ghi trong phiên.
+  `hcodex-app` trước đó mở lại phiên Code và đổi provider giữa chừng mà không truyền quyền, nên
+  ở thư mục chưa tin cậy phiên Code thành chỉ đọc. **Đã sửa** trong `hcodex-app/src/lib/store.ts`:
+  `permissionsFor(kind)` được gửi ở cả `thread/start`, `thread/resume`, `thread/fork`. Canh bằng
+  `AS-18`, `AS-33`, `AS-34` (app-server nhận quyền truyền vào) và `SC-08` (app có truyền).
+- `thread/resume` trên thread **đang nạp sẵn** trong cùng tiến trình app-server bỏ qua quyền
+  truyền vào; chỉ resume sau khi khởi động lại mới áp dụng.
+- Provider từ chối kết nối thì hcodex chờ mạng **vô hạn** ("Reconnecting... waiting for
+  network"): hành vi mặc định của upstream (`[features] unbounded_connection_retries`, mặc
+  định bật), `request_max_retries` / `stream_max_retries` không giới hạn được. Tắt cờ thì lượt
+  chạy báo lỗi sau 1 giây (`RT-11`). Với proxy local hay chết, sub-agent sẽ treo theo; cân nhắc
+  tắt cờ này trong `config.toml`.
+- `hcodex --version` vẫn in `codex-cli 0.0.0` và `--help` còn nhắc `~/.codex/config.toml` (chữ
+  của upstream, chỉ banner được đổi tên); request gửi provider vẫn mang `originator: codex_exec`
+  và `user-agent: codex_exec/…`, nên proxy ghi client là "Codex".
+- `web_search` (tool kiểu hosted của OpenAI) vẫn được gửi cho provider không phải OpenAI.
+  Chưa thấy proxy nào từ chối vì nó, ghi lại để biết khi gặp.
 
 ## Xem main và subagent trong pane riêng: `scripts/hc-agents.sh` (29/10/2026)
 

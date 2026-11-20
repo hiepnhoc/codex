@@ -10,7 +10,7 @@ set -euo pipefail
 kw="${1:?usage: hc-find-session.sh <keyword> [days]}"; days="${2:-30}"
 root="${CODEX_HOME:-$HOME/.hcodex}/sessions"
 find "$root" -name 'rollout-*.jsonl' -mtime -"$days" -print0 2>/dev/null \
-  | xargs -0 grep -li -- "$kw" 2>/dev/null | sort -ru | while read -r f; do
+  | { xargs -0 grep -li -- "$kw" 2>/dev/null || true; } | sort -ru | while read -r f; do
   python3 - "$f" <<'PY'
 import json,sys,os
 f=sys.argv[1]; cwd=None; sid=None; first=None; ts=None
