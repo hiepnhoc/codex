@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import MonacoEditor, { DiffEditor } from "@monaco-editor/react";
+import MonacoEditor from "@monaco-editor/react";
 import "../lib/monaco";
 import { rpc } from "../lib/rpc";
 import { readFile, writeFile, basename, languageFor } from "../lib/fs";
@@ -12,13 +12,10 @@ type Props = {
   active: string | null;
   onTabsChange: (tabs: Tab[]) => void;
   onActivate: (path: string | null) => void;
-  /** Unified diff for the current turn (from turn/diff/updated), shown in a "Changes" tab. */
-  turnDiff: string | null;
 };
 
-export const CHANGES_TAB = "__changes__";
-
-export function Editor({ tabs, active, onTabsChange, onActivate, turnDiff }: Props) {
+/** Tabbed file editor; a tab reloads itself when the file changes on disk and it has no unsaved edits. */
+export function Editor({ tabs, active, onTabsChange, onActivate }: Props) {
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const [status, setStatus] = useState("");
@@ -94,19 +91,12 @@ export function Editor({ tabs, active, onTabsChange, onActivate, turnDiff }: Pro
             </span>
           </div>
         ))}
-        {turnDiff && (
-          <div className={`tab changes ${active === CHANGES_TAB ? "active" : ""}`} onClick={() => onActivate(CHANGES_TAB)}>
-            Changes
-          </div>
-        )}
         <span className="muted tiny" style={{ marginLeft: "auto", padding: "0 8px" }}>
           {status}
         </span>
       </div>
       <div className="editor-body">
-        {active === CHANGES_TAB && turnDiff ? (
-          <MonacoEditor theme="vs-dark" language="diff" value={turnDiff} options={{ readOnly: true, minimap: { enabled: false }, fontSize: 12 }} />
-        ) : tab ? (
+        {tab ? (
           <MonacoEditor
             theme="vs-dark"
             path={tab.path}
@@ -116,12 +106,9 @@ export function Editor({ tabs, active, onTabsChange, onActivate, turnDiff }: Pro
             options={{ fontSize: 13, minimap: { enabled: false }, automaticLayout: true, scrollBeyondLastLine: false }}
           />
         ) : (
-          <div className="muted empty">Open a file from the tree, or ask Codex to change something.</div>
+          <div className="muted empty small">Open a file from the tree.</div>
         )}
       </div>
     </div>
   );
 }
-
-// Re-export so App can render a side-by-side diff later if desired.
-export { DiffEditor };

@@ -1,19 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { rpc } from "../lib/rpc";
 import { basename } from "../lib/fs";
-import { useThreads } from "../lib/store";
+import { useThreads, type SessionKind } from "../lib/store";
+import { Icon } from "./Icon";
 import type { Thread } from "../protocol/v2/Thread";
 import type { ThreadListResponse } from "../protocol/v2/ThreadListResponse";
 
 const PAGE = 60;
 
 type Props = {
+  kind: SessionKind;
+  /** Current workspace (code) — listed first and always shown, even with no sessions yet. */
   cwd: string;
+  /** Folder every chat session runs in; its sessions are the chat history. */
+  chatDir: string;
   activeRootId: string | null;
   /** Bumped by the app when the list should be fetched again (e.g. a turn finished). */
   refreshKey: number;
   onOpen: (t: Thread) => void;
-  onNew: () => void;
+  onWorkspace: (dir: string) => void;
 };
 
 function ago(seconds: number): string {
@@ -28,8 +33,22 @@ function title(t: Thread): string {
   return (t.name ?? t.preview ?? "").trim().split("\n")[0] || "(untitled)";
 }
 
-/** Saved sessions grouped by project folder; the current workspace comes first. */
-export function Sessions({ cwd, activeRootId, refreshKey, onOpen, onNew }: Props) {
+/** Chat history buckets, newest first. */
+function dayBucket(seconds: number): string {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const today = start.getTime() / 1000;
+  if (seconds >= today) return "Today";
+  if (seconds >= today - 86400) return "Yesterday";
+  if (seconds >= today - 7 * 86400) return "Previous 7 days";
+  return "Older";
+}
+
+/**
+ * Saved sessions. Code: grouped by workspace folder, the current one first.
+ * Chat: the sessions of the chat folder, grouped by day.
+ */
+export function Sessions({ kind, cwd, chatDir, activeRootId, refreshKey, onOpen, onWorkspace }: Props) {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -51,6 +70,7 @@ export function Sessions({ cwd, activeRootId, refreshKey, onOpen, onNew }: Props
           searchTerm: search.trim() || null,
           // Omitted, this filter defaults to the default provider and hides every other session.
           modelProviders: [],
+          cwd: kind === "chat" ? chatDir : null,
         });
         if (mine !== request.current) return;
         setThreads((prev) => (after ? [...prev, ...r.data] : r.data));
@@ -62,7 +82,7 @@ export function Sessions({ cwd, activeRootId, refreshKey, onOpen, onNew }: Props
         if (mine === request.current) setLoading(false);
       }
     },
-    [search],
+    [search, kind, chatDir],
   );
 
   useEffect(() => {
@@ -72,60 +92,66 @@ export function Sessions({ cwd, activeRootId, refreshKey, onOpen, onNew }: Props
 
   const groups = useMemo(() => {
     const by = new Map<string, Thread[]>();
+    if (kind === "code" && cwd) by.set(cwd, []);
     for (const t of threads) {
-      const list = by.get(t.cwd) ?? [];
+      if (kind === "code" && t.cwd === chatDir) continue;
+      const key = kind === "chat" ? dayBucket(t.updatedAt) : t.cwd;
+      const list = by.get(key) ?? [];
       list.push(t);
-      by.set(t.cwd, list);
+      by.set(key, list);
     }
-    return Array.from(by.entries()).sort(([a], [b]) => (a === cwd ? -1 : b === cwd ? 1 : 0));
-  }, [threads, cwd]);
+    return Array.from(by.entries());
+  }, [threads, kind, cwd, chatDir]);
+
+  const row = (t: Thread) => {
+    const state = live[t.id]?.state;
+    const running = state === "running" || state === "waiting";
+    return (
+      <div
+        key={t.id}
+        className={`session-row ${t.id === activeRootId ? "selected" : ""}`}
+        title={`${title(t)}\n${t.modelProvider} · ${t.model ?? "?"}\n${t.cwd}`}
+        onClick={() => onOpen(t)}
+      >
+        {running && <span className="dot status-running" />}
+        <span className="session-title">{title(t)}</span>
+        <span className="muted tiny">{ago(t.updatedAt)}</span>
+      </div>
+    );
+  };
 
   return (
     <div className="sessions">
-      <div className="row">
-        <input
-          className="small grow"
-          value={search}
-          placeholder="Search sessions"
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        <button className="small" onClick={onNew} title="new session in this workspace">
-          New
-        </button>
+      <div className="search">
+        <Icon name="search" size={13} />
+        <input value={search} placeholder={kind === "chat" ? "Search chats" : "Search sessions"} onChange={(e) => setSearch(e.target.value)} />
       </div>
       {error && <div className="error small">{error}</div>}
       <div className="tree-scroll">
-        {groups.map(([dir, list]) => (
-          <div key={dir} className="session-group">
-            <div
-              className={`session-group-title ${dir === cwd ? "current" : ""}`}
-              title={dir}
-              onClick={() => setCollapsed((c) => ({ ...c, [dir]: !c[dir] }))}
-            >
-              <span className="tree-caret">{collapsed[dir] ? "▸" : "▾"}</span>
-              {basename(dir) || dir}
-              <span className="muted tiny"> {list.length}</span>
+        {groups.map(([key, list]) =>
+          kind === "chat" ? (
+            <div key={key} className="session-group">
+              <div className="session-day">{key}</div>
+              {list.map(row)}
             </div>
-            {!collapsed[dir] &&
-              list.map((t) => {
-                const state = live[t.id]?.state;
-                const running = state === "running" || state === "waiting";
-                return (
-                  <div
-                    key={t.id}
-                    className={`session-row ${t.id === activeRootId ? "selected" : ""}`}
-                    title={`${title(t)}\n${t.modelProvider} · ${t.model ?? "?"}\n${t.cwd}`}
-                    onClick={() => onOpen(t)}
-                  >
-                    <span className={`dot ${running ? "status-running" : t.id === activeRootId ? "status-ready" : ""}`} />
-                    <span className="session-title">{title(t)}</span>
-                    <span className="muted tiny">{ago(t.updatedAt)}</span>
-                  </div>
-                );
-              })}
-          </div>
-        ))}
-        {!threads.length && !loading && <div className="muted small pad">No sessions yet.</div>}
+          ) : (
+            <div key={key} className="session-group">
+              <div className={`workspace-row ${key === cwd ? "current" : ""}`} title={key}>
+                <span className="tree-caret" onClick={() => setCollapsed((c) => ({ ...c, [key]: !c[key] }))}>
+                  {collapsed[key] ? "▸" : "▾"}
+                </span>
+                <span className="workspace-name" onClick={() => onWorkspace(key)}>
+                  <Icon name="folder" size={14} />
+                  {basename(key) || key}
+                </span>
+                <span className="muted tiny">{list.length || ""}</span>
+              </div>
+              {!collapsed[key] && list.map(row)}
+              {!collapsed[key] && list.length === 0 && <div className="muted tiny session-empty">No sessions yet</div>}
+            </div>
+          ),
+        )}
+        {!groups.length && !loading && <div className="muted small pad">{kind === "chat" ? "No chats yet." : "No sessions yet."}</div>}
         {cursor && (
           <button className="link small pad" onClick={() => load(cursor)} disabled={loading}>
             {loading ? "loading…" : "load more"}

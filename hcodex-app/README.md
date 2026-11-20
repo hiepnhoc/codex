@@ -13,10 +13,36 @@ hcodex-app/
 ├── scripts/gen-protocol.mjs generates src/protocol from the installed hcodex (not committed)
 ├── src/lib/rpc.ts           JSON-RPC 2.0 client (requests, notifications, server->client requests)
 ├── src/lib/transport.ts     Tauri bridge in the app, WebSocket in a plain browser (UI dev)
-├── src/lib/store.ts         per-thread state: main thread + sub-agents, items, status, approvals
+├── src/lib/store.ts         per-thread state: main thread + sub-agents, items, status, approvals, token usage
 ├── src/lib/models.ts        model catalog across every configured provider
-└── src/components/          Sessions, AgentTree, AgentPanel, ModelPicker, Editor, FileTree, Terminal
+├── src/lib/git.ts           workspace diff for the Changes tab (`command/exec` running git)
+└── src/components/
+    ├── Sidebar, Sessions    Chat/Code switch, new session, extensions, workspaces or chat history
+    ├── ChatPane             the conversation: messages, one-line activity rows, approvals, composer
+    ├── RightPane            Changes | Files (FileTree + Editor) | Terminal, and the AgentTree
+    └── Pages                read-only Plugins, Skills, MCP servers, Providers
 ```
+
+## Layout
+
+Three columns: sidebar, conversation, workspace pane.
+
+- **Chat / Code** (top of the sidebar). A Code session runs in a workspace folder with
+  `workspace-write` and `on-request` approvals. A Chat session runs in `<hcodex home>/chat`
+  with a read-only sandbox and approvals off, so it can answer but not change anything; its
+  history is listed by day, and it has no workspace pane. Each mode keeps its own open session.
+- **Conversation**. What the agent does is one line per action (thought, command, file edit,
+  sub-agent, tool); a line opens to show output. The composer holds the model picker and the
+  share of the context window in use. Enter sends, Shift+Enter adds a line.
+- **Workspace pane** (Code only, toggled from the conversation header). Changes shows the
+  workspace's uncommitted git diff, re-read when a turn ends and when watched files change;
+  outside a git repository it falls back to the turn's own patch. Files is the explorer plus
+  editor. Terminal starts a shell on first use and keeps it while hidden. The session's agents
+  are listed underneath; clicking one shows its transcript in the conversation.
+- **Extensions** (sidebar): Plugins, Skills, MCP servers and Providers open a read-only list in
+  place of the conversation.
+- **Resizing**: drag the edge of the sidebar, of the workspace pane or of the file tree;
+  double-click an edge to reset it. Widths are kept in `localStorage`.
 
 ## Prerequisites
 
@@ -58,6 +84,8 @@ sync, `pnpm build` both refreshes the types and reports any API drift through `t
        switching provider mid-conversation forks the thread (`thread/fork`)
 4b. [x] Main thread + sub-agents with live status; click a sub-agent to watch it
        (`subAgentActivity` items, `thread/status/changed`, `thread/read`)
+4c. [x] Chat/Code modes, three-column layout, compact activity rows, workspace git diff,
+       read-only pages for plugins, skills, MCP servers and providers
 5. [ ] Fuzzy file search (`fuzzyFileSearch/*`), @-mentions in the composer
 6. [ ] Provider/model settings UI (`config/read`, `config/batchWrite`)
 7. [ ] Side-by-side diff per file change, accept/revert
@@ -80,6 +108,9 @@ Without `HCODEX_APP_WS` the proxy is off, which is the case for `pnpm tauri dev`
 - `thread/list` hides sessions recorded on other providers unless `modelProviders: []` is sent.
 - `modelProvider/list` omits hcodex's built-in `local-proxy` and reports `openai` as the
   default; the picker therefore asks `model/list` without a provider for the default group.
+- `[agents] default_subagent_model` names a model of the default provider. A session on
+  another provider cannot spawn with it ("Unknown model"), so the app starts such sessions
+  with `config: { "agents.default_subagent_model": <the session's model> }`.
 - Sub-agents are not announced by `thread/started`; they arrive as `subAgentActivity` items
   of the parent and as events tagged with their own `threadId`.
 

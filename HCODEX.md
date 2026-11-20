@@ -136,8 +136,34 @@ hcodex app-server --listen ws://127.0.0.1:4599
 cd hcodex-app && HCODEX_APP_WS=ws://127.0.0.1:4599 pnpm dev   # mở http://localhost:1420/?cwd=<thư mục>
 ```
 
-Chưa làm: bảng thay đổi theo lượt, trang plugin/MCP/skill, gói proxy vào app, đóng gói trong
-workflow `hcodex-release`.
+**Đợt 2 (20/11/2026): bố cục ba cột, chế độ Chat và Code.** Chốt với user: cách chia Chat/Code
+của Claude, khung bên trong của DeepSeek Harness, dòng hoạt động gọn kiểu Codex.
+
+| Phần | Cách làm |
+|---|---|
+| Nút Chat/Code đầu sidebar; mỗi chế độ giữ phiên đang mở riêng | Chat = thread chạy ở `~/.hcodex/chat` (`initialize.codexHome` + `fs/createDirectory`), `sandbox: "read-only"`, `approvalPolicy: "never"`, kèm `developerInstructions`; Code = `workspace-write` + `on-request` như trước. Mở lại phiên Code **không** ghi đè quyền đã ghi; mở lại phiên Chat luôn ép chỉ đọc |
+| Sidebar: New session, Plugins, Skills, MCP servers, Providers, rồi Workspaces (Code) hoặc History theo ngày (Chat) | `thread/list` với `cwd: <thư mục chat>` cho Chat; Code lọc bỏ thư mục chat ở client |
+| Cột giữa: mỗi việc agent làm là một dòng (Thought, lệnh, file sửa `+N -M`, sub-agent, tool), bấm để xem chi tiết; ô nhập có chọn model và % context | `thread/tokenUsage/updated` (`last.totalTokens / modelContextWindow`) |
+| Cột phải: Changes, Files (cây + editor), Terminal, dưới cùng là Agents | Changes = `git diff HEAD` + file untracked qua `command/exec` (`src/lib/git.ts`), đọc lại khi xong lượt và khi `fs/changed`; không phải repo git thì dùng `turn/diff/updated` |
+| Bốn trang chỉ đọc thay chỗ khung chat | `plugin/list`, `skills/list`, `mcpServerStatus/list`, `modelProvider/list` + catalog của ô chọn model |
+
+Kiểm tra trên app-server thật qua browser pane (model `claude-haiku-5-5` trên `hibox`): Chat trả
+lời và được ghi `read-only`/`never`; Code tạo và sửa file trong workspace tạm, Changes hiện đúng 2
+file, Files mở được file, Terminal chạy lệnh; 2 sub-agent chạy song song hiện dải "2 subagents
+running", danh sách Agents và xem được từng agent.
+
+Điều rút ra đợt 2:
+
+- `[agents] default_subagent_model` (đang là `claude-sonnet-5.5`, tên của `local-proxy`) không tồn
+  tại trên provider khác, nên phiên đổi sang `hibox` gọi `spawn_agent` là lỗi `Unknown model`. App
+  truyền `config: { "agents.default_subagent_model": <model của phiên> }` khi `thread/start` và
+  `thread/fork` trên provider khác provider mặc định. CLI vẫn cần profile như cũ.
+- Tên class CSS của khung ngoài không được trùng tên chế độ (`chat`): `.chat` là class của cột
+  chat, gắn nhầm lên `.layout` làm vỡ lưới.
+- Chưa có: render markdown cho câu trả lời, nút "Tiếp tục trong Code" từ Chat, lọc plugin theo
+  loại cho Chat, bật/tắt plugin và sửa provider ngay trong app (các trang hiện chỉ đọc).
+
+Chưa làm: gói proxy vào app, đóng gói trong workflow `hcodex-release`.
 
 ## Yêu cầu
 

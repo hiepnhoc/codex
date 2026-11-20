@@ -31,6 +31,7 @@ import type { TurnDiffUpdatedNotification } from "../protocol/v2/TurnDiffUpdated
 import type { ThreadStartedNotification } from "../protocol/v2/ThreadStartedNotification";
 import type { ThreadStatusChangedNotification } from "../protocol/v2/ThreadStatusChangedNotification";
 import type { ThreadClosedNotification } from "../protocol/v2/ThreadClosedNotification";
+import type { ThreadTokenUsageUpdatedNotification } from "../protocol/v2/ThreadTokenUsageUpdatedNotification";
 import type { CommandExecutionRequestApprovalParams } from "../protocol/v2/CommandExecutionRequestApprovalParams";
 import type { FileChangeRequestApprovalParams } from "../protocol/v2/FileChangeRequestApprovalParams";
 
@@ -71,17 +72,21 @@ export type Approval = {
   | { kind: "file"; params: FileChangeRequestApprovalParams }
 );
 
+/** Context in use after the last model request, and the model's window when known. */
+export type Usage = { used: number; window: number | null };
+
 type State = {
   threads: Record<string, ThreadMeta>;
   items: Record<string, UiItem[]>;
   diffs: Record<string, string | null>;
   errors: Record<string, string>;
+  usage: Record<string, Usage>;
   approvals: Approval[];
 };
 
 const EMPTY_ITEMS: UiItem[] = [];
 
-let state: State = { threads: {}, items: {}, diffs: {}, errors: {}, approvals: [] };
+let state: State = { threads: {}, items: {}, diffs: {}, errors: {}, usage: {}, approvals: [] };
 const listeners = new Set<() => void>();
 
 function set(patch: Partial<State>) {
@@ -180,10 +185,16 @@ function ensureThread(id: string, parentId: string | null = null, patch?: Partia
 
 // ---------------------------------------------------------------- items
 
+/** The agent runs commands through `zsh -lc '…'`; show what it actually ran. */
+export function displayCommand(command: string): string {
+  const m = command.match(/^(?:\S*\/)?(?:zsh|bash|sh)\s+-l?c\s+(['"])([\s\S]*)\1$/);
+  return m ? m[2] : command;
+}
+
 function activityOf(item: ThreadItem): string | null {
   switch (item.type) {
     case "commandExecution":
-      return `$ ${item.command}`;
+      return `$ ${displayCommand(item.command)}`;
     case "agentMessage":
       return item.text ? item.text.trim().split("\n")[0] : null;
     case "fileChange":
@@ -291,6 +302,15 @@ export function wireStore() {
     const { threadId, diff } = p as TurnDiffUpdatedNotification;
     set({ diffs: { ...state.diffs, [threadId]: diff || null } });
   });
+  rpc.onNotification("thread/tokenUsage/updated", (p) => {
+    const { threadId, tokenUsage } = p as ThreadTokenUsageUpdatedNotification;
+    set({
+      usage: {
+        ...state.usage,
+        [threadId]: { used: tokenUsage.last.totalTokens, window: tokenUsage.modelContextWindow },
+      },
+    });
+  });
   rpc.onNotification("item/started", (p) => {
     const { threadId, item } = p as ItemStartedNotification;
     ensureThread(threadId);
@@ -338,39 +358,68 @@ function adopt(r: ThreadStartResponse | ThreadResumeResponse | ThreadForkRespons
   return r.thread.id;
 }
 
-export async function startThread(cwd: string, choice: ModelChoice | null): Promise<string> {
+/**
+ * How much a session may touch. Chat sessions are read-only and never ask for approval:
+ * they answer questions without changing files or running anything that needs a grant.
+ */
+export type SessionKind = "chat" | "code";
+
+const CHAT_INSTRUCTIONS =
+  "This is a chat session with no project workspace. Answer directly. " +
+  "Do not try to edit files or run project commands; the sandbox is read-only.";
+
+const CHAT_PERMISSIONS = { approvalPolicy: "never", sandbox: "read-only", developerInstructions: CHAT_INSTRUCTIONS };
+
+/**
+ * Per-thread config overrides. `[agents] default_subagent_model` names a model of the default
+ * provider; on any other provider that name does not exist and every spawn fails, so sub-agents
+ * of such a session default to the session's own model.
+ */
+function configOverrides(choice: ModelChoice | null, defaultProvider: string) {
+  if (!choice?.model || !choice.provider || choice.provider === defaultProvider) return {};
+  return { config: { "agents.default_subagent_model": choice.model } };
+}
+
+export type StartOptions = { kind?: SessionKind; defaultProvider?: string };
+
+export async function startThread(cwd: string, choice: ModelChoice | null, opts: StartOptions = {}): Promise<string> {
   const r = await rpc.request<ThreadStartResponse>("thread/start", {
     cwd,
     model: choice?.model || null,
     modelProvider: choice?.provider || null,
-    approvalPolicy: "on-request",
-    sandbox: "workspace-write",
+    ...(opts.kind === "chat" ? CHAT_PERMISSIONS : { approvalPolicy: "on-request", sandbox: "workspace-write" }),
+    ...configOverrides(choice, opts.defaultProvider ?? ""),
   });
   return adopt(r);
 }
 
-/** Load a saved thread so it can continue; fills its history. */
-export async function resumeThread(threadId: string): Promise<string> {
-  const r = await rpc.request<ThreadResumeResponse>("thread/resume", { threadId });
+/**
+ * Load a saved thread so it can continue; fills its history. A code session keeps the
+ * permissions it was recorded with; a chat session is always reopened read-only.
+ */
+export async function resumeThread(threadId: string, kind: SessionKind = "code"): Promise<string> {
+  const r = await rpc.request<ThreadResumeResponse>("thread/resume", { threadId, ...(kind === "chat" ? CHAT_PERMISSIONS : {}) });
   const id = adopt(r);
   setHistory(id, r.thread.turns);
   return id;
 }
 
 /** Continue a conversation on another provider: fork it, or start fresh if it has no turns yet. */
-export async function switchProvider(threadId: string, cwd: string, choice: ModelChoice): Promise<string> {
+export async function switchProvider(threadId: string, cwd: string, choice: ModelChoice, opts: StartOptions = {}): Promise<string> {
   try {
     const r = await rpc.request<ThreadForkResponse>("thread/fork", {
       threadId,
       modelProvider: choice.provider,
       model: choice.model,
+      ...(opts.kind === "chat" ? CHAT_PERMISSIONS : {}),
+      ...configOverrides(choice, opts.defaultProvider ?? ""),
     });
     const id = adopt(r);
     setHistory(id, r.thread.turns);
     return id;
   } catch (e) {
     // A thread without a turn has no rollout to fork from.
-    if (String(e).includes("no rollout found")) return startThread(cwd, choice);
+    if (String(e).includes("no rollout found")) return startThread(cwd, choice, opts);
     throw e;
   }
 }
@@ -466,6 +515,10 @@ export function useItems(id: string | null): UiItem[] {
 
 export function useDiff(id: string | null): string | null {
   return useSyncExternalStore(subscribe, () => (id ? (state.diffs[id] ?? null) : null));
+}
+
+export function useUsage(id: string | null): Usage | null {
+  return useSyncExternalStore(subscribe, () => (id ? (state.usage[id] ?? null) : null));
 }
 
 export function useError(id: string | null): string {

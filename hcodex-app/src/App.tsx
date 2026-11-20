@@ -1,55 +1,75 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { rpc } from "./lib/rpc";
 import { transport } from "./lib/transport";
-import { readFile } from "./lib/fs";
+import { join, readFile } from "./lib/fs";
 import { loadCatalog, type Catalog } from "./lib/models";
-import { resumeThread, useDiff, useThread, wireStore, type ModelChoice } from "./lib/store";
+import { resumeThread, useAgentRows, useDiff, useThread, wireStore, type ModelChoice, type SessionKind } from "./lib/store";
 import type { Thread } from "./protocol/v2/Thread";
-import { FileTree } from "./components/FileTree";
-import { Editor, CHANGES_TAB, type Tab } from "./components/Editor";
-import { Terminal } from "./components/Terminal";
-import { AgentPanel } from "./components/AgentPanel";
-import { ModelPicker } from "./components/ModelPicker";
-import { Sessions } from "./components/Sessions";
+import type { Tab } from "./components/Editor";
+import { ChatPane } from "./components/ChatPane";
+import { Pages } from "./components/Pages";
+import { Resizer, clamp, useStoredWidth } from "./components/Resizer";
+import { RightPane, type RightTab } from "./components/RightPane";
+import { Sidebar, type Page } from "./components/Sidebar";
 import "./app.css";
 
 type Boot = "booting" | "ready" | "error";
-type SideTab = "sessions" | "files";
 
 const EMPTY_CATALOG: Catalog = { defaultChoice: { provider: "", model: "" }, providers: [] };
+const NO_ROOTS: Record<SessionKind, string | null> = { chat: null, code: null };
+
+const SIDE_DEFAULT = 252;
+const SIDE_MIN = 200;
+const SIDE_MAX = 440;
+/** The conversation and the workspace pane never get narrower than this. */
+const PANE_MIN = 320;
+const rightDefault = () => Math.round(window.innerWidth * 0.42);
 
 export default function App() {
   const [boot, setBoot] = useState<Boot>("booting");
   const [bootMsg, setBootMsg] = useState("starting app-server…");
+  const [kind, setKind] = useState<SessionKind>("code");
+  /** Workspace of Code sessions. */
   const [cwd, setCwd] = useState("");
-  const [cwdInput, setCwdInput] = useState("");
+  /** Folder every Chat session runs in (`<hcodex home>/chat`). */
+  const [chatDir, setChatDir] = useState("");
   const [catalog, setCatalog] = useState<Catalog>(EMPTY_CATALOG);
   const [choice, setChoice] = useState<ModelChoice>(EMPTY_CATALOG.defaultChoice);
-  const [tabs, setTabs] = useState<Tab[]>([]);
-  const [active, setActive] = useState<string | null>(null);
-  const [showTerminal, setShowTerminal] = useState(true);
-  const [sideTab, setSideTab] = useState<SideTab>("sessions");
-  const [rootId, setRootId] = useState<string | null>(null);
+  /** The open session of each mode, so switching Chat/Code keeps both. */
+  const [roots, setRoots] = useState(NO_ROOTS);
   const [viewId, setViewId] = useState<string | null>(null);
+  const [page, setPage] = useState<Page | null>(null);
+  const [rightOpen, setRightOpen] = useState(true);
+  const [rightTab, setRightTab] = useState<RightTab>("files");
+  const [files, setFiles] = useState<Tab[]>([]);
+  const [activeFile, setActiveFile] = useState<string | null>(null);
   const [sessionsKey, setSessionsKey] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
+  const [sideWidth, setSideWidth] = useStoredWidth("hcodex.sideWidth", SIDE_DEFAULT);
+  const [rightWidth, setRightWidth] = useStoredWidth("hcodex.rightWidth", rightDefault());
 
+  const rootId = roots[kind];
   const root = useThread(rootId);
-  const turnDiff = useDiff(rootId);
+  const turnDiff = useDiff(roots.code);
+  /** A chat session has no workspace; its side pane only exists to list sub-agents. */
+  const hasAgents = useAgentRows(rootId).length > 1;
+  const sessionCwd = kind === "chat" ? chatDir : cwd;
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const info = await rpc.start();
-        setBootMsg(`pid ${info.pid} · ${info.codex_bin} · CODEX_HOME=${info.codex_home ?? "default"}`);
-        await rpc.initialize({ name: "hcodex-app", title: "hcodex", version: "0.1.0" });
+        setBootMsg(`pid ${info.pid} · ${info.codex_bin}`);
+        const init = await rpc.initialize({ name: "hcodex-app", title: "hcodex", version: "0.1.0" });
         wireStore();
         const wd = await transport.defaultCwd();
+        const chat = join(String(init.codexHome), "chat");
+        await rpc.request("fs/createDirectory", { path: chat, recursive: true }).catch((e) => console.warn("chat folder:", e));
         const cat = await loadCatalog(wd);
         if (cancelled) return;
         setCwd(wd);
-        setCwdInput(wd);
+        setChatDir(chat);
         setCatalog(cat);
         setChoice(cat.defaultChoice);
         setBoot("ready");
@@ -73,23 +93,27 @@ export default function App() {
 
   const openFile = useCallback(
     async (path: string) => {
-      if (!tabs.some((t) => t.path === path)) {
+      if (!files.some((t) => t.path === path)) {
         try {
           const content = await readFile(path);
-          setTabs((prev) => (prev.some((t) => t.path === path) ? prev : [...prev, { path, content, saved: content }]));
+          setFiles((prev) => (prev.some((t) => t.path === path) ? prev : [...prev, { path, content, saved: content }]));
         } catch (e) {
-          setBootMsg(`open failed: ${e}`);
+          console.warn("open failed:", e);
           return;
         }
       }
-      setActive(path);
+      setActiveFile(path);
+      setRightTab("files");
+      setRightOpen(true);
     },
-    [tabs],
+    [files],
   );
 
-  // Show the agent's diff as soon as a turn produces one.
+  // Bring the diff forward as soon as a turn produces one.
+  const hadDiff = useRef(false);
   useEffect(() => {
-    if (turnDiff) setActive((a) => a ?? CHANGES_TAB);
+    if (turnDiff && !hadDiff.current) setRightTab("changes");
+    hadDiff.current = !!turnDiff;
   }, [turnDiff]);
 
   // The session list changes when the main thread finishes a turn (new title, new order).
@@ -101,120 +125,141 @@ export default function App() {
     wasRunning.current = running;
   }, [rootState]);
 
+  const setRoot = useCallback((k: SessionKind, id: string | null) => {
+    setRoots((r) => ({ ...r, [k]: id }));
+    setViewId(null);
+    if (id) setSessionsKey((n) => n + 1);
+  }, []);
+
+  const switchKind = useCallback((k: SessionKind) => {
+    setKind(k);
+    setViewId(null);
+    setPage(null);
+  }, []);
+
+  /** Make `dir` the workspace; a different folder starts with no open session or files. */
   const switchWorkspace = useCallback(
     (dir: string) => {
+      setPage(null);
       if (!dir || dir === cwd) return;
       setCwd(dir);
-      setCwdInput(dir);
-      setTabs([]);
-      setActive(null);
+      setFiles([]);
+      setActiveFile(null);
+      setRoot("code", null);
     },
-    [cwd],
+    [cwd, setRoot],
   );
-
-  const changeRoot = useCallback((id: string | null) => {
-    setRootId(id);
-    setViewId(null);
-    if (id) setSessionsKey((k) => k + 1);
-  }, []);
 
   const openSession = useCallback(
     async (t: Thread) => {
+      const k: SessionKind = t.cwd === chatDir ? "chat" : "code";
       try {
-        switchWorkspace(t.cwd);
-        const id = await resumeThread(t.id);
-        setRootId(id);
-        setViewId(null);
+        if (k === "code" && t.cwd !== cwd) {
+          setCwd(t.cwd);
+          setFiles([]);
+          setActiveFile(null);
+        }
+        const id = await resumeThread(t.id, k);
+        setKind(k);
+        setPage(null);
+        setRoot(k, id);
         // Keep the thread on the provider and model it was recorded with.
         if (t.modelProvider) setChoice({ provider: t.modelProvider, model: t.model ?? "" });
       } catch (e) {
         setBootMsg(`open session failed: ${e}`);
       }
     },
-    [switchWorkspace],
+    [chatDir, cwd, setRoot],
   );
 
   const newSession = useCallback(() => {
-    setRootId(null);
-    setViewId(null);
+    setPage(null);
+    setRoot(kind, null);
     setChoice((c) => (c.model ? c : catalog.defaultChoice));
-  }, [catalog]);
+  }, [kind, catalog, setRoot]);
 
   if (boot !== "ready") {
     return (
       <div className={`boot status-${boot}`}>
-        <div className="sidebar-title">hcodex</div>
+        <div className="brand">hcodex</div>
         <div className="mono small">{bootMsg}</div>
         {boot === "error" && <pre className="mono tiny logs-pre">{logs.slice(-30).join("\n")}</pre>}
       </div>
     );
   }
 
+  const showRight = rightOpen && (kind === "code" || hasAgents);
+
   return (
-    <div className="layout">
-      <aside className="sidebar">
-        <div className="side-tabs">
-          <span className={`side-tab ${sideTab === "sessions" ? "active" : ""}`} onClick={() => setSideTab("sessions")}>
-            Sessions
-          </span>
-          <span className={`side-tab ${sideTab === "files" ? "active" : ""}`} onClick={() => setSideTab("files")}>
-            Files
-          </span>
-        </div>
-        <div className="row">
-          <input
-            className="mono small grow"
-            value={cwdInput}
-            onChange={(e) => setCwdInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && switchWorkspace(cwdInput)}
-            title="workspace root (Enter to apply)"
-          />
-        </div>
-        {sideTab === "sessions" ? (
-          <Sessions cwd={cwd} activeRootId={rootId} refreshKey={sessionsKey} onOpen={openSession} onNew={newSession} />
-        ) : (
-          <div className="tree-scroll">
-            <FileTree root={cwd} selected={active} onOpen={openFile} />
-          </div>
-        )}
-        <details className="logs">
-          <summary className="muted tiny">server logs ({logs.length})</summary>
-          <pre className="mono tiny logs-pre">{logs.slice(-40).join("\n")}</pre>
-        </details>
-      </aside>
+    <div
+      className="layout"
+      style={{
+        gridTemplateColumns: showRight
+          ? `${sideWidth}px minmax(${PANE_MIN}px, 1fr) minmax(${PANE_MIN}px, ${rightWidth}px)`
+          : `${sideWidth}px minmax(0, 1fr)`,
+      }}
+    >
+      <Sidebar
+        kind={kind}
+        onKind={switchKind}
+        cwd={cwd}
+        chatDir={chatDir}
+        activeRootId={rootId}
+        refreshKey={sessionsKey}
+        page={page}
+        onPage={setPage}
+        onOpen={openSession}
+        onNew={newSession}
+        onWorkspace={switchWorkspace}
+        footer={bootMsg}
+        resizer={<Resizer edge="right" onDrag={(x) => setSideWidth(clamp(x, SIDE_MIN, SIDE_MAX))} onReset={() => setSideWidth(SIDE_DEFAULT)} />}
+      />
 
       <main className="center">
-        <Editor tabs={tabs} active={active} onTabsChange={setTabs} onActivate={setActive} turnDiff={turnDiff} />
-        <div className="panel-bar">
-          <span className="small" onClick={() => setShowTerminal((s) => !s)} style={{ cursor: "pointer" }}>
-            {showTerminal ? "▾" : "▸"} Terminal
-          </span>
-          <span className="muted tiny" style={{ marginLeft: "auto" }}>
-            {bootMsg}
-          </span>
+        {page && <Pages page={page} cwd={sessionCwd} catalog={catalog} onClose={() => setPage(null)} />}
+        <div className={page ? "hidden" : "center-chat"}>
+          <ChatPane
+            kind={kind}
+            cwd={sessionCwd}
+            catalog={catalog}
+            choice={choice}
+            onChoice={setChoice}
+            rootId={rootId}
+            viewId={viewId}
+            onRootChange={(id) => setRoot(kind, id)}
+            onViewChange={setViewId}
+            onOpenFile={openFile}
+            rightOpen={rightOpen}
+            onToggleRight={() => setRightOpen((o) => !o)}
+            onShowAgents={() => setRightOpen(true)}
+          />
         </div>
-        {showTerminal && <Terminal cwd={cwd} />}
       </main>
 
-      <aside className="right">
-        <div className="row model-row">
-          <ModelPicker catalog={catalog} value={choice} onChange={setChoice} />
-          {root && choice.provider && root.provider && choice.provider !== root.provider && (
-            <span className="tiny warn" title="the next message continues this conversation on the new provider">
-              switches provider
-            </span>
-          )}
-        </div>
-        <AgentPanel
+      {/* Always mounted, so the terminal and open files survive hiding the pane or switching mode. */}
+      <div className={showRight ? "right-host" : "hidden"}>
+        <Resizer
+          edge="left"
+          onDrag={(x) => setRightWidth(clamp(window.innerWidth - x, PANE_MIN, window.innerWidth - sideWidth - PANE_MIN))}
+          onReset={() => setRightWidth(rightDefault())}
+        />
+        <RightPane
+          kind={kind}
           cwd={cwd}
-          choice={choice}
+          tab={rightTab}
+          onTab={setRightTab}
+          turnDiff={turnDiff}
+          refreshKey={sessionsKey}
+          files={files}
+          activeFile={activeFile}
+          onFilesChange={setFiles}
+          onActivateFile={setActiveFile}
+          onOpenFile={openFile}
           rootId={rootId}
           viewId={viewId}
-          onRootChange={changeRoot}
-          onViewChange={setViewId}
-          onOpenFile={openFile}
+          onSelectAgent={(id) => setViewId(id === rootId ? null : id)}
         />
-      </aside>
+      </div>
     </div>
   );
 }
