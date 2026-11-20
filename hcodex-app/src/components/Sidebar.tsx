@@ -1,7 +1,7 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import type { SessionKind } from "../lib/store";
 import type { Thread } from "../protocol/v2/Thread";
-import { Icon, type IconName } from "./Icon";
+import { Icon, Logo, type IconName } from "./Icon";
 import { Sessions } from "./Sessions";
 
 export type Page = "plugins" | "skills" | "mcp" | "providers";
@@ -32,20 +32,13 @@ type Props = {
 
 /** Left column: Chat/Code switch, new session, extensions, then workspaces or chat history. */
 export function Sidebar(props: Props) {
-  const { kind, onKind, cwd, page, onPage, onNew, onWorkspace } = props;
-  const [adding, setAdding] = useState(false);
-  const [path, setPath] = useState("");
-
-  const addWorkspace = () => {
-    const dir = path.trim();
-    if (dir) onWorkspace(dir);
-    setAdding(false);
-    setPath("");
-  };
+  const { kind, onKind, page, onPage, onNew } = props;
 
   return (
     <aside className="sidebar">
-      <div className="brand">hcodex</div>
+      <div className="brand">
+        <Logo /> hcodex
+      </div>
       <div className="seg" role="tablist">
         <button role="tab" aria-selected={kind === "chat"} className={kind === "chat" ? "on" : ""} onClick={() => onKind("chat")}>
           <Icon name="chat" size={14} /> Chat
@@ -56,7 +49,7 @@ export function Sidebar(props: Props) {
       </div>
 
       <button className="new-session" onClick={onNew}>
-        <Icon name="plus" size={14} /> {kind === "chat" ? "New chat" : "New session"}
+        <Icon name="plus" size={15} /> {kind === "chat" ? "New chat" : "New session"}
       </button>
 
       <nav className="nav">
@@ -67,41 +60,19 @@ export function Sidebar(props: Props) {
         ))}
       </nav>
 
-      <div className="side-heading">
-        <span>{kind === "chat" ? "History" : "Workspaces"}</span>
-        {kind === "code" && (
-          <button className="icon-btn" title="Open another folder" aria-label="Open another folder" onClick={() => setAdding((a) => !a)}>
-            <Icon name="plus" size={13} />
-          </button>
-        )}
-      </div>
-      {kind === "code" && adding && (
-        <input
-          autoFocus
-          className="mono small"
-          value={path}
-          placeholder={cwd || "/path/to/folder"}
-          onChange={(e) => setPath(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") addWorkspace();
-            if (e.key === "Escape") setAdding(false);
-          }}
-          title="Folder path, Enter to open"
-        />
-      )}
-
       <Sessions
         kind={kind}
-        cwd={cwd}
+        cwd={props.cwd}
         chatDir={props.chatDir}
         activeRootId={props.activeRootId}
         refreshKey={props.refreshKey}
         onOpen={props.onOpen}
-        onWorkspace={onWorkspace}
+        onWorkspace={props.onWorkspace}
       />
 
-      <div className="side-footer muted tiny" title={props.footer}>
-        {props.footer}
+      <div className="side-footer tiny" title={props.footer}>
+        <span className="dot status-ready" />
+        <span className="ellipsis">{props.footer}</span>
       </div>
       {props.resizer}
     </aside>

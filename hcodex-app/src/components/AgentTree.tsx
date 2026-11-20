@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { agentLabel, useAgentRows, type AgentRow, type AgentState } from "../lib/store";
+import { Icon } from "./Icon";
 
 type Props = {
   rootId: string | null;
@@ -67,7 +68,9 @@ export function AgentTree({ rootId, viewId, onSelect }: Props) {
   return (
     <div className="agents">
       <div className="agents-title" onClick={() => setOpen((o) => !o)}>
-        <span className="tree-caret">{open ? "▾" : "▸"}</span>
+        <span className={`caret ${open ? "open" : ""}`}>
+          <Icon name="chevronRight" size={11} />
+        </span>
         Agents <span className="muted">({subs.length})</span>
         <span className="muted tiny agents-summary">{summary}</span>
       </div>

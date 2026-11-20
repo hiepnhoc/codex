@@ -31,4 +31,19 @@ self.MonacoEnvironment = {
 
 loader.config({ monaco });
 
+// Same surfaces as the rest of the app (see lib/theme.ts), so the editor does not sit in a
+// differently coloured box.
+monaco.editor.defineTheme("hcodex-dark", {
+  base: "vs-dark",
+  inherit: true,
+  rules: [],
+  colors: { "editor.background": "#15171a", "editorGutter.background": "#15171a", "editor.lineHighlightBackground": "#1d2025" },
+});
+monaco.editor.defineTheme("hcodex-light", {
+  base: "vs",
+  inherit: true,
+  rules: [],
+  colors: { "editor.background": "#ffffff", "editorGutter.background": "#ffffff", "editor.lineHighlightBackground": "#f4f5f7" },
+});
+
 export { monaco };

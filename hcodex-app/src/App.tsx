@@ -7,6 +7,7 @@ import { resumeThread, useAgentRows, useDiff, useThread, wireStore, type ModelCh
 import type { Thread } from "./protocol/v2/Thread";
 import type { Tab } from "./components/Editor";
 import { ChatPane } from "./components/ChatPane";
+import { Logo } from "./components/Icon";
 import { Pages } from "./components/Pages";
 import { Resizer, clamp, useStoredWidth } from "./components/Resizer";
 import { RightPane, type RightTab } from "./components/RightPane";
@@ -181,8 +182,10 @@ export default function App() {
   if (boot !== "ready") {
     return (
       <div className={`boot status-${boot}`}>
-        <div className="brand">hcodex</div>
-        <div className="mono small">{bootMsg}</div>
+        <div className="brand">
+          <Logo size={24} /> hcodex
+        </div>
+        <div className="mono small muted">{bootMsg}</div>
         {boot === "error" && <pre className="mono tiny logs-pre">{logs.slice(-30).join("\n")}</pre>}
       </div>
     );

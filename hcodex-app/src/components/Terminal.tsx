@@ -4,10 +4,16 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { rpc } from "../lib/rpc";
 import { b64ToBytes } from "../lib/fs";
+import { SURFACE, type ColorScheme } from "../lib/theme";
 import type { ProcessOutputDeltaNotification } from "../protocol/v2/ProcessOutputDeltaNotification";
 import type { ProcessExitedNotification } from "../protocol/v2/ProcessExitedNotification";
 
-type Props = { cwd: string };
+type Props = { cwd: string; scheme: ColorScheme };
+
+const xtermTheme = (scheme: ColorScheme) => {
+  const { background, foreground, selection } = SURFACE[scheme];
+  return { background, foreground, cursor: foreground, selectionBackground: selection };
+};
 
 function bytesToB64(bytes: Uint8Array) {
   let bin = "";
@@ -16,20 +22,29 @@ function bytesToB64(bytes: Uint8Array) {
 }
 
 /** Interactive shell running on the app-server host via `process/spawn` (PTY). */
-export function Terminal({ cwd }: Props) {
+export function Terminal({ cwd, scheme }: Props) {
   const ref = useRef<HTMLDivElement>(null);
+  const termRef = useRef<XTerm | null>(null);
+  const schemeRef = useRef(scheme);
+  schemeRef.current = scheme;
+
+  // Follow the system theme without restarting the shell.
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.theme = xtermTheme(scheme);
+  }, [scheme]);
 
   useEffect(() => {
     if (!ref.current || !cwd) return;
     const term = new XTerm({
       fontSize: 12,
       fontFamily: "ui-monospace, SF Mono, Menlo, monospace",
-      theme: { background: "#1e1e1e" },
+      theme: xtermTheme(schemeRef.current),
       cursorBlink: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(ref.current);
+    termRef.current = term;
     fit.fit();
 
     const handle = `ide-term-${Math.random().toString(36).slice(2)}`;

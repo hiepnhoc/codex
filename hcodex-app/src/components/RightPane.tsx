@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import MonacoEditor from "@monaco-editor/react";
-import "../lib/monaco";
 import { rpc } from "../lib/rpc";
 import { workspaceDiff, type WorkspaceDiff } from "../lib/git";
 import type { SessionKind } from "../lib/store";
+import { join } from "../lib/fs";
+import { useColorScheme } from "../lib/theme";
+import { Icon, type IconName } from "./Icon";
 import { AgentTree } from "./AgentTree";
+import { DiffView } from "./DiffView";
 import { Editor, type Tab } from "./Editor";
 import { FileTree } from "./FileTree";
 import { Resizer, clamp, useStoredWidth } from "./Resizer";
@@ -33,10 +35,10 @@ type Props = {
 
 const TREE_DEFAULT = 190;
 
-const TABS: Array<{ id: RightTab; label: string }> = [
-  { id: "changes", label: "Changes" },
-  { id: "files", label: "Files" },
-  { id: "terminal", label: "Terminal" },
+const TABS: Array<{ id: RightTab; label: string; icon: IconName }> = [
+  { id: "changes", label: "Changes", icon: "diff" },
+  { id: "files", label: "Files", icon: "folder" },
+  { id: "terminal", label: "Terminal", icon: "terminal" },
 ];
 
 /**
@@ -78,6 +80,7 @@ function useWorkspaceDiff(cwd: string, enabled: boolean, refreshKey: number): Wo
  */
 export function RightPane(props: Props) {
   const { kind, cwd, tab, onTab, turnDiff } = props;
+  const scheme = useColorScheme();
   // The shell is started the first time its tab is opened, then kept alive while hidden.
   const [terminalOpened, setTerminalOpened] = useState(tab === "terminal");
   if (tab === "terminal" && !terminalOpened) setTerminalOpened(true);
@@ -93,6 +96,7 @@ export function RightPane(props: Props) {
           <div className="right-tabs" role="tablist">
             {TABS.map((t) => (
               <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => onTab(t.id)}>
+                <Icon name={t.icon} size={15} />
                 {t.label}
                 {t.id === "changes" && fromGit && workspace.files > 0 && <span className="count">{workspace.files}</span>}
                 {t.id === "changes" && !fromGit && turnDiff && <span className="dot status-running still" />}
@@ -103,14 +107,10 @@ export function RightPane(props: Props) {
             {kind === "code" &&
               tab === "changes" &&
               (diffText ? (
-                <MonacoEditor
-                  theme="vs-dark"
-                  language="diff"
-                  value={diffText}
-                  options={{ readOnly: true, minimap: { enabled: false }, fontSize: 12, automaticLayout: true, scrollBeyondLastLine: false }}
-                />
+                <DiffView diff={diffText} onOpen={(path) => props.onOpenFile(path.startsWith("/") ? path : join(cwd, path))} />
               ) : (
-                <div className="muted empty small">
+                <div className="empty small">
+                  <Icon name="diff" size={22} />
                   {fromGit ? "No uncommitted changes in this workspace." : "Not a git repository. Patches the agent applies in a turn show here."}
                 </div>
               ))}
@@ -129,12 +129,12 @@ export function RightPane(props: Props) {
                     onReset={() => setTreeWidth(TREE_DEFAULT)}
                   />
                 </div>
-                <Editor tabs={props.files} active={props.activeFile} onTabsChange={props.onFilesChange} onActivate={props.onActivateFile} />
+                <Editor root={cwd} tabs={props.files} active={props.activeFile} onTabsChange={props.onFilesChange} onActivate={props.onActivateFile} />
               </div>
             )}
             {terminalOpened && (
               <div className={`terminal-host ${tab === "terminal" ? "" : "hidden"}`}>
-                <Terminal cwd={cwd} />
+                <Terminal cwd={cwd} scheme={scheme} />
               </div>
             )}
           </div>

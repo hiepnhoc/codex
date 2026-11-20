@@ -29,8 +29,9 @@ function ago(seconds: number): string {
   return `${Math.floor(d / 86400)}d`;
 }
 
+/** A session's name, else its first message; empty when it has neither yet. */
 function title(t: Thread): string {
-  return (t.name ?? t.preview ?? "").trim().split("\n")[0] || "(untitled)";
+  return (t.name ?? t.preview ?? "").trim().split("\n")[0];
 }
 
 /** Chat history buckets, newest first. */
@@ -55,6 +56,9 @@ export function Sessions({ kind, cwd, chatDir, activeRootId, refreshKey, onOpen,
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [searching, setSearching] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [path, setPath] = useState("");
   const live = useThreads();
   const request = useRef(0);
 
@@ -103,6 +107,18 @@ export function Sessions({ kind, cwd, chatDir, activeRootId, refreshKey, onOpen,
     return Array.from(by.entries());
   }, [threads, kind, cwd, chatDir]);
 
+  const addWorkspace = () => {
+    const dir = path.trim();
+    if (dir) onWorkspace(dir);
+    setAdding(false);
+    setPath("");
+  };
+
+  const toggleSearch = () => {
+    if (searching) setSearch("");
+    setSearching((s) => !s);
+  };
+
   const row = (t: Thread) => {
     const state = live[t.id]?.state;
     const running = state === "running" || state === "waiting";
@@ -110,44 +126,82 @@ export function Sessions({ kind, cwd, chatDir, activeRootId, refreshKey, onOpen,
       <div
         key={t.id}
         className={`session-row ${t.id === activeRootId ? "selected" : ""}`}
-        title={`${title(t)}\n${t.modelProvider} · ${t.model ?? "?"}\n${t.cwd}`}
+        title={`${title(t) || "Untitled"}\n${t.modelProvider} · ${t.model ?? "?"}\n${t.cwd}`}
         onClick={() => onOpen(t)}
       >
-        {running && <span className="dot status-running" />}
-        <span className="session-title">{title(t)}</span>
-        <span className="muted tiny">{ago(t.updatedAt)}</span>
+        <span className={`session-title ${title(t) ? "" : "blank"}`}>{title(t) || "Untitled"}</span>
+        {running ? <span className="dot status-running" /> : <span className="session-age">{ago(t.updatedAt)}</span>}
       </div>
     );
   };
 
   return (
     <div className="sessions">
-      <div className="search">
-        <Icon name="search" size={13} />
-        <input value={search} placeholder={kind === "chat" ? "Search chats" : "Search sessions"} onChange={(e) => setSearch(e.target.value)} />
+      <div className="side-heading">
+        <span className="grow">{kind === "chat" ? "History" : "Workspaces"}</span>
+        <button className={`icon-btn ${searching ? "on" : ""}`} title="Search sessions" aria-label="Search sessions" onClick={toggleSearch}>
+          <Icon name="search" size={14} />
+        </button>
+        {kind === "code" && (
+          <button className={`icon-btn ${adding ? "on" : ""}`} title="Open another folder" aria-label="Open another folder" onClick={() => setAdding((a) => !a)}>
+            <Icon name="plus" size={14} />
+          </button>
+        )}
       </div>
+      {searching && (
+        <div className="search">
+          <Icon name="search" size={13} />
+          <input
+            autoFocus
+            value={search}
+            placeholder={kind === "chat" ? "Search chats" : "Search sessions"}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => e.key === "Escape" && toggleSearch()}
+          />
+        </div>
+      )}
+      {kind === "code" && adding && (
+        <input
+          autoFocus
+          className="mono add-folder"
+          value={path}
+          placeholder={cwd || "/path/to/folder"}
+          onChange={(e) => setPath(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") addWorkspace();
+            if (e.key === "Escape") setAdding(false);
+          }}
+          title="Folder path, Enter to open"
+        />
+      )}
       {error && <div className="error small">{error}</div>}
       <div className="tree-scroll">
         {groups.map(([key, list]) =>
           kind === "chat" ? (
-            <div key={key} className="session-group">
+            <div key={key} className="session-group flat">
               <div className="session-day">{key}</div>
               {list.map(row)}
             </div>
           ) : (
             <div key={key} className="session-group">
-              <div className={`workspace-row ${key === cwd ? "current" : ""}`} title={key}>
-                <span className="tree-caret" onClick={() => setCollapsed((c) => ({ ...c, [key]: !c[key] }))}>
-                  {collapsed[key] ? "▸" : "▾"}
+              <div className={`workspace-row ${key === cwd ? "current" : ""}`} title={key} onClick={() => onWorkspace(key)}>
+                <span
+                  className={`caret ${collapsed[key] ? "" : "open"}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCollapsed((c) => ({ ...c, [key]: !c[key] }));
+                  }}
+                >
+                  <Icon name="chevronRight" size={11} />
                 </span>
-                <span className="workspace-name" onClick={() => onWorkspace(key)}>
-                  <Icon name="folder" size={14} />
-                  {basename(key) || key}
+                <span className="folder">
+                  <Icon name={collapsed[key] ? "folder" : "folderOpen"} size={15} />
                 </span>
-                <span className="muted tiny">{list.length || ""}</span>
+                <span className="workspace-name">{basename(key) || key}</span>
+                {list.length > 0 && <span className="workspace-count">{list.length}</span>}
               </div>
               {!collapsed[key] && list.map(row)}
-              {!collapsed[key] && list.length === 0 && <div className="muted tiny session-empty">No sessions yet</div>}
+              {!collapsed[key] && list.length === 0 && <div className="session-empty">No sessions yet</div>}
             </div>
           ),
         )}

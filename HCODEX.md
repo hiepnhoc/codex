@@ -141,7 +141,7 @@ của Claude, khung bên trong của DeepSeek Harness, dòng hoạt động gọ
 
 | Phần | Cách làm |
 |---|---|
-| Nút Chat/Code đầu sidebar; mỗi chế độ giữ phiên đang mở riêng | Chat = thread chạy ở `~/.hcodex/chat` (`initialize.codexHome` + `fs/createDirectory`), `sandbox: "read-only"`, `approvalPolicy: "never"`, kèm `developerInstructions`; Code = `workspace-write` + `on-request` như trước. Mở lại phiên Code **không** ghi đè quyền đã ghi; mở lại phiên Chat luôn ép chỉ đọc |
+| Nút Chat/Code đầu sidebar; mỗi chế độ giữ phiên đang mở riêng | Chat = thread chạy ở `~/.hcodex/chat` (`initialize.codexHome` + `fs/createDirectory`), `sandbox: "read-only"`, `approvalPolicy: "never"`, kèm `developerInstructions`; Code = `workspace-write` + `on-request` như trước. Mở lại hoặc fork phiên nào cũng gửi lại quyền của chế độ đó (Code: `workspace-write`, Chat: chỉ đọc), vì app-server không tự giữ sandbox đã ghi (sửa 20/11, xem "Bộ test của harness") |
 | Sidebar: New session, Plugins, Skills, MCP servers, Providers, rồi Workspaces (Code) hoặc History theo ngày (Chat) | `thread/list` với `cwd: <thư mục chat>` cho Chat; Code lọc bỏ thư mục chat ở client |
 | Cột giữa: mỗi việc agent làm là một dòng (Thought, lệnh, file sửa `+N -M`, sub-agent, tool), bấm để xem chi tiết; ô nhập có chọn model và % context | `thread/tokenUsage/updated` (`last.totalTokens / modelContextWindow`) |
 | Cột phải: Changes, Files (cây + editor), Terminal, dưới cùng là Agents | Changes = `git diff HEAD` + file untracked qua `command/exec` (`src/lib/git.ts`), đọc lại khi xong lượt và khi `fs/changed`; không phải repo git thì dùng `turn/diff/updated` |
@@ -162,6 +162,27 @@ running", danh sách Agents và xem được từng agent.
   chat, gắn nhầm lên `.layout` làm vỡ lưới.
 - Chưa có: render markdown cho câu trả lời, nút "Tiếp tục trong Code" từ Chat, lọc plugin theo
   loại cho Chat, bật/tắt plugin và sửa provider ngay trong app (các trang hiện chỉ đọc).
+
+**Đợt 3 (20/11/2026): hoàn thiện giao diện.** User chê bản đợt 2 "thô" so với DeepSeek Harness.
+So hai bên cạnh nhau thì khung ba cột đã đúng, cái kém là lớp hoàn thiện. Đã làm, tất cả trong
+`hcodex-app/src/`, không thêm thư viện:
+
+| Phần | Thay đổi |
+|---|---|
+| Nền tảng (`app.css`) | Màu theo biến, **sáng/tối theo hệ thống** (`prefers-color-scheme` + `color-scheme`); sidebar sáng hơn cột chat, viền mảnh; chữ 13.5–14.5px, dòng 30–32px; thanh cuộn mảnh (trước là thanh trắng mặc định); một màu nhấn xanh |
+| Sidebar | Logo, nút New session dạng viên, icon cho từng mục; workspace là thư mục có mũi tên gập, phiên thụt vào; thời gian chỉ hiện khi rê chuột; ô tìm và ô thêm thư mục ẩn sau icon; phiên chưa có tên hiện "Untitled" mờ thay cho "(untitled)" |
+| Chat | Tin của user là bong bóng bên phải; câu trả lời **render Markdown** (`Markdown.tsx` tự viết: heading, danh sách lồng, bảng, quote, code block có nút copy, link mở ngoài app; dựng node React trực tiếp nên không chèn được HTML); dòng Thought/lệnh có mũi tên gập; file agent sửa hiện thành thẻ; ba chấm "Working" khi agent đang bận mà chưa có chữ; nút copy câu trả lời khi rê chuột |
+| Ô nhập | Thẻ bo tròn có viền sáng khi focus; nút gửi tròn màu nhấn; **ô chọn model tự vẽ** (`ModelPicker.tsx`: gõ để lọc theo model hoặc provider, ↑↓ Enter, nhóm theo provider, "Custom model…"); dòng trạng thái bên dưới: chế độ quyền, số token, thanh % context |
+| Cột phải | Tab có icon và gạch chân màu nhấn; cây file có icon thư mục/file tô màu theo đuôi; tab editor có icon, chấm chưa lưu, thanh đường dẫn; **Changes là từng khung theo file** (`DiffView.tsx`: tên file, `+N -M`, dòng thêm/xoá tô nền, gập được, nút mở file) thay cho chữ diff thô trong Monaco; Monaco và terminal dùng cùng màu nền với app ở cả hai giao diện (`lib/theme.ts`) |
+
+Kiểm trên app-server thật qua browser pane (dark và light, `claude-haiku-5-5` trên `hibox`): Chat
+trả về mẫu Markdown đủ loại và render đúng; Code tạo file, chạy lệnh, sửa README, Changes hiện 3
+khung file, Files mở được file; trang Providers và Skills. `pnpm build` và `harness-test.sh -k SC`
+qua. Chưa nhìn tận mắt: cửa sổ Tauri thật, dải sub-agent và thẻ xin duyệt với màu mới (chỉ đổi CSS).
+
+Chưa làm trong đợt 3: thanh tiêu đề liền cửa sổ kiểu macOS (`titleBarStyle: Overlay`, cần quyền
+kéo cửa sổ và phải thử trên cửa sổ thật), tab Trajectory, tô màu cú pháp trong code block của
+câu trả lời, gộp nhiều dòng Thought/lệnh liên tiếp thành một dòng tóm tắt.
 
 Chưa làm: gói proxy vào app, đóng gói trong workflow `hcodex-release`.
 

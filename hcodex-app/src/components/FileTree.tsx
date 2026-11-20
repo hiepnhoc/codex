@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { rpc } from "../lib/rpc";
 import { readDir, watch, unwatch, join, type DirEntry } from "../lib/fs";
 import type { FsChangedNotification } from "../protocol/v2/FsChangedNotification";
+import { FileIcon, Icon } from "./Icon";
 
 type Props = { root: string; selected: string | null; onOpen: (path: string) => void };
 
@@ -62,12 +63,18 @@ function Dir({ path, name, depth, open: initialOpen, selected, onOpen, version }
 
   return (
     <div>
-      <div className="tree-row" style={{ paddingLeft: depth * 12 }} onClick={() => setOpen((o) => !o)}>
-        <span className="tree-caret">{open ? "▾" : "▸"}</span> {name}
+      <div className="tree-row" style={{ paddingLeft: 4 + depth * 14 }} onClick={() => setOpen((o) => !o)}>
+        <span className={`caret ${open ? "open" : ""}`}>
+          <Icon name="chevronRight" size={11} />
+        </span>
+        <span className="folder">
+          <Icon name={open ? "folderOpen" : "folder"} size={15} />
+        </span>
+        <span className="ellipsis">{name}</span>
       </div>
       {open &&
         (err ? (
-          <div className="muted tiny" style={{ paddingLeft: depth * 12 + 16 }}>
+          <div className="muted tiny" style={{ paddingLeft: 26 + depth * 14 }}>
             {err}
           </div>
         ) : (
@@ -86,10 +93,12 @@ function Dir({ path, name, depth, open: initialOpen, selected, onOpen, version }
               <div
                 key={e.fileName}
                 className={`tree-row file ${selected === join(path, e.fileName) ? "selected" : ""}`}
-                style={{ paddingLeft: (depth + 1) * 12 + 14 }}
+                style={{ paddingLeft: 4 + (depth + 1) * 14 }}
                 onClick={() => onOpen(join(path, e.fileName))}
               >
-                {e.fileName}
+                <span className="caret-gap" />
+                <FileIcon name={e.fileName} />
+                <span className="ellipsis">{e.fileName}</span>
               </div>
             ),
           )

@@ -4,10 +4,14 @@ import "../lib/monaco";
 import { rpc } from "../lib/rpc";
 import { readFile, writeFile, basename, languageFor } from "../lib/fs";
 import type { FsChangedNotification } from "../protocol/v2/FsChangedNotification";
+import { monacoTheme, useColorScheme } from "../lib/theme";
+import { FileIcon, Icon } from "./Icon";
 
 export type Tab = { path: string; content: string; saved: string };
 
 type Props = {
+  /** Workspace folder; the path bar shows paths relative to it. */
+  root: string;
   tabs: Tab[];
   active: string | null;
   onTabsChange: (tabs: Tab[]) => void;
@@ -15,7 +19,8 @@ type Props = {
 };
 
 /** Tabbed file editor; a tab reloads itself when the file changes on disk and it has no unsaved edits. */
-export function Editor({ tabs, active, onTabsChange, onActivate }: Props) {
+export function Editor({ root, tabs, active, onTabsChange, onActivate }: Props) {
+  const scheme = useColorScheme();
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const [status, setStatus] = useState("");
@@ -72,22 +77,25 @@ export function Editor({ tabs, active, onTabsChange, onActivate }: Props) {
   };
 
   const tab = tabs.find((t) => t.path === active);
+  const crumbs = tab ? (tab.path.startsWith(root + "/") ? tab.path.slice(root.length + 1) : tab.path).split("/").filter(Boolean) : [];
 
   return (
     <div className="editor">
       <div className="tabs">
         {tabs.map((t) => (
           <div key={t.path} className={`tab ${t.path === active ? "active" : ""}`} onClick={() => onActivate(t.path)} title={t.path}>
+            <FileIcon name={t.path} size={14} />
             {basename(t.path)}
-            {t.content !== t.saved ? " ●" : ""}
+            {t.content !== t.saved && <span className="dirty" title="Unsaved changes" />}
             <span
               className="tab-close"
+              title="Close"
               onClick={(e) => {
                 e.stopPropagation();
                 close(t.path);
               }}
             >
-              ×
+              <Icon name="x" size={11} />
             </span>
           </div>
         ))}
@@ -95,10 +103,20 @@ export function Editor({ tabs, active, onTabsChange, onActivate }: Props) {
           {status}
         </span>
       </div>
+      {tab && (
+        <div className="crumbs">
+          {crumbs.map((part, i) => (
+            <span key={i} className={i === crumbs.length - 1 ? "last" : ""}>
+              {i > 0 && "/ "}
+              {part}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="editor-body">
         {tab ? (
           <MonacoEditor
-            theme="vs-dark"
+            theme={monacoTheme(scheme)}
             path={tab.path}
             language={languageFor(tab.path)}
             value={tab.content}
@@ -106,7 +124,10 @@ export function Editor({ tabs, active, onTabsChange, onActivate }: Props) {
             options={{ fontSize: 13, minimap: { enabled: false }, automaticLayout: true, scrollBeyondLastLine: false }}
           />
         ) : (
-          <div className="muted empty small">Open a file from the tree.</div>
+          <div className="empty small">
+            <Icon name="file" size={22} />
+            Open a file from the tree.
+          </div>
         )}
       </div>
     </div>

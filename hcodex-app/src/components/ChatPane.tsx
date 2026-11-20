@@ -21,8 +21,11 @@ import {
 } from "../lib/store";
 import { basename } from "../lib/fs";
 import type { Catalog } from "../lib/models";
-import { Icon } from "./Icon";
+import { FileIcon, Icon, Logo } from "./Icon";
+import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
+
+const compact = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
 
 type Props = {
   kind: SessionKind;
@@ -107,8 +110,10 @@ export function ChatPane(props: Props) {
   const title = root?.title && root.title !== "(untitled)" ? root.title : firstText || (kind === "chat" ? "New chat" : "New session");
   const active = agents.filter((a) => a.state === "running" || a.state === "waiting").length;
   const finished = agents.length - active;
-  const context =
-    usage && usage.window ? `${Math.min(100, Math.round((usage.used / usage.window) * 100))}% context` : usage ? `${Math.round(usage.used / 1000)}k tokens` : "";
+  const percent = usage?.window ? Math.min(100, Math.round((usage.used / usage.window) * 100)) : null;
+  // The agent is busy but nothing is streaming: between a tool result and the next answer.
+  const shownRunning = watchingSub ? shown?.state === "running" : running;
+  const waiting = shownRunning && (items.length === 0 || items[items.length - 1].done);
 
   return (
     <section className="chat">
@@ -127,7 +132,7 @@ export function ChatPane(props: Props) {
         )}
         {agents.length > 0 && (
           <button className={`pill ${active ? "live" : ""}`} onClick={props.onShowAgents} title="Show the agents of this session">
-            <Icon name="agent" size={13} />
+            <Icon name="agent" size={14} />
             {active ? `${active} subagent${active > 1 ? "s" : ""} running` : `${agents.length} subagent${agents.length > 1 ? "s" : ""}`}
             {active > 0 && finished > 0 && <span className="muted"> · {finished} done</span>}
           </button>
@@ -144,9 +149,16 @@ export function ChatPane(props: Props) {
         <div className="items-inner">
           {items.length === 0 && !watchingSub && (
             <div className="welcome">
+              <Logo size={40} />
               <div className="welcome-title">{kind === "chat" ? "Ask anything" : "What should we work on?"}</div>
-              <div className="muted small">
-                {kind === "chat" ? "Chat is read-only: nothing here changes your files." : `Workspace: ${basename(cwd) || cwd}`}
+              <div className="welcome-sub">
+                {kind === "chat" ? (
+                  "Chat is read-only: nothing here changes your files."
+                ) : (
+                  <>
+                    <Icon name="folder" size={14} /> {basename(cwd) || cwd}
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -154,6 +166,14 @@ export function ChatPane(props: Props) {
           {items.map((ui) => (
             <ItemView key={ui.item.id} ui={ui} onOpenFile={onOpenFile} onOpenAgent={onViewChange} />
           ))}
+          {waiting && (
+            <div className="working" aria-live="polite">
+              <i />
+              <i />
+              <i />
+              Working
+            </div>
+          )}
           {error && <div className="error small">{error}</div>}
         </div>
       </div>
@@ -185,7 +205,6 @@ export function ChatPane(props: Props) {
               </span>
             )}
             <span className="grow" />
-            {context && <span className="muted tiny">{context}</span>}
             {running && rootId ? (
               <button className="send stop" onClick={() => interrupt(rootId)} title="Stop" aria-label="Stop">
                 <Icon name="stop" size={14} />
@@ -197,10 +216,53 @@ export function ChatPane(props: Props) {
             )}
           </div>
         </div>
+        <div className="composer-status">
+          <span className="ellipsis">
+            {kind === "chat" ? "Read-only: answers without touching your files" : "Edits stay inside the workspace; anything else asks first"}
+          </span>
+          <span className="grow" />
+          {usage && <span>{compact(usage.used)} tokens</span>}
+          {percent != null && (
+            <>
+              <span className={`meter ${percent >= 80 ? "high" : ""}`} title={`${percent}% of the context window used`}>
+                <i style={{ width: `${percent}%` }} />
+              </span>
+              <span>{percent}%</span>
+            </>
+          )}
+        </div>
       </div>
     </section>
   );
 }
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className="icon-btn"
+      title="Copy"
+      aria-label="Copy the answer"
+      onClick={() =>
+        navigator.clipboard?.writeText(text).then(
+          () => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          },
+          () => {},
+        )
+      }
+    >
+      <Icon name={copied ? "check" : "copy"} size={14} />
+    </button>
+  );
+}
+
+const Caret = () => (
+  <span className="caret">
+    <Icon name="chevronRight" size={11} />
+  </span>
+);
 
 type ItemProps = { ui: UiItem; onOpenFile: (p: string) => void; onOpenAgent: (threadId: string) => void };
 
@@ -225,11 +287,22 @@ function ItemView({ ui, onOpenFile, onOpenAgent }: ItemProps) {
     case "userMessage":
       return <div className="msg user">{item.content.map((c) => ("text" in c ? c.text : `[${c.type}]`)).join("")}</div>;
     case "agentMessage":
-      return <div className="msg assistant">{done ? item.text : stream}</div>;
+      return (
+        <div className="msg assistant">
+          <Markdown text={done ? item.text : stream} />
+          {done && item.text && (
+            <div className="msg-actions">
+              <CopyButton text={item.text} />
+            </div>
+          )}
+        </div>
+      );
     case "reasoning":
       return item.summary.length ? (
         <details className="act">
-          <summary>Thought</summary>
+          <summary>
+            <Icon name="spark" size={14} /> Thought <Caret />
+          </summary>
           <div className="act-body muted">{item.summary.join("\n")}</div>
         </details>
       ) : null;
@@ -238,7 +311,7 @@ function ItemView({ ui, onOpenFile, onOpenAgent }: ItemProps) {
       return (
         <details className="act">
           <summary>
-            <Icon name="terminal" size={13} />
+            <Icon name="terminal" size={14} />
             <span className="mono ellipsis" title={item.command}>
               {displayCommand(item.command)}
             </span>
@@ -254,12 +327,15 @@ function ItemView({ ui, onOpenFile, onOpenAgent }: ItemProps) {
           {item.changes.map((c) => {
             const { added, removed } = diffStat(c.diff);
             return (
-              <div key={c.path} className="act link" onClick={() => onOpenFile(c.path)} title={`Open ${c.path}`}>
-                <Icon name="edit" size={13} />
-                {CHANGE_WORD[c.kind.type]} <span className="mono">{basename(c.path)}</span>
+              <div key={c.path} className="file-card" onClick={() => onOpenFile(c.path)} title={`Open ${c.path}`}>
+                <span className="tile">
+                  <FileIcon name={c.path} />
+                </span>
+                <span className="muted">{CHANGE_WORD[c.kind.type]}</span>
+                <span className="name ellipsis">{basename(c.path)}</span>
                 {added > 0 && <span className="plus">+{added}</span>}
                 {removed > 0 && <span className="minus">-{removed}</span>}
-                {item.status !== "completed" && <span className="muted"> {item.status === "inProgress" ? "applying…" : item.status}</span>}
+                {item.status !== "completed" && <span className="muted">{item.status === "inProgress" ? "applying…" : item.status}</span>}
               </div>
             );
           })}
@@ -268,14 +344,16 @@ function ItemView({ ui, onOpenFile, onOpenAgent }: ItemProps) {
     case "plan":
       return (
         <details className="act" open>
-          <summary>Plan</summary>
+          <summary>
+            <Icon name="list" size={14} /> Plan <Caret />
+          </summary>
           <pre className="act-body">{item.text}</pre>
         </details>
       );
     case "subAgentActivity":
       return (
         <div className="act link" onClick={() => onOpenAgent(item.agentThreadId)} title="Watch this agent">
-          <Icon name="agent" size={13} />
+          <Icon name="agent" size={14} />
           Sub-agent {item.kind} <span className="mono">{item.agentPath || agentName(item.agentThreadId)}</span>
           {item.model && <span className="muted"> · {item.model}</span>}
         </div>
@@ -285,14 +363,14 @@ function ItemView({ ui, onOpenFile, onOpenAgent }: ItemProps) {
         <>
           {item.receiverThreadIds.map((id) => (
             <div key={id} className="act link" onClick={() => onOpenAgent(id)} title="Watch this agent">
-              <Icon name="agent" size={13} />
+              <Icon name="agent" size={14} />
               {item.tool} <span className="mono">{agentName(id)}</span>
               {item.agentsStates[id] && <span className="muted"> · {item.agentsStates[id]?.status}</span>}
             </div>
           ))}
           {item.receiverThreadIds.length === 0 && (
             <div className="act">
-              <Icon name="agent" size={13} />
+              <Icon name="agent" size={14} />
               {item.tool} <span className="muted">{item.status === "inProgress" ? "…" : item.status}</span>
             </div>
           )}
@@ -301,7 +379,7 @@ function ItemView({ ui, onOpenFile, onOpenAgent }: ItemProps) {
     case "mcpToolCall":
       return (
         <div className="act">
-          <Icon name="tool" size={13} />
+          <Icon name="tool" size={14} />
           Tool <span className="mono">{item.server}.{item.tool}</span>
           {item.status !== "completed" && <span className="muted"> {item.status}</span>}
         </div>
@@ -309,7 +387,9 @@ function ItemView({ ui, onOpenFile, onOpenAgent }: ItemProps) {
     default:
       return (
         <details className="act">
-          <summary>{item.type}</summary>
+          <summary>
+            <Icon name="tool" size={14} /> {item.type} <Caret />
+          </summary>
           <pre className="act-body mono">{JSON.stringify(item, null, 1)}</pre>
         </details>
       );
@@ -332,7 +412,9 @@ function ApprovalView({ approval }: { approval: Approval }) {
       )}
       {approval.params.reason && <div className="muted small">{approval.params.reason}</div>}
       <div className="row">
-        <button onClick={() => resolve("accept")}>Allow</button>
+        <button className="primary" onClick={() => resolve("accept")}>
+          Allow
+        </button>
         <button onClick={() => resolve("acceptForSession")}>Allow for session</button>
         <button className="danger" onClick={() => resolve("decline")}>
           Deny

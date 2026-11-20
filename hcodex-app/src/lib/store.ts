@@ -369,6 +369,14 @@ const CHAT_INSTRUCTIONS =
   "Do not try to edit files or run project commands; the sandbox is read-only.";
 
 const CHAT_PERMISSIONS = { approvalPolicy: "never", sandbox: "read-only", developerInstructions: CHAT_INSTRUCTIONS };
+const CODE_PERMISSIONS = { approvalPolicy: "on-request", sandbox: "workspace-write" };
+
+/**
+ * Sent on every start, resume and fork. The app-server does not carry a session's sandbox
+ * over: without these, a resumed or forked thread gets the config default for its folder,
+ * which is read-only unless the folder is a trusted project.
+ */
+const permissionsFor = (kind: SessionKind | undefined) => (kind === "chat" ? CHAT_PERMISSIONS : CODE_PERMISSIONS);
 
 /**
  * Per-thread config overrides. `[agents] default_subagent_model` names a model of the default
@@ -387,18 +395,18 @@ export async function startThread(cwd: string, choice: ModelChoice | null, opts:
     cwd,
     model: choice?.model || null,
     modelProvider: choice?.provider || null,
-    ...(opts.kind === "chat" ? CHAT_PERMISSIONS : { approvalPolicy: "on-request", sandbox: "workspace-write" }),
+    ...permissionsFor(opts.kind),
     ...configOverrides(choice, opts.defaultProvider ?? ""),
   });
   return adopt(r);
 }
 
 /**
- * Load a saved thread so it can continue; fills its history. A code session keeps the
- * permissions it was recorded with; a chat session is always reopened read-only.
+ * Load a saved thread so it can continue; fills its history. A code session is reopened
+ * writable inside its workspace, a chat session read-only, whatever they were recorded with.
  */
 export async function resumeThread(threadId: string, kind: SessionKind = "code"): Promise<string> {
-  const r = await rpc.request<ThreadResumeResponse>("thread/resume", { threadId, ...(kind === "chat" ? CHAT_PERMISSIONS : {}) });
+  const r = await rpc.request<ThreadResumeResponse>("thread/resume", { threadId, ...permissionsFor(kind) });
   const id = adopt(r);
   setHistory(id, r.thread.turns);
   return id;
@@ -411,7 +419,7 @@ export async function switchProvider(threadId: string, cwd: string, choice: Mode
       threadId,
       modelProvider: choice.provider,
       model: choice.model,
-      ...(opts.kind === "chat" ? CHAT_PERMISSIONS : {}),
+      ...permissionsFor(opts.kind),
       ...configOverrides(choice, opts.defaultProvider ?? ""),
     });
     const id = adopt(r);
