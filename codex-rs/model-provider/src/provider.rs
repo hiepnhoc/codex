@@ -816,3 +816,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 #[path = "provider_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "provider_hcodex_tests.rs"]
+mod hcodex_tests;

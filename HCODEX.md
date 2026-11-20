@@ -17,7 +17,7 @@ Branch `my-harness` trong repo này. Binary tên `hcodex`, tách hoàn toàn kh�
 | Catalog của proxy được chuẩn hoá thành prompt harness trung lập cho mọi model (GPT, Claude, Gemini, Qwen, GLM…), kể cả catalog file; cache model gắn identity provider+auth (cơ chế upstream) và không trộn catalog OpenAI bundled vào | `codex-rs/model-provider/src/local_proxy_models.rs`, `codex-rs/model-provider/src/provider.rs`, `codex-rs/models-manager/src/manager.rs` |
 | `/provider` trong TUI: thêm provider (id, base URL, key) → kiểm tra `/models` → chọn model → ghi config + profile; `/model` gộp model của mọi provider, chọn là đổi provider **giữ nguyên hội thoại** (fork thread); `/provider use <id> [model]` là đường tắt | `codex-rs/tui/src/bottom_pane/provider_setup_view.rs`, `codex-rs/tui/src/chatwidget/provider_setup.rs`, `codex-rs/tui/src/app/provider_setup.rs` |
 | ~~Thread chạy tiếp trên provider nó đã ghi khi profile/`/model` chọn provider khác~~: từ sync 19/11/2026 upstream tự làm việc này (`e115d5f90d`), bản vá hcodex đã gỡ. Cờ `[features] thread_keeps_provider` còn lại như cờ rỗng để config cũ không báo lỗi | `codex-rs/features/src/lib.rs` (cờ rỗng), test canh `thread_on_other_configured_provider_stays_writable` trong `codex-rs/app-server/src/config_manager_provider_tests.rs` |
-| HTTP 429 từ provider **không phải OpenAI** được retry ở lớp HTTP, tôn trọng `Retry-After` (codex gốc không retry 429) | `codex-rs/model-provider-info/src/lib.rs` (`retry_429`), `codex-rs/codex-client/src/retry.rs` |
+| HTTP 429 từ provider **không phải OpenAI** được retry ở lớp HTTP, tôn trọng `Retry-After` (codex gốc không retry 429) | `codex-rs/model-provider-info/src/lib.rs` (`retry_429`), `codex-rs/codex-client/src/retry.rs` (1 dòng gọi) + `retry/hcodex_rate_limit.rs` |
 | `server_is_overloaded`, SSE rate-limit và HTTP `usage_limit_reached` từ proxy được retry cấp turn (2s→30s/lần, tối đa `stream_max_retries`) thay vì kết thúc turn giả; OpenAI chính chủ giữ semantics upstream | `codex-rs/core/src/session/turn.rs`, `codex-rs/core/src/responses_retry.rs` (+ test `core/tests/suite/hcodex_overload_retry.rs`) |
 | Tool kiểu `namespace` (multi-agent v2 `collaboration`, MCP `mcp__<server>`) được **trải phẳng** thành function `<namespace>__<tool>` cho provider không phải OpenAI (proxy/gateway bỏ qua tool type lạ → model mất tool); call trả về được map lại đúng handler | `codex-rs/core/src/tools/flat_namespaces.rs`, `codex-rs/core/src/tools/router.rs`, `codex-rs/model-provider-info/src/capabilities.rs` (`responses_extensions`) |
 | Item `agent_message` (task gửi cho subagent, final answer gửi về cha) được render thành message `user` thuần cho provider không phải OpenAI (proxy bỏ item lạ → subagent không nhận task) | `codex-rs/core/src/client_common.rs` (`render_agent_messages_as_plain_text`), `codex-rs/core/src/client.rs` |
@@ -57,6 +57,44 @@ với màn quản lý provider của upstream.
 Số đo lần sync 19/11 (880 commit upstream): 75 commit harness, chỉ 12 commit đụng file bị
 conflict, 16 file conflict; `hcodex-app/` và `docs/hcodex-skills/` không gây conflict nào.
 
+### Diện tích vá lõi và cách giữ nó nhỏ (rà 19/11/2026)
+
+Đo bằng `git diff --numstat --diff-filter=M main my-harness`: harness sửa **76 file của
+upstream** (khoảng 1.940 dòng thêm, 88 dòng bớt) và thêm 370 file riêng. 26 trong 76 file là vá
+TUI (khối sub-agent, `/subagents`, bộ chọn `/model`); khi app desktop thay được các màn đó thì
+nhóm này bỏ được.
+
+Conflict tăng theo khoảng cách sync, không theo số file vá: 880 commit upstream → 16 file
+conflict; 72 commit → 1 file. 16 file lần 19/11 chia theo tính năng: chọn model/provider 6, hai
+cờ `plugin_marketplace_auto_upgrade` + `agent_role_provider` 4, bảng `/subagents` 2, đổi tên +
+`ProviderCredential` 2, `thread_keeps_provider` 2 (đã bỏ).
+
+Quy ước áp dụng từ 19/11/2026 cho mọi bản vá lõi:
+
+- **Test của hcodex không viết nối vào file test của upstream.** Đặt trong file riêng
+  `<tên>_hcodex_tests.rs` cạnh file nguồn, móc bằng 3 dòng ngay sau `mod tests;` của upstream:
+  `#[cfg(test)] #[path = "<tên>_hcodex_tests.rs"] mod hcodex_tests;`. Gate lọc theo
+  `hcodex_tests`. Hàm phụ trợ private của file test upstream thì chép lại bản nhỏ vào file
+  riêng. Đã chuyển: `models-manager/src/manager`, `core/src/agent/role`,
+  `app-server/src/config_manager`, `core/src/client_common`, `model-provider/src/provider`,
+  `core/src/config` (`config_hcodex_tests.rs`), `core/src/responses_retry`. Chưa chuyển vì dựa
+  nặng vào helper của upstream và nằm giữa file: 2 test trong `core/src/tools/spec_plan_tests.rs`,
+  1 test trong `core/tests/suite/model_switching.rs`.
+- **Khối code lớn không nằm nhờ trong file upstream.** Tách ra module con, file upstream chỉ
+  giữ dòng `mod` và dòng gọi: `models-manager/src/config/model_overrides.rs` (trước là 371
+  dòng trong `config.rs` vốn 12 dòng), `codex-client/src/retry/hcodex_rate_limit.rs`.
+- **File sinh tự động không trộn tay**: `core/config.schema.json`, `Cargo.lock`, `*.snap`. Khi
+  rebase conflict ở các file này, `sync-upstream.sh` lấy bản upstream, ghi tên file vào
+  `.git/hcodex-regen`, rồi sinh lại trước gate (`codex-write-config-schema`, test TUI với
+  `INSTA_UPDATE=always`, `cargo metadata`) và commit "Regenerate generated files after sync".
+- **Lịch sử nhánh gọn**: mỗi vùng lõi chỉ do một commit đụng tới, nếu không rebase sẽ conflict
+  lại ở từng commit cũ. Ngày 19/11 gộp 77 commit harness thành 1 commit squash (lịch sử cũ ở tag
+  `harness-pre-squash-20261119T145649Z`); lịch sử `hcodex-app/` giữ nguyên vì không đụng lõi.
+
+`codex-client` có `test = false` trong `[lib]` (của upstream), nên 3 test trong
+`retry/hcodex_rate_limit.rs` không bao giờ chạy trong `cargo test`; muốn chạy thì tạm đổi thành
+`test = true` rồi `cargo test -p codex-client --lib -- hcodex_rate_limit` (19/11: 3/3 qua).
+
 ## App desktop: `hcodex-app/` (gộp vào repo 19/11/2026)
 
 Trước đây là repo riêng `~/github/codex-ide` (không có remote). Gộp vào đây bằng
@@ -68,8 +106,8 @@ bundle `com.hiepln.hcodex-app`).
 App **không link mã của lõi**: vỏ Tauri gọi `hcodex app-server` làm tiến trình con và nói
 JSON-RPC. Thứ duy nhất lấy từ lõi là bộ kiểu TypeScript trong `hcodex-app/src/protocol/`, giờ
 **không commit** mà do `scripts/gen-protocol.mjs` sinh từ binary hcodex đang cài ở đầu
-`pnpm dev` / `pnpm build` (chỉ sinh lại khi binary đổi). Sau mỗi lần sync:
-`cd hcodex-app && pnpm build` vừa sinh lại kiểu vừa để `tsc` báo chỗ giao thức đổi.
+`pnpm dev` / `pnpm build` (chỉ sinh lại khi binary đổi). Sau mỗi lần sync,
+`sync-upstream.sh` tự chạy `pnpm build` ở đây: vừa sinh lại kiểu vừa để `tsc` báo chỗ giao thức đổi.
 
 ```bash
 cd hcodex-app && pnpm install
@@ -1144,6 +1182,7 @@ Mô hình branch:
 Đồng bộ + rebuild bằng 1 lệnh:
 
 ```bash
+scripts/sync-upstream.sh --check     # fetch + giả lập merge: tụt bao nhiêu commit, file nào sẽ conflict; không đổi gì
 scripts/sync-upstream.sh --dry-run   # xem main tụt bao nhiêu commit, upstream đụng file harness nào
 scripts/sync-upstream.sh             # fetch, ff main, rebase, build release, test gate, smoke, cài
 scripts/sync-upstream.sh --no-build  # chỉ đồng bộ git
@@ -1180,9 +1219,24 @@ upstream, hôm sau chạy sync tay (hoặc nhờ agent) để sửa conflict. T�
 `launchctl unload ~/Library/LaunchAgents/com.hiepln.hcodex-sync.plist`; chạy thử ngay:
 `launchctl start com.hiepln.hcodex-sync`.
 
-**Trạng thái 19/11/2026**: job không còn được cài (không có `com.hiepln.hcodex-sync.plist` trong
-`~/Library/LaunchAgents`); lần chạy cuối trong `sync.log` là 06/11 02:20 (conflict). Muốn bật lại thì
-tạo lại plist; chưa bật lại vì 3 đêm liền đều conflict.
+**Từ 19/11/2026 job đêm chỉ kiểm tra, không tự sync.** Job cũ (`--unattended`, tự rebase +
+build + cài) bị gỡ sau 3 đêm conflict liên tiếp (lần chạy cuối 06/11). Job mới cùng label
+`com.hiepln.hcodex-sync` chạy `scripts/sync-upstream.sh --check` lúc 02:07 (máy ngủ thì chạy khi
+thức): fetch upstream, giả lập merge bằng `git merge-tree`, ghi kết quả vào
+`~/.hcodex/sync-status.txt` và `~/.hcodex/log/sync-check.log`, hiện thông báo macOS
+"upstream +N commit, M file conflict". Không đổi nhánh, không build. Exit 2 khi có file viết
+tay sẽ conflict. Thấy số commit lớn dần hoặc bắt đầu có conflict thì chạy sync tay.
+
+```bash
+scripts/sync-upstream.sh --install-nightly     # tạo plist + nạp vào launchd
+scripts/sync-upstream.sh --uninstall-nightly   # gỡ
+cat ~/.hcodex/sync-status.txt                  # kết quả lần kiểm tra gần nhất
+```
+
+Sau khi cài binary mới, script tự chạy `pnpm build` trong `hcodex-app/` (nếu đã
+`pnpm install`): kiểu giao thức được sinh lại từ binary vừa cài, build hỏng nghĩa là upstream
+đổi thứ app đang dùng; log ở `~/.hcodex/log/hcodex-app-build.log`. Lỗi này chỉ cảnh báo, không
+chặn việc cài.
 
 **Máy thiếu RAM khi build**: supervisor của session (và macOS) kill cargo ở bước
 link test TUI hoặc link binary release. Cách đã dùng ngày 12/10/2026: chạy gate

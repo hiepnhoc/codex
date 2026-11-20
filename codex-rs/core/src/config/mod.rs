@@ -5477,3 +5477,7 @@ mod config_loader_tests;
 #[cfg(test)]
 #[path = "runtime_auth_tests.rs"]
 mod runtime_auth_tests;
+
+#[cfg(test)]
+#[path = "config_hcodex_tests.rs"]
+mod hcodex_tests;

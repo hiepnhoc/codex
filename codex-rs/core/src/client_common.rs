@@ -272,3 +272,7 @@ impl Stream for ResponseStream {
 #[cfg(test)]
 #[path = "client_common_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "client_common_hcodex_tests.rs"]
+mod hcodex_tests;

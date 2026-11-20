@@ -1295,3 +1295,7 @@ fn construct_model_info(
 #[cfg(test)]
 #[path = "manager_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "manager_hcodex_tests.rs"]
+mod hcodex_tests;

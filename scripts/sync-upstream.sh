@@ -8,6 +8,10 @@
 # Usage:
 #   scripts/sync-upstream.sh              full sync + build + gate + install
 #   scripts/sync-upstream.sh --dry-run    fetch and report what would change
+#   scripts/sync-upstream.sh --check      fetch, simulate the merge, report how far behind and which files
+#                                         would conflict (changes nothing; this is what the nightly job runs)
+#   scripts/sync-upstream.sh --install-nightly / --uninstall-nightly
+#                                         add/remove the launchd job that runs --check every night
 #   scripts/sync-upstream.sh --no-build   git sync only
 #   scripts/sync-upstream.sh --build-only skip git, just build + gate + install
 #   scripts/sync-upstream.sh --rollback   reinstall the binaries backed up by the last run
@@ -50,6 +54,138 @@ harness_files() {
 }
 
 say() { printf '\n==> %s\n' "$*"; }
+
+# Files that are generated from the code. A conflict in one of these is never
+# merged by hand: the sync takes upstream's copy and regenerates it afterwards.
+GENERATED_RE='^codex-rs/core/config\.schema\.json$|^codex-rs/Cargo\.lock$|^codex-rs/.*/snapshots/.*\.snap$'
+REGEN_MARKER="$(git rev-parse --absolute-git-dir)/hcodex-regen"
+NIGHTLY_LABEL="com.hiepln.hcodex-sync"
+NIGHTLY_PLIST="$HOME/Library/LaunchAgents/$NIGHTLY_LABEL.plist"
+
+# --check: no working-tree or branch change. Fetches upstream, simulates merging
+# it into the harness, and reports the distance and the files that would conflict.
+check_only() {
+  git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/openai/codex.git
+  mkdir -p "$HCODEX_HOME/log"
+  local status="$HCODEX_HOME/sync-status.txt" stamp behind conflicts real n_real n_gen msg
+  stamp="$(date '+%F %T')"
+  if ! git fetch -q upstream --prune; then
+    msg="$stamp check: fetch upstream failed"
+    echo "$msg"; echo "$msg" >"$status"
+    exit 1
+  fi
+  behind="$(git rev-list --count "$BRANCH..upstream/main")"
+  conflicts="$(git merge-tree --write-tree --name-only upstream/main "$BRANCH" 2>/dev/null | sed -n '2,/^$/p' | sed '/^$/d' || true)"
+  real="$(grep -vE "$GENERATED_RE" <<<"$conflicts" | sed '/^$/d' || true)"
+  n_real="$(sed '/^$/d' <<<"$real" | wc -l | tr -d ' ')"
+  n_gen="$(grep -cE "$GENERATED_RE" <<<"$conflicts" || true)"
+  msg="$stamp check: upstream is $behind commit(s) ahead; $n_real file(s) would conflict"
+  [[ "$n_gen" != "0" ]] && msg="$msg (+$n_gen generated, handled automatically)"
+  echo "$msg"
+  [[ -n "$real" ]] && sed 's/^/  conflict: /' <<<"$real"
+  { echo "$msg"; [[ -n "$real" ]] && sed 's/^/  conflict: /' <<<"$real"; true; } >"$status"
+  if [[ "$behind" != "0" ]] && command -v osascript >/dev/null 2>&1; then
+    osascript -e "display notification \"upstream +$behind commit, $n_real file conflict\" with title \"hcodex sync\"" >/dev/null 2>&1 || true
+  fi
+  [[ "$n_real" == "0" ]] || exit 2
+  exit 0
+}
+
+install_nightly() {
+  mkdir -p "$HOME/Library/LaunchAgents" "$HCODEX_HOME/log"
+  cat >"$NIGHTLY_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$NIGHTLY_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$ROOT/scripts/sync-upstream.sh</string>
+    <string>--check</string>
+  </array>
+  <key>WorkingDirectory</key><string>$ROOT</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>7</integer></dict>
+  <key>StandardOutPath</key><string>$HCODEX_HOME/log/sync-check.log</string>
+  <key>StandardErrorPath</key><string>$HCODEX_HOME/log/sync-check.log</string>
+</dict>
+</plist>
+PLIST
+  launchctl bootout "gui/$(id -u)/$NIGHTLY_LABEL" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$NIGHTLY_PLIST"
+  echo "installed $NIGHTLY_PLIST: runs --check daily at 02:07 (or at the next wake)"
+  echo "log: $HCODEX_HOME/log/sync-check.log   last result: $HCODEX_HOME/sync-status.txt"
+  exit 0
+}
+
+uninstall_nightly() {
+  launchctl bootout "gui/$(id -u)/$NIGHTLY_LABEL" 2>/dev/null || true
+  rm -f "$NIGHTLY_PLIST"
+  echo "removed $NIGHTLY_PLIST"
+  exit 0
+}
+
+# Called when `git rebase` stops. While every conflicted file is a generated one,
+# take upstream's copy, remember the file for regen_generated, and carry on.
+# Returns 1 as soon as a hand-written file conflicts (left for a human).
+resolve_generated_conflicts() {
+  local git_dir conflicted other f
+  git_dir="$(git rev-parse --absolute-git-dir)"
+  while [[ -d "$git_dir/rebase-merge" || -d "$git_dir/rebase-apply" ]]; do
+    conflicted="$(git diff --name-only --diff-filter=U)"
+    [[ -n "$conflicted" ]] || return 1
+    other="$(grep -vE "$GENERATED_RE" <<<"$conflicted" || true)"
+    [[ -z "$other" ]] || return 1
+    while IFS= read -r f; do
+      git checkout --ours -- "$f" && git add -- "$f" || return 1
+      echo "$f" >>"$REGEN_MARKER"
+      echo "generated file conflicted; took upstream's copy, will regenerate: $f"
+    done <<<"$conflicted"
+    if git diff --cached --quiet; then
+      git rebase --skip || true
+    else
+      GIT_EDITOR=true git rebase --continue || true
+    fi
+  done
+  return 0
+}
+
+# Rebuild the generated files recorded by resolve_generated_conflicts from the
+# harness code and commit them. Runs inside build_gate_install (cargo env is set).
+regen_generated() {
+  [[ -s "$REGEN_MARKER" ]] || return 0
+  say "regenerate generated files"
+  local files f name filters=()
+  files="$(sort -u "$REGEN_MARKER")"
+  sed 's/^/  /' <<<"$files"
+  if grep -q 'config\.schema\.json$' <<<"$files"; then
+    cargo run -q -p codex-config-schema --bin codex-write-config-schema
+  fi
+  while IFS= read -r f; do
+    [[ "$f" == codex-rs/tui/*.snap ]] || continue
+    name="${f##*/}"; name="${name%.snap}"
+    filters+=("${name##*__}")
+  done <<<"$files"
+  if (( ${#filters[@]} > 0 )); then
+    # insta rewrites the .snap files in place; a failing assertion elsewhere is the gate's job.
+    INSTA_UPDATE=always RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}" \
+      cargo test -q -j "${BUILD_JOBS:-4}" -p codex-tui -- "${filters[@]}" || true
+  fi
+  cargo metadata --format-version 1 >/dev/null   # completes Cargo.lock for harness-only deps
+  (
+    cd "$ROOT"
+    while IFS= read -r f; do git add -- "$f"; done <<<"$files"
+    if ! git diff --cached --quiet; then
+      git commit -q -m "Regenerate generated files after sync onto $(git rev-parse --short main)"
+      echo "committed regenerated files"
+    fi
+  )
+  rm -f "$REGEN_MARKER"
+}
 
 rollback() {
   [[ -x "$BACKUP_DIR/hcodex" ]] || { echo "no backup in $BACKUP_DIR" >&2; exit 1; }
@@ -103,7 +239,7 @@ git_sync() {
 
   say "rebase $BRANCH onto main"
   git checkout -q "$BRANCH"
-  if ! git rebase main; then
+  if ! git rebase main && ! resolve_generated_conflicts; then
     if [[ "$UNATTENDED" == "1" ]]; then
       echo "rebase conflict in unattended mode; aborting and restoring $tag" >&2
       git diff --name-only --diff-filter=U | sed 's/^/  conflict: /' >&2
@@ -165,6 +301,8 @@ build_gate_install() {
     echo "backed up installed binaries to $BACKUP_DIR"
   fi
 
+  regen_generated
+
   if [[ "${SKIP_TESTS:-}" != "1" ]]; then
     say "test gate (harness unit tests)"
     export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"   # core/tui tests overflow the default stack (see justfile)
@@ -186,7 +324,8 @@ build_gate_install() {
       return 1
     }
     gate_run -p codex-core --test all -- hcodex_overload_retry model_overrides first_turn_model_change
-    gate_run -p codex-core --lib -- flat_namespaces hcodex_namespace spec_plan::tests::multi_agent agent::role::tests
+    # `hcodex_tests` matches the harness-only test modules (`*_hcodex_tests.rs`).
+    gate_run -p codex-core --lib -- flat_namespaces hcodex_namespace spec_plan::tests::multi_agent agent::role::tests hcodex_tests
     # Skip upstream GCP/Bedrock credential-process tests: they spawn `sh` with a 5 s
     # deadline and time out whenever this machine is swapping (not harness code).
     gate_run -p codex-models-manager -p codex-model-provider -p codex-model-provider-info -p codex-features -- --skip credential_export --skip credential_files_scope_token
@@ -218,7 +357,20 @@ build_gate_install() {
     rm -rf target/debug
     echo "cleaned target/debug (disk free: $(df -h . | awk 'NR==2{print $4}'))"
   fi
-  echo "reminder: check the desktop app against the new protocol -> cd $ROOT/hcodex-app && pnpm build"
+  # The desktop app generates its protocol types from the hcodex just installed;
+  # a failed build here means upstream changed something the app uses.
+  if [[ -d "$ROOT/hcodex-app/node_modules" ]] && command -v pnpm >/dev/null 2>&1; then
+    say "desktop app against the new protocol (hcodex-app: pnpm build)"
+    mkdir -p "$HCODEX_HOME/log"
+    if (cd "$ROOT/hcodex-app" && pnpm -s build) >"$HCODEX_HOME/log/hcodex-app-build.log" 2>&1; then
+      echo "hcodex-app: builds against the new hcodex"
+    else
+      echo "WARNING: hcodex-app no longer builds against this hcodex (protocol changed?)." >&2
+      echo "         log: $HCODEX_HOME/log/hcodex-app-build.log" >&2
+    fi
+  else
+    echo "reminder: check the desktop app against the new protocol -> cd $ROOT/hcodex-app && pnpm install && pnpm build"
+  fi
   if [[ "$UNATTENDED" == "1" ]]; then
     git push -q origin "$BRANCH" 2>/dev/null && echo "pushed $BRANCH to origin" || echo "(push to origin skipped/failed)"
     echo "===== $(date '+%F %T') unattended sync: OK, installed $(git -C "$ROOT" rev-parse --short HEAD) ====="
@@ -226,6 +378,9 @@ build_gate_install() {
 }
 
 case "$MODE" in
+  --check) check_only ;;
+  --install-nightly) install_nightly ;;
+  --uninstall-nightly) uninstall_nightly ;;
   --build-only) build_gate_install ;;
   --no-build|--dry-run) git_sync ;;
   "") git_sync; build_gate_install ;;

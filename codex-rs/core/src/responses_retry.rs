@@ -297,3 +297,7 @@ fn log_retry(
 #[cfg(test)]
 #[path = "responses_retry_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "responses_retry_hcodex_tests.rs"]
+mod hcodex_tests;

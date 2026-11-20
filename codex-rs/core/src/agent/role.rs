@@ -428,3 +428,7 @@ Rules:
 #[cfg(test)]
 #[path = "role_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "role_hcodex_tests.rs"]
+mod hcodex_tests;
