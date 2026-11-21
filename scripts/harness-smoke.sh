@@ -3,8 +3,10 @@
 #   1. it runs and reports a version
 #   2. the request it sends to a third-party provider does not open by calling itself
 #      Codex / OpenAI / GPT (offline: a local recording server stands in for the provider)
-#   3. `/model` data comes from the provider (GET {base_url}/models), not the OpenAI catalog
-#   4. a turn round-trips through the default provider (local proxy)
+#   3. `/model` data comes from the provider (GET {base_url}/models), not the OpenAI catalog:
+#      for the default provider of the real config when it names one, else for the binary's
+#      built-in local proxy
+#   4. built-in local proxy only: a turn round-trips through it
 #   5. a turn round-trips through each provider/model pair listed in
 #      ~/.hcodex/smoke-turns.txt (lines `provider model`), using the real ~/.hcodex config
 #
@@ -119,14 +121,10 @@ else
   echo "request identity: neutral opening for $(wc -w <<<"$IDENTITY_MODELS" | tr -d ' ') model families"
 fi
 
-# ---------------------------------------------------------------- 3 + 4. default provider
-if ! curl -fsS -m 3 "$PROXY/models" -o "$TMP/models.json"; then
-  echo "WARN: default proxy $PROXY not reachable; skipping its model list and turn"
-else
-  want="$(python3 -c "import json;print(len(json.load(open('$TMP/models.json'))['data']))")"
-
-  # model listing via app-server (same path the TUI /model uses)
-  node - "$BIN" <<'EOF' > "$TMP/list.txt" || true
+# Model ids as the app-server lists them (the path the TUI /model and the desktop app use).
+# Runs on whatever home is in effect: the throwaway one, or the real one under `env -u CODEX_HOME`.
+list_models() {
+  node - "$BIN" <<'EOF' || true
 const { spawn } = require("node:child_process");
 const rl = require("node:readline");
 const bin = process.argv[2];
@@ -144,6 +142,43 @@ const timer = setTimeout(() => { console.log("TIMEOUT"); child.kill(); process.e
   clearTimeout(timer); child.kill(); process.exit(0);
 })().catch((e) => { console.log("ERROR " + e.message); child.kill(); process.exit(1); });
 EOF
+}
+
+# ---------------------------------------------------------------- 3 + 4. default provider
+# The default that matters is the one in the real config. When it names a provider other than
+# the binary's built-in local proxy, check that one: its models through the app-server, on the
+# real home. Its turn is one of the smoke-turns lines below.
+CONFIGURED="$(python3 -I - "$REAL_HOME/config.toml" <<'EOF' 2>/dev/null || true
+import sys, tomllib
+config = tomllib.load(open(sys.argv[1], 'rb'))
+provider = config.get('model_provider', '')
+base = config.get('model_providers', {}).get(provider, {}).get('base_url', '')
+print(provider, config.get('model', ''), base)
+EOF
+)"
+read -r CONFIGURED_PROVIDER CONFIGURED_MODEL CONFIGURED_URL <<<"$CONFIGURED" || true
+if [[ -n "$CONFIGURED_PROVIDER" && "$CONFIGURED_PROVIDER" != "local-proxy" ]]; then
+  key="$(env -u CODEX_HOME "$BIN" provider-credential "$CONFIGURED_PROVIDER" 2>/dev/null || true)"
+  direct="$(curl -s -m 8 -o /dev/null -w '%{http_code}' ${key:+-H "Authorization: Bearer $key"} "$CONFIGURED_URL/models" || true)"
+  if [[ "$direct" != "200" ]]; then
+    echo "WARN: configured default provider $CONFIGURED_PROVIDER answers HTTP ${direct:-000} for its model list; skipped (provider side, not hcodex)"
+  else
+    (cd "$ORIG_PWD" && unset CODEX_HOME && list_models) > "$TMP/list.txt"
+    got="$(grep -c . "$TMP/list.txt" || true)"
+    if grep -q "TIMEOUT\|ERROR" "$TMP/list.txt" || [[ "$got" -lt 1 ]]; then
+      echo "FAIL: $CONFIGURED_PROVIDER lists models directly, but model/list through hcodex returned nothing usable:"; head -5 "$TMP/list.txt"; FAILED=1
+    elif [[ -n "$CONFIGURED_MODEL" ]] && ! grep -qx "$CONFIGURED_MODEL" "$TMP/list.txt"; then
+      echo "FAIL: configured default model $CONFIGURED_MODEL is not in model/list of $CONFIGURED_PROVIDER (got $got models)"; FAILED=1
+    else
+      echo "model/list: $got models from the configured default provider $CONFIGURED_PROVIDER (default model $CONFIGURED_MODEL listed)"
+    fi
+  fi
+elif ! curl -fsS -m 3 "$PROXY/models" -o "$TMP/models.json"; then
+  echo "WARN: default proxy $PROXY not reachable; skipping its model list and turn"
+else
+  want="$(python3 -c "import json;print(len(json.load(open('$TMP/models.json'))['data']))")"
+
+  list_models > "$TMP/list.txt"
   got="$(grep -c . "$TMP/list.txt" || true)"
   DEFAULT_MODEL="${HCODEX_DEFAULT_MODEL:-claude-sonnet-5.5}"   # LOCAL_PROXY_DEFAULT_MODEL in model-provider-info
   if grep -q "TIMEOUT\|ERROR" "$TMP/list.txt" || [[ "$got" -lt 1 ]]; then

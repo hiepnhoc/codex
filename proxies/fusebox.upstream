@@ -1,0 +1,5 @@
+# Where proxies/fusebox/ comes from: the upstream release its tree is based on.
+# Rewritten by `scripts/fusebox.sh sync`; do not edit by hand.
+url=https://github.com/DigitalPals/Fusebox.git
+ref=v0.17.3
+commit=c24628fcb1af0ac6cab5fbc8f4f5d0908f2b3db5

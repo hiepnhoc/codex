@@ -186,6 +186,146 @@ câu trả lời, gộp nhiều dòng Thought/lệnh liên tiếp thành một d
 
 Chưa làm: gói proxy vào app, đóng gói trong workflow `hcodex-release`.
 
+## Proxy trong repo: `proxies/fusebox/` (gộp vào 21/11/2026)
+
+Fusebox là proxy local đứng sau provider `hibox` (`http://127.0.0.1:8317/v1`): một cổng
+OpenAI/Claude/Gemini-compatible trên các tài khoản cá nhân, viết bằng Rust, giấy phép MIT. Trước
+đây nó là repo riêng `~/github/Fusebox` (fork của `DigitalPals/Fusebox`, nhánh `kiro`, 23 commit
+riêng, chủ yếu là provider Kiro). Giờ source nằm trong repo này, đúng nguyên tắc "một harness gồm
+CLI, app desktop, plugin, proxy".
+
+Kiro-Go (`~/github/Kiro-Go`, cổng 8181, provider `local-proxy`) **không** gộp: Fusebox đã có
+provider Kiro, user chốt 21/11 là không cần.
+
+Cách gộp: hai commit thường, không dùng `git subtree` (subtree tạo commit có file nằm ở gốc repo
+cộng một merge, mà `sync-upstream.sh` rebase `my-harness` nên sẽ làm vỡ):
+
+1. `proxies/fusebox: import Fusebox v0.17.3`: cây nguyên bản của upstream ở tag `v0.17.3`.
+2. `proxies/fusebox: hcodex changes on top of v0.17.3`: cây của nhánh `kiro` (`6501c4b`,
+   bản `0.17.3-hibox.1`, đúng source của binary đang chạy). Diff của commit này chính là phần
+   sửa riêng: 55 file, +7369 −132.
+
+Kiểm khi gộp: cây `proxies/fusebox` trùng byte với nhánh `kiro` của fork; nhánh đó đã public sẵn
+trên `hiepnhoc/FuseBox`; rà 23 commit riêng không có chuỗi dạng key, token hay email thật;
+`config.yaml` và `usage.sqlite3` vốn bị `.gitignore` nên không đi theo. Config, tài khoản và
+usage vẫn ở `~/.fusebox/`, không bao giờ vào git (test `SC-10` canh điều này).
+
+`proxies/fusebox.upstream` ghi bản upstream mà cây đang dựa trên (`url`, `ref`, `commit`).
+Tag `v*` của Fusebox được fetch vào `refs/fusebox/tags/*`, không lẫn vào tag của repo này.
+
+Mọi thao tác qua một script:
+
+```bash
+scripts/fusebox.sh status         # job launchd, bản đang cài / bản source, số model đang phục vụ
+scripts/fusebox.sh build          # cargo build --release trong proxies/fusebox (toolchain riêng 1.100.0)
+scripts/fusebox.sh install        # build, backup binary đang cài, thay, restart job, kiểm /v1/models; không lên thì tự trả bản cũ
+scripts/fusebox.sh rollback       # trả lại binary đã backup (~/.hcodex/backup/fusebox)
+scripts/fusebox.sh sync --check   # upstream có bản mới hơn bản đang dựa không
+scripts/fusebox.sh sync [tag]     # áp thay đổi của upstream từ bản đang dựa tới tag đó (3-way), để ở trạng thái staged
+```
+
+- Binary cài vẫn ở `~/.local/bin/fusebox` và job launchd vẫn là `com.fusebox.proxy`: gộp source
+  không đổi cách proxy chạy. `build.rs` của Fusebox đọc commit từ `.git` của chính thư mục nó, mà
+  thư mục con thì không có, nên script truyền `FUSEBOX_COMMIT` là commit cuối đụng tới proxy.
+- `sync` đã thử trên worktree tạm: đặt cây về `v0.17.2`, sync lên `v0.17.3`, kết quả trùng byte
+  với cây `v0.17.3` thật. Trường hợp có conflict với phần sửa riêng thì script dừng với mã 2 và
+  liệt kê file; chưa có dịp thử thật vì upstream chưa ra bản sau `v0.17.3`.
+- Build Fusebox **không** nằm trong `sync-upstream.sh`: hai upstream khác nhau, hỏng bên này
+  không nên chặn bên kia.
+
+**Trang Proxies trong app (`hcodex-app`, 21/11/2026).** Mục Proxies ở sidebar, mỗi proxy một
+thẻ: trạng thái job launchd (đang chạy / dừng / chưa cài, pid, chạy từ lúc nào), địa chỉ, provider
+và số model nó đang liệt kê, bản đang cài, nút Restart (bấm hai lần để xác nhận), tóm tắt 200
+dòng log cuối (số lỗi, cảnh báo, dòng rate-limit, cảnh báo gần nhất) và đuôi log tự làm mới 8
+giây. Tên tài khoản trong log bị che còn hai chữ đầu, bật lại bằng ô "Show account names".
+
+- Proxy vẫn do launchd nuôi, app chỉ là bảng điều khiển: tắt app thì `hcodex` trong terminal
+  vẫn có provider.
+- Danh sách proxy: Fusebox có sẵn trong code (`src/lib/proxies.ts`, vì nó nằm trong repo);
+  `~/.hcodex/proxies.json` (mảng cùng cấu trúc) thay danh sách đó khi có.
+- App không đọc key: trạng thái "đang phục vụ" lấy từ `model/list { modelProvider }` của
+  app-server. Trạng thái job và log đọc bằng `command/exec` với `sandboxPolicy:
+  dangerFullAccess`, vì trong sandbox mặc định `launchctl list` trả rỗng và `ps` bị chặn; giá
+  trị từ khai báo proxy được truyền làm tham số vị trí, không ghép vào chuỗi lệnh.
+- Kiểm qua browser pane trên proxy thật: thẻ hiện đúng (59 model, bản `0.17.3-hibox.1`); bấm
+  Restart khi proxy đang rảnh thì job đổi pid, log ghi "shutting down; finishing requests in
+  flight" rồi lên lại, vài giây sau đủ 59 model. Ngay sau restart số model hiện thấp hơn (41)
+  cho tới khi các tài khoản nạp xong.
+
+Từ repo cũ `~/github/Fusebox`: 4 file UI đang sửa dở (`ui/app.js`, `ui/playground.js`,
+`ui/i18n-zh.js`, `tests/ui-playground.test.cjs`: ô Model của "Try a model" thành danh sách chọn,
+bấm id model để thử) đã được áp nguyên văn sang `proxies/fusebox`; 2 test của nó qua. Một test
+khác (`ui-banked-reset-policy.test.cjs`, "Codex confirmation names the reset that expires
+first") hỏng trên máy này cả khi có lẫn không có thay đổi đó: nó so ngày theo UTC, máy ở UTC+7.
+Không mang sang: `docs/Kiro-Go/` (23 MB, bản chép Kiro-Go có cả thư mục `auth`, `data`),
+`HANDOFF.md` (có tên tài khoản), worktree `kiro-stream-estimate`.
+
+**Provider mặc định chuyển sang Fusebox (21/11/2026).** User chốt bỏ Kiro-Go vì Fusebox đã có
+provider Kiro. Chỉ đổi cấu hình trong `~/.hcodex`, không build lại lõi (bản backup cạnh mỗi file,
+đuôi `.bak-20261121-fusebox`):
+
+| File | Trước | Sau |
+|---|---|---|
+| `config.toml` | `model = "deepseek-3.2"`, không có `model_provider` (tức `local-proxy`, Kiro-Go `:8181`) | thêm `model_provider = "hibox"`; model giữ nguyên vì Fusebox cũng có `deepseek-3.2` |
+| `config.toml` `[agents]` | `default_subagent_model = "claude-sonnet-5.5"` | `"claude-sonnet-5-5"` (tên của Fusebox) |
+| `kr.config.toml` | `claude-opus-5.5` trên `local-proxy` | `claude-opus-5-5` trên `hibox` |
+| `sonnet.config.toml` | `claude-sonnet-5.5` trên `local-proxy` | `claude-sonnet-5-5` trên `hibox` |
+| `smoke-turns.txt` | 2 dòng | thêm `hibox deepseek-3.2`, `hibox claude-sonnet-5-5` |
+
+Quy tắc đổi tên model giữa hai proxy: Kiro-Go viết `claude-opus-5.5`, Fusebox viết
+`claude-opus-5-5`; Kiro-Go có biến thể `-thinking` và `-effort-<mức>`, Fusebox có hậu tố
+`-low/-medium/-high/-max`; `deepseek-3.2`, `glm-5`, `kimi-k3`, `minimax-m2.5`, `gpt-5.6-*` trùng tên.
+10 role trong `~/.hcodex/agents/` vốn đã chạy trên `hibox` từ trước nên không phải sửa.
+
+Kiểm sau khi đổi, bằng lượt thật: `hcodex exec` không cờ ra `provider: hibox`, `deepseek-3.2`,
+trả "pong" 11 giây; `-p kr` ra `claude-opus-5-5`, `-p sonnet` ra `claude-sonnet-5-5`; một lượt
+bảo spawn sub-agent thì thread con chạy `claude-sonnet-5-5` trên `hibox` và trả kết quả về cha;
+`harness-test.sh --live` qua (ca `LV-13`, `LV-14` giờ đối chiếu với catalog của `hibox`).
+
+Lưu ý rút ra khi kiểm: `hcodex exec --ephemeral` **không spawn được sub-agent** ("no rollout
+found for thread id …": phiên không ghi rollout thì con không nạp được ngữ cảnh của cha). Lần
+thử đầu tao dùng `--ephemeral`, model báo lỗi rồi tự bịa câu trả lời của sub-agent.
+
+**Kiro-Go đã tắt (21/11/2026, user bảo tắt).** `launchctl disable gui/$(id -u)/com.hiepln.kiro-go`
+rồi `launchctl bootout …`: job không còn nạp, cổng 8181 không ai nghe, và nó không tự chạy lại
+khi đăng nhập. Plist, binary và repo `~/github/Kiro-Go` vẫn nguyên. Bật lại: `launchctl enable
+gui/$(id -u)/com.hiepln.kiro-go` rồi `launchctl bootstrap gui/$(id -u)
+~/Library/LaunchAgents/com.hiepln.kiro-go.plist`. Job `dev.kiro.harness-provider` (cổng 5479) là
+dịch vụ khác, không đụng.
+
+Đi kèm:
+
+- `[tui] model_picker_providers` bỏ `local-proxy`, còn `["cliproxy", "hibox"]` (backup
+  `config.toml.bak-20261121-kirogo-off`).
+- `harness-smoke.sh`: bước kiểm danh sách model giờ lấy **provider mặc định trong
+  `~/.hcodex/config.toml`** khi có khai (`model/list` qua app-server trên home thật, phải có
+  model mặc định trong đó; provider không trả lời khi hỏi thẳng thì WARN). Chỉ khi config không
+  khai provider mới thử proxy mặc định của binary ở `:8181` như cũ. Sau khi tắt Kiro-Go smoke
+  ra: `model/list: 59 models from the configured default provider hibox`, 4 lượt thật qua
+  `hibox` đều ok, `smoke: PASS`.
+
+Những thứ còn trỏ vào `:8181`, giờ sẽ không chạy cho tới khi bật lại Kiro-Go:
+
+- Mặc định trong binary (`local-proxy`): chỉ có tác dụng khi `config.toml` không khai
+  `model_provider`, ví dụ một home trống.
+- Profile `proxy.config.toml` (`claude-opus-5-thinking` trên `local-proxy`): model này Kiro-Go
+  cũng không còn, profile đã chết từ trước.
+- Phiên cũ ghi trên `local-proxy`: mở lại sẽ gọi `:8181`. Trong TUI đổi sang model của `hibox`
+  bằng `/model` (fork sang provider khác, giữ hội thoại).
+- OpenViking: `~/.openviking/ov.conf` trước gọi VLM và query planner qua `:8181`. Đã đổi cả hai
+  sang `http://127.0.0.1:8317/v1`, model `claude-sonnet-5-5` (backup `ov.conf.bak-20261121-fusebox`;
+  Fusebox trả lời `/v1/chat/completions` cho model này, 4 giây). **Trường `api_key` chưa đổi**:
+  vẫn là giá trị giả dùng cho Kiro-Go, Fusebox sẽ từ chối. Server OpenViking không còn chạy và
+  plugin đã gỡ cùng ngày (xem ghi chú đầu mục OpenViking); khi cài lại thì chép key Fusebox vào
+  hai trường `api_key` rồi mới khởi động.
+
+Quay lại cấu hình cũ: chép các file `.bak-20261121-fusebox` đè lên file gốc và bật lại Kiro-Go.
+
+Chưa làm: cài binary build từ repo này lên proxy đang chạy (`scripts/fusebox.sh install`, cùng
+source với bản đang chạy cộng thay đổi UI ở trên); đổi mặc định trong binary khỏi `:8181`;
+trang tài khoản và usage của Fusebox trong app; test hcodex ↔ Fusebox thật trong bộ test
+harness (hiện chỉ có lượt thật qua `harness-smoke.sh` và ca `LV-22`).
+
 ## Yêu cầu
 
 - Rust toolchain: repo pin `1.95.0` trong `codex-rs/rust-toolchain.toml`
@@ -478,7 +618,7 @@ có `/chat/completions` hoặc API riêng (Anthropic, Gemini, Groq, DeepSeek…)
 
 | Provider | Cách bật | Ghi chú |
 |---|---|---|
-| `local-proxy` | (mặc định, không cần gì) | proxy `:8181`, 16 model claude/gpt |
+| `local-proxy` | mặc định của binary; từ 21/11/2026 `config.toml` đặt `model_provider = "hibox"` nên không còn là mặc định thực tế | proxy `:8181`, 16 model claude/gpt |
 | `hibox` | key trong `~/.hcodex/provider-credentials/hibox.token` (0600, đọc qua `hcodex provider-credential hibox`) | proxy local `:8317`, 27 model (gpt-6-*, gemini-3.x, claude-*); `hcodex -p hibox` = gpt-6-sol; có trong `/model` gộp (thêm 20/10/2026) |
 | `openrouter` | `export OPENROUTER_API_KEY=sk-or-...` | Responses API native (đã verify); ~427 model; list model không cần key, chạy turn mới cần |
 | `litellm` | chạy LiteLLM ở `:4000` (xem dưới) | gateway sang Anthropic/Gemini/Groq/DeepSeek… |
@@ -967,6 +1107,16 @@ chức năng thật.
 
 ## Memory + RAG cho repo lớn: OpenViking (07/10/2026)
 
+> **Trạng thái 21/11/2026: đã gỡ.** Server OpenViking không còn trên máy từ khoảng 6/11 (không
+> có job `ai.openviking.server`, không có binary, log server dừng ở 6/11), và plugin
+> `openviking-memory@openviking` đã được gỡ khỏi hcodex bằng `hcodex plugin remove` theo ý user
+> (backup `~/.hcodex/config.toml.bak-20261121-openviking`). Sau khi gỡ, `hcodex exec` chạy không
+> còn hook nào và `hc-approve-hooks.sh --dry-run` báo "nothing to approve". Còn lại, không ảnh
+> hưởng gì: mục `[marketplaces.openviking]` và 8 dòng `[hooks.state]` cũ trong `config.toml`, dữ
+> liệu ở `~/.openviking/` (không xoá), job `com.ollama.serve` vẫn chạy. Cài lại: `hcodex plugin
+> add openviking-memory@openviking`, dựng lại server, chép key Fusebox vào `ov.conf` (xem mục
+> "Proxy trong repo"). Phần dưới đây giữ lại làm tài liệu cho lúc cài lại.
+
 Vấn đề: mỗi session mới lại phải quét các module trong `digital-monorepo` → tốn
 token/thời gian. Giải pháp: [OpenViking](https://github.com/volcengine/OpenViking)
 (context DB: memory + RAG + skills, AGPL-3.0) chạy local, gắn vào **hcodex qua
@@ -1252,7 +1402,7 @@ Script bảo vệ mày thế nào:
   request cho 3 họ model (không cần mạng), `/model` phải lấy list từ proxy, 1 turn
   `exec` qua proxy mặc định, và 1 turn thật cho từng dòng `provider model` trong
   `~/.hcodex/smoke-turns.txt`. Sau smoke là `scripts/harness-test.sh` trên cùng binary
-  (113 ca với provider giả lập, khoảng 1 phút; xem mục "Bộ test của harness"). Fail ở
+  (117 ca với provider giả lập, khoảng 1 phút; xem mục "Bộ test của harness"). Fail ở
   bước nào thì binary cũ vẫn nguyên, không symlink đè. Provider tự chết hoặc hết quota
   chỉ là WARN, không chặn cài (chi tiết ở mục "Sự cố thường gặp").
 - Cảnh báo nếu `Cargo.lock` nâng `v8` khác với artifact V8 đang cache.
@@ -1372,8 +1522,8 @@ trong một home tạm trỏ vào provider đó, rồi kiểm cả hai đầu: h
 trả lời (kể cả 429, 500, stream đứt, tool call, sub-agent).
 
 ```bash
-scripts/harness-test.sh                 # 113 ca offline, khoảng 1 phút, test hcodex trên PATH
-scripts/harness-test.sh --live          # thêm 21 ca kiểm ~/.hcodex thật của máy này
+scripts/harness-test.sh                 # 117 ca offline, khoảng 1 phút, test hcodex trên PATH
+scripts/harness-test.sh --live          # thêm 22 ca kiểm ~/.hcodex thật của máy này
 scripts/harness-test.sh --list          # in toàn bộ ca test: mã, mô tả
 scripts/harness-test.sh -k RT -k AS21   # chỉ chạy ca có mã/tên chứa chuỗi đó
 scripts/harness-test.sh path/to/hcodex  # test một binary khác (bản vừa build, bản backup)
@@ -1388,9 +1538,9 @@ scripts/harness-test.sh path/to/hcodex  # test một binary khác (bản vừa b
 | `MD` model | 16 | `test_models.py` | danh sách model lấy từ provider, không trộn catalog OpenAI; gộp id `-effort-*`; effort mặc định; `context_window` và `input_modalities` từ `/models`; `model_overrides.toml` (chung, theo provider, `instructions`, `instructions_file`); `/models` hỏng vẫn chạy được turn |
 | `PV` provider | 11 | `test_providers.py` | turn chỉ tới đúng provider; `-c model_provider=`; profile `<tên>.config.toml`; `provider-credential`; key qua `auth.command` gửi cả ở `/responses` lẫn `/models`; `env_key`; `experimental_bearer_token`; key không lọt sang provider khác; các cờ harness nạp sạch |
 | `AG` sub-agent | 8 | `test_agents.py` | task tới sub-agent dưới dạng message `user` thuần; không còn item `agent_message`; cha nhận được câu trả lời của con; `default_subagent_model`; role chạy trên provider riêng khi bật `agent_role_provider` và bị bỏ qua khi tắt; `developer_instructions` của role |
-| `AS` hợp đồng app-server của app desktop | 34 | `test_app_server.py` | đúng các lệnh `hcodex-app` gọi: `initialize`, phiên Chat chỉ đọc, phiên Code ghi được, xin duyệt khi lệnh đòi thoát sandbox, item và token của một turn, lỗi provider, `turn/interrupt`, `thread/list` mọi provider và lọc theo thư mục, `thread/read`, resume sau khi khởi động lại, fork sang provider khác giữ hội thoại và giữ quyền, đổi model theo turn, sub-agent hiện trong thread cha, `fs/*`, `fs/watch`, `command/exec`, terminal `process/*`, trang Skills/Plugins/MCP |
-| `SC` script | 8 | `test_scripts.py` | mọi script harness qua `bash -n` và có quyền chạy; `hc-find-session.sh`; skill trong `docs/hcodex-skills` đúng định dạng; app `hcodex-app` type-check với giao thức sinh từ binary đang test, và luôn gửi quyền Chat/Code khi start, resume, fork |
-| `LV` máy thật (`--live`) | 21 | `test_live.py` | `~/.hcodex/config.toml` hợp lệ và hcodex nạp được; provider nào cũng có `base_url`; profile và role trỏ tới provider có thật; **model của từng role và `default_subagent_model` có trong `/models` của provider đó** (hỏi provider thật, provider chết thì bỏ qua); `auth.command` chạy được và có key; file token mode 600; skill không có symlink gãy; `hcodex` trên PATH đúng là bản đã cài; job kiểm upstream hằng đêm còn chạy. Chỉ đọc, không in key |
+| `AS` hợp đồng app-server của app desktop | 35 | `test_app_server.py` | đúng các lệnh `hcodex-app` gọi: `initialize`, phiên Chat chỉ đọc, phiên Code ghi được, xin duyệt khi lệnh đòi thoát sandbox, item và token của một turn, lỗi provider, `turn/interrupt`, `thread/list` mọi provider và lọc theo thư mục, `thread/read`, resume sau khi khởi động lại, fork sang provider khác giữ hội thoại và giữ quyền, đổi model theo turn, sub-agent hiện trong thread cha, `fs/*`, `fs/watch`, `command/exec`, terminal `process/*`, trang Skills/Plugins/MCP, lệnh không sandbox hỏi được launchd (trang Proxies) |
+| `SC` script | 11 | `test_scripts.py` | mọi script harness qua `bash -n` và có quyền chạy; `hc-find-session.sh`; skill trong `docs/hcodex-skills` đúng định dạng; app `hcodex-app` type-check với giao thức sinh từ binary đang test, và luôn gửi quyền Chat/Code khi start, resume, fork; `proxies/fusebox` đủ file và không có config, key hay dữ liệu tài khoản nào nằm trong git; app và `fusebox.sh` khai cùng một job, địa chỉ, provider |
+| `LV` máy thật (`--live`) | 22 | `test_live.py` | `~/.hcodex/config.toml` hợp lệ và hcodex nạp được; provider nào cũng có `base_url`; profile và role trỏ tới provider có thật; **model của từng role và `default_subagent_model` có trong `/models` của provider đó** (hỏi provider thật, provider chết thì bỏ qua); `auth.command` chạy được và có key; file token mode 600; skill không có symlink gãy; `hcodex` trên PATH đúng là bản đã cài; job kiểm upstream hằng đêm còn chạy; Fusebox đang chạy bằng job launchd và `hibox` liệt kê được model. Chỉ đọc, không in key |
 
 Bốn lớp test của harness, từ rẻ đến đắt:
 

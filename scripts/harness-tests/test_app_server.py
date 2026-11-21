@@ -362,6 +362,25 @@ class AppServerContract(HarnessTest):
         server.request("process/kill", {"processHandle": handle})
         server.wait_for("process/exited", lambda p: p.get("processHandle") == handle, timeout=10)
 
+    def test_AS35_unsandboxed_command_can_query_launchd(self):
+        """`command/exec` with `sandboxPolicy: dangerFullAccess` can ask launchd about a job (the Proxies page's status)."""
+        _a, _b, _sandbox, server = self.setup()
+        script = 'launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1 && echo loaded || echo "missing:$1"'
+        result = server.request(
+            "command/exec",
+            {"command": ["/bin/sh", "-c", script, "proxy", "no.such.job.hcodex-test"], "timeoutMs": 10000,
+             "outputBytesCap": 400000, "sandboxPolicy": {"type": "dangerFullAccess"}},
+        )
+        self.assertEqual(result["exitCode"], 0, result["stderr"])
+        # The label arrives as a positional argument, not spliced into the script.
+        self.assertEqual(result["stdout"].strip(), "missing:no.such.job.hcodex-test")
+        listed = server.request(
+            "command/exec",
+            {"command": ["/bin/sh", "-c", 'launchctl print "gui/$(id -u)" | head -1'], "timeoutMs": 10000,
+             "sandboxPolicy": {"type": "dangerFullAccess"}},
+        )
+        self.assertIn("gui/", listed["stdout"])
+
     # ---- extension pages
 
     def test_AS30_extension_pages_answer(self):

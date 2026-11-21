@@ -2,6 +2,7 @@
 
 import glob
 import os
+import re
 import shutil
 import subprocess
 import unittest
@@ -12,7 +13,7 @@ SCRIPTS = os.path.join(REPO, "scripts")
 APP = os.path.join(REPO, "hcodex-app")
 SHELL_SCRIPTS = sorted(
     glob.glob(os.path.join(SCRIPTS, "hc-*.sh"))
-    + [os.path.join(SCRIPTS, name) for name in ("harness-smoke.sh", "harness-test.sh", "sync-upstream.sh")]
+    + [os.path.join(SCRIPTS, name) for name in ("fusebox.sh", "harness-smoke.sh", "harness-test.sh", "sync-upstream.sh")]
 )
 
 
@@ -75,6 +76,36 @@ class Scripts(HarnessTest):
             with self.subTest(method=method):
                 call = source[source.index(f'"{method}"'):]
                 self.assertIn("permissionsFor(", call[: call.index("});")], f"{method} is sent without permissions")
+
+    def test_SC09_bundled_proxy_source_is_complete(self):
+        """proxies/fusebox carries its manifest and upstream licence files, and names the upstream release it is based on."""
+        proxy = os.path.join(REPO, "proxies", "fusebox")
+        for name in ("Cargo.toml", "Cargo.lock", "LICENSE", "NOTICE", "src/main.rs"):
+            with self.subTest(file=name):
+                self.assertTrue(os.path.exists(os.path.join(proxy, name)), f"missing proxies/fusebox/{name}")
+        with open(os.path.join(REPO, "proxies", "fusebox.upstream")) as f:
+            meta = dict(line.strip().split("=", 1) for line in f if "=" in line and not line.startswith("#"))
+        self.assertRegex(meta.get("url", ""), r"^https://")
+        self.assertTrue(meta.get("ref"))
+        self.assertRegex(meta.get("commit", ""), r"^[0-9a-f]{40}$")
+
+    def test_SC11_app_and_script_agree_on_the_bundled_proxy(self):
+        """The app's built-in Fusebox entry and scripts/fusebox.sh name the same launchd job, address and provider."""
+        with open(os.path.join(APP, "src", "lib", "proxies.ts")) as f:
+            app = f.read()
+        with open(os.path.join(SCRIPTS, "fusebox.sh")) as f:
+            script = f.read()
+        for value in ("com.fusebox.proxy", "http://127.0.0.1:8317", "hibox", "Library/Logs/fusebox.log", ".local/bin/fusebox"):
+            with self.subTest(value=value):
+                self.assertIn(value, app)
+                self.assertIn(value, script)
+
+    def test_SC10_no_proxy_config_or_account_data_is_tracked(self):
+        """Nothing under proxies/ that holds keys or accounts is in git: config.yaml, tokens, key files, usage databases."""
+        done = subprocess.run(["git", "ls-files", "proxies"], cwd=REPO, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        risky = re.compile(r"(^|/)(config\.yaml|\.env|auth\.json)$|\.(pem|key|token|sqlite3)(-wal|-shm)?$")
+        self.assertEqual([path for path in done.stdout.splitlines() if risky.search(path)], [])
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_SC06_app_scripts_parse(self):

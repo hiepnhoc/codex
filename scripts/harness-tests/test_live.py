@@ -261,6 +261,16 @@ class Live(HarnessTest):
                 self.assertEqual(len(parts), 2, "expected `provider model`")
                 self.assertIn(parts[0], set(self.providers) | BUILT_IN)
 
+    def test_LV22_bundled_proxy_is_installed_and_serving(self):
+        """Fusebox (proxies/fusebox) runs as its launchd job and its provider `hibox` lists models (skips if it is down)."""
+        self.assertIn("hibox", self.providers, "no [model_providers.hibox] in config")
+        done = subprocess.run(
+            ["/bin/sh", "-c", 'launchctl print "gui/$(id -u)/com.fusebox.proxy" >/dev/null 2>&1'], timeout=20
+        )
+        self.assertEqual(done.returncode, 0, "launchd job com.fusebox.proxy is not loaded")
+        self.assertTrue(os.access(os.path.expanduser("~/.local/bin/fusebox"), os.X_OK), "no ~/.local/bin/fusebox")
+        self.assertTrue(self.catalog("hibox"), "hibox lists no models")
+
     def test_LV21_nightly_sync_check_is_fresh(self):
         """The nightly upstream check ran within the last three days (~/.hcodex/sync-status.txt)."""
         path = os.path.join(HOME, "sync-status.txt")
