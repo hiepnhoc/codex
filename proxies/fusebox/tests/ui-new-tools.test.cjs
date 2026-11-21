@@ -79,5 +79,6 @@ test('the pace mark follows elapsed time for known usage windows', () => {
   const fast = { name: '5h', used: 80, resets_at: resetsIn(2.5) };
   assert.equal(run(`windowElapsed(${JSON.stringify(fast)}, ${now})`), 0.5);
   assert.equal(run(`windowElapsed(${JSON.stringify({ name: 'week', used: 10, resets_at: resetsIn(84) })}, ${now})`), 0.5);
-  assert.equal(run(`windowElapsed(${JSON.stringify({ name: 'month', used: 10, resets_at: resetsIn(1) })}, ${now})`), null);
+  assert.equal(run(`windowElapsed(${JSON.stringify({ name: 'month', used: 10, resets_at: resetsIn(15 * 24) })}, ${now})`), 0.5);
+  assert.equal(run(`windowElapsed(${JSON.stringify({ name: 'year', used: 10, resets_at: resetsIn(1) })}, ${now})`), null);
 });

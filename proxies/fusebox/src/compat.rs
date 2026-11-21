@@ -6,6 +6,26 @@ use serde_json::{Map, Value as Yaml};
 
 type Mapping = Map<String, Yaml>;
 
+/// Model ids from a provider's model list: OpenAI's `{data:[{id}]}`, or the
+/// `{models:[{id|name}]}` and bare `[{id}]` shapes some servers answer with.
+/// Sorted, without duplicates, so the list reads the same however it came.
+pub fn model_ids(v: &serde_json::Value) -> Vec<String> {
+    let items =
+        v.get("data").or_else(|| v.get("models")).or(Some(v)).and_then(|x| x.as_array()).cloned().unwrap_or_default();
+    let mut ids: Vec<String> = items
+        .iter()
+        .filter_map(|m| match m {
+            serde_json::Value::String(s) => Some(s.clone()),
+            _ => m.get("id").or_else(|| m.get("name")).and_then(|x| x.as_str()).map(String::from),
+        })
+        .map(|s| s.trim().trim_start_matches("models/").to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 fn key(s: &str) -> Yaml {
     Yaml::String(s.into())
 }
@@ -290,6 +310,30 @@ pub fn add_key(doc: &mut Yaml, k: &NewKey) {
     }
 }
 
+/// Replaces the model list of one openai-compatibility group, in either layout.
+/// Returns false when no group has that name.
+pub fn set_models(doc: &mut Yaml, group: &str, models: &[(String, Option<String>)]) -> bool {
+    fn apply(list: Option<&mut Vec<Yaml>>, group: &str, models: &[(String, Option<String>)]) -> bool {
+        let Some(e) = list.and_then(|l| {
+            l.iter_mut().filter_map(Yaml::as_object_mut).find(|e| e.get("name").and_then(Yaml::as_str) == Some(group))
+        }) else {
+            return false;
+        };
+        e.insert(mkey("models"), models_yaml(models));
+        true
+    }
+    let Some(root) = doc.as_object_mut() else { return false };
+    if apply(root.get_mut("openai-compatibility").and_then(Yaml::as_array_mut), group, models) {
+        return true;
+    }
+    let v8 = root
+        .get_mut("api-keys")
+        .and_then(Yaml::as_object_mut)
+        .and_then(|m| m.get_mut("openai-compatibility"))
+        .and_then(Yaml::as_array_mut);
+    apply(v8, group, models)
+}
+
 /// Removes an upstream API key from every place it appears (both layouts).
 /// `group` limits compat removal to one openai-compatibility entry.
 pub fn remove_key(doc: &mut Yaml, api_key: &str, compat_group: Option<&str>) {
@@ -412,6 +456,35 @@ pub fn translate_args(args: Vec<String>) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::config::{Config, Routing};
+
+    #[test]
+    fn set_models_replaces_one_groups_list_in_both_layouts() {
+        let mut flat: Yaml = crate::yaml::from_str(
+            "openai-compatibility:\n  - name: a\n    base-url: https://a/v1\n    models: [{name: old}]\n  - name: b\n    models: [{name: keep}]\n",
+        )
+        .unwrap();
+        assert!(set_models(&mut flat, "a", &[("x".into(), None), ("y".into(), Some("why".into()))]));
+        let a = &flat["openai-compatibility"][0]["models"];
+        assert_eq!(a[0]["name"].as_str(), Some("x"));
+        assert_eq!(a[1]["alias"].as_str(), Some("why"));
+        assert_eq!(flat["openai-compatibility"][1]["models"][0]["name"].as_str(), Some("keep"));
+        assert!(!set_models(&mut flat, "zzz", &[("x".into(), None)]));
+        let mut v8: Yaml =
+            crate::yaml::from_str("api-keys:\n  openai-compatibility:\n    - name: a\n      models: [{name: old}]\n")
+                .unwrap();
+        assert!(set_models(&mut v8, "a", &[("x".into(), None)]));
+        assert_eq!(v8["api-keys"]["openai-compatibility"][0]["models"][0]["name"].as_str(), Some("x"));
+    }
+
+    #[test]
+    fn model_ids_read_the_common_shapes() {
+        let openai = serde_json::json!({ "object": "list", "data": [{ "id": "gpt-5" }, { "id": "b-model" }, { "id": "gpt-5" }] });
+        assert_eq!(model_ids(&openai), ["b-model", "gpt-5"]);
+        let ollama = serde_json::json!({ "models": [{ "name": "llama3:8b" }, { "id": "models/gemma" }] });
+        assert_eq!(model_ids(&ollama), ["gemma", "llama3:8b"]);
+        assert_eq!(model_ids(&serde_json::json!(["a", " ", "c"])), ["a", "c"]);
+        assert!(model_ids(&serde_json::json!({ "error": "nope" })).is_empty());
+    }
 
     const V8: &str = r#"
 config-version: 8

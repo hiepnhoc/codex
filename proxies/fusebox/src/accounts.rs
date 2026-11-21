@@ -26,11 +26,12 @@ pub enum Provider {
     Xai,
     Meta,
     Devin,
+    Kiro,
     #[serde(rename = "openai-compat")]
     Compat,
 }
 
-pub const PROVIDERS: [Provider; 10] = [
+pub const PROVIDERS: [Provider; 11] = [
     Provider::Claude,
     Provider::Codex,
     Provider::Gemini,
@@ -40,6 +41,7 @@ pub const PROVIDERS: [Provider; 10] = [
     Provider::Xai,
     Provider::Meta,
     Provider::Devin,
+    Provider::Kiro,
     Provider::Compat,
 ];
 
@@ -101,6 +103,18 @@ const DEVIN_MODELS: &[&str] = &[
     "swe-1-7-lightning",
 ];
 
+/// What Kiro profiles were serving when this was written. Each account's own list
+/// (`ListAvailableModels`) replaces it: organisations switch models off.
+const KIRO_MODELS: &[&str] = &[
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-fable-5-1",
+    "claude-haiku-4-5",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+];
+
 impl Provider {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -113,6 +127,7 @@ impl Provider {
             Provider::Xai => "xai",
             Provider::Meta => "meta",
             Provider::Devin => "devin",
+            Provider::Kiro => "kiro",
             Provider::Compat => "openai-compat",
         }
     }
@@ -129,6 +144,7 @@ impl Provider {
             "xai" | "grok" => Provider::Xai,
             "meta" | "muse" => Provider::Meta,
             "devin" | "windsurf" | "codeium" => Provider::Devin,
+            "kiro" | "codewhisperer" | "amazon-q" => Provider::Kiro,
             "compat" | "openai-compat" | "openai-compatibility" => Provider::Compat,
             _ => return None,
         })
@@ -143,8 +159,8 @@ impl Provider {
             Provider::Codex | Provider::Xai | Provider::Meta => &[Format::Responses],
             Provider::Gemini | Provider::Vertex | Provider::Antigravity => &[Format::Gemini],
             Provider::Kimi => &[Format::Chat, Format::Claude, Format::Responses],
-            // Devin speaks its own protobuf dialect, built from the IR.
-            Provider::Devin => &[],
+            // Devin (protobuf) and Kiro (conversation state) speak their own dialects, built from the IR.
+            Provider::Devin | Provider::Kiro => &[],
             Provider::Compat => &[Format::Chat],
         }
     }
@@ -154,9 +170,9 @@ impl Provider {
     pub fn serves(self, model: &str) -> bool {
         let aggregator_only = || {
             let known = |list: &[&str]| list.iter().any(|m| m.eq_ignore_ascii_case(model));
-            (known(ANTIGRAVITY_MODELS) || known(DEVIN_MODELS)) && !known(self.builtin_models())
+            (known(ANTIGRAVITY_MODELS) || known(DEVIN_MODELS) || known(KIRO_MODELS)) && !known(self.builtin_models())
         };
-        self.family(model) && (matches!(self, Provider::Antigravity | Provider::Devin) || !aggregator_only())
+        self.family(model) && (self.is_aggregator() || !aggregator_only())
     }
 
     /// Model-name families this provider can serve (used for explicit `provider/model`).
@@ -174,20 +190,23 @@ impl Provider {
             Provider::Kimi => m.starts_with("kimi-") || m.starts_with("moonshot-"),
             Provider::Xai => m.starts_with("grok-"),
             Provider::Meta => m.starts_with("muse-"),
-            Provider::Antigravity | Provider::Devin => {
+            Provider::Antigravity | Provider::Devin | Provider::Kiro => {
                 self.builtin_models().iter().any(|b| b.eq_ignore_ascii_case(model))
             }
             Provider::Compat => false,
         }
     }
 
+    /// Serves other vendors' models (Claude, GPT, Gemini) through one account.
+    pub fn is_aggregator(self) -> bool {
+        matches!(self, Provider::Antigravity | Provider::Devin | Provider::Kiro)
+    }
+
     /// Aggregators (Antigravity, Devin) also serve other vendors' models;
     /// requests prefer the vendor's own provider and overflow to them.
     pub fn first_party(self, model: &str) -> bool {
-        !matches!(self, Provider::Antigravity | Provider::Devin)
-            || !PROVIDERS
-                .iter()
-                .any(|p| !matches!(p, Provider::Antigravity | Provider::Devin | Provider::Compat) && p.serves(model))
+        !self.is_aggregator()
+            || !PROVIDERS.iter().any(|p| !p.is_aggregator() && *p != Provider::Compat && p.serves(model))
     }
 
     pub fn builtin_models(self) -> &'static [&'static str] {
@@ -287,6 +306,7 @@ impl Provider {
                 "muse-spark-1.1",
             ],
             Provider::Devin => DEVIN_MODELS,
+            Provider::Kiro => KIRO_MODELS,
             Provider::Compat => &[],
         }
     }
@@ -518,6 +538,9 @@ pub struct AccountState {
     /// banked reset or a fresh usage poll clears it; sessions move off it.
     pub quota_cooldowns: HashMap<String, DateTime<Utc>>,
     pub quota_epoch: u64,
+    /// A pay-as-you-go key whose provider said it has no money left: every model sits
+    /// out until then, and a request that succeeds ends it early.
+    pub credit_until: Option<DateTime<Utc>>,
     /// Fingerprint bound to the quota and attribution under this same lock.
     pub credential_identity: String,
     /// Changes only when the credential's identity changes, so old attempts and
@@ -698,6 +721,9 @@ impl AccountState {
         if self.quota_refreshing {
             pauses.insert("*".into(), (now + chrono::Duration::seconds(30), "checking"));
         }
+        if let Some(t) = self.credit_until.filter(|t| *t > now) {
+            pauses.insert("*".into(), (t, "credit"));
+        }
         // A used-up usage window blocks every model until it resets.
         if let Some(t) = self
             .quota
@@ -866,8 +892,11 @@ impl Account {
         if !self.default_model_allowed(model) {
             return None;
         }
-        let aggregator = matches!(self.provider, Provider::Antigravity | Provider::Devin);
-        let known = if forced { aggregator || self.provider.family(model) } else { self.provider.serves(model) }
+        let aggregator = self.provider.is_aggregator();
+        // A Kiro account that has read its profile's list serves nothing outside it.
+        let listed = self.provider == Provider::Kiro && !self.discovered.read().is_empty();
+        let known = (!listed
+            && if forced { aggregator || self.provider.family(model) } else { self.provider.serves(model) })
             || self.discovered.read().iter().any(|m| m.eq_ignore_ascii_case(model))
             || self.extra.iter().any(|m| m.eq_ignore_ascii_case(model));
         known.then(|| self.upstream_name(model))
@@ -875,6 +904,9 @@ impl Account {
 
     /// Kimi Code exposes `k3`, `kimi-for-coding`, ... while clients use `kimi-*` names.
     fn upstream_name(&self, model: &str) -> String {
+        if self.provider == Provider::Kiro {
+            return crate::kiro::model_id(model);
+        }
         if self.provider != Provider::Kimi || self.custom_base() {
             return model.to_string();
         }
@@ -884,6 +916,15 @@ impl Account {
             "kimi-k2.8" | "kimi-k2.8-code" | "kimi-k2.7-code" | "kimi-for-coding" => "kimi-for-coding".into(),
             "kimi-k2.7-code-highspeed" | "kimi-for-coding-highspeed" => "kimi-for-coding-highspeed".into(),
             other => other.strip_prefix("kimi-").unwrap_or(other).to_string(),
+        }
+    }
+
+    /// The provider's built-in names, unless the account's own list has replaced them.
+    fn builtin(&self) -> &'static [&'static str] {
+        if self.provider == Provider::Kiro && !self.discovered.read().is_empty() {
+            &[]
+        } else {
+            self.provider.builtin_models()
         }
     }
 
@@ -907,7 +948,7 @@ impl Account {
                 && !self.excludes(m)
                 && !self.aliases.iter().any(|a| a.name.eq_ignore_ascii_case(m) && !a.fork)
         };
-        let first = match self.provider.builtin_models().iter().find(|m| same(m)) {
+        let first = match self.builtin().iter().find(|m| same(m)) {
             Some(m) => Some(shown(m)),
             None => match self.discovered.read().iter().find(|m| same(m)) {
                 Some(m) => Some(shown(m)),
@@ -921,7 +962,7 @@ impl Account {
         if !self.models.is_empty() {
             return self.models.iter().filter(|m| !self.excludes(&m.name)).map(|m| m.public().to_string()).collect();
         }
-        let mut out: Vec<String> = self.provider.builtin_models().iter().map(|s| s.to_string()).collect();
+        let mut out: Vec<String> = self.builtin().iter().map(|s| s.to_string()).collect();
         for m in self.discovered.read().iter().chain(&self.extra) {
             if !out.iter().any(|o| o.eq_ignore_ascii_case(m)) {
                 out.push(m.clone());
@@ -957,6 +998,7 @@ impl Account {
             st.cooldowns.get(model),
             st.quota_cooldowns.get("*"),
             st.quota_cooldowns.get(model),
+            st.credit_until.as_ref(),
             spent.as_ref(),
         ]
         .into_iter()
@@ -973,7 +1015,7 @@ impl Account {
             .quota
             .exhausted_until(&quota_model)
             .or_else(|| st.quota.exhausted(&quota_model).then(|| Utc::now() + chrono::Duration::minutes(5)));
-        [st.quota_cooldowns.get("*"), st.quota_cooldowns.get(model), spent.as_ref()]
+        [st.quota_cooldowns.get("*"), st.quota_cooldowns.get(model), st.credit_until.as_ref(), spent.as_ref()]
             .into_iter()
             .flatten()
             .filter(|t| **t > Utc::now())
@@ -1013,6 +1055,19 @@ impl Account {
     pub fn exhaust(&self, model: &str, until: DateTime<Utc>, reason: &str) {
         let epoch = self.quota_epoch();
         self.cool_quota(model, until, reason, epoch);
+    }
+
+    /// Whether the key is sitting out for lack of credit right now.
+    pub fn credit_paused(&self) -> bool {
+        self.state.lock().credit_until.is_some_and(|t| t > Utc::now())
+    }
+
+    /// Pauses every model of a pay-as-you-go key its provider says has no credit left.
+    /// Sessions move off it like a spent subscription; the error ends with the pause.
+    pub fn out_of_credit(&self, until: DateTime<Utc>, reason: &str) {
+        let mut st = self.state.lock();
+        st.credit_until = Some(until);
+        st.pause_error(reason, false, "*", until);
     }
 
     /// Pauses the account (or one model) for a problem that stays shown until a
@@ -1105,6 +1160,7 @@ impl Account {
     pub fn record_ok(&self) {
         let mut st = self.state.lock();
         st.strikes = 0;
+        st.credit_until = None;
         // Serving on until the access token expires doesn't end the need to sign in again.
         let holding = st.refresh_hold.as_ref().filter(|hold| match &*self.cred.read() {
             Credential::OAuth(o) => hold.applies(o),
@@ -1147,10 +1203,12 @@ impl Account {
         let pauses = st.pauses(now);
         let cooldowns: BTreeMap<&str, String> = pauses.iter().map(|(k, (t, _))| (k.as_str(), t.to_rfc3339())).collect();
         let kinds: BTreeMap<&str, &str> = pauses.iter().map(|(k, (_, kind))| (k.as_str(), *kind)).collect();
-        let (kind, expires, email) = match &*self.cred.read() {
-            Credential::OAuth(o) if o.raw.contains_key("service_account") => ("service-account", None, o.email.clone()),
-            Credential::OAuth(o) => ("oauth", o.expires_at.map(|t| t.to_rfc3339()), o.email.clone()),
-            Credential::ApiKey { .. } => ("api-key", None, None),
+        let (kind, expires, email, base_url) = match &*self.cred.read() {
+            Credential::OAuth(o) if o.raw.contains_key("service_account") => {
+                ("service-account", None, o.email.clone(), None)
+            }
+            Credential::OAuth(o) => ("oauth", o.expires_at.map(|t| t.to_rfc3339()), o.email.clone(), None),
+            Credential::ApiKey { base_url, .. } => ("api-key", None, None, base_url.clone()),
         };
         let mut out = serde_json::json!({
             "id": self.id,
@@ -1175,6 +1233,9 @@ impl Account {
             "banked_resets": st.banked_resets,
             "window_starter": st.window_starter,
             "models": self.public_models(),
+            // The configured upstream-name/alias pairs, for editing an API key's model list.
+            "model_map": self.models,
+            "base_url": base_url,
             "takes_billing": self.takes_billing(),
             "billing": self.billing.as_ref().map(|b| serde_json::json!({
                 "date": b.date,
@@ -1751,12 +1812,32 @@ impl Pool {
                 let older_copy = disk_identity == current_identity
                     || pending.as_ref().is_some_and(|save| save.expected_identity == disk_identity);
                 if (guard.is_err() || pending.is_some()) && older_copy {
-                    s.cred = current;
+                    s.cred = current.clone();
                 }
                 let identity = s.cred.identity(s.provider);
                 identity_changed = current_identity != identity || prev.state.lock().credential_identity != identity;
+                // Fusebox's own refreshes land in memory before they reach disk, so a
+                // different refresh token on disk means a sign-in replaced the credential.
+                let signed_in = !identity_changed
+                    && guard.is_ok()
+                    && pending.is_none()
+                    && match (&current, &s.cred) {
+                        (Credential::OAuth(before), Credential::OAuth(after)) => {
+                            before.refresh_token != after.refresh_token
+                        }
+                        _ => false,
+                    };
                 if !identity_changed && guard.is_ok() && pending.is_none() {
                     *prev.cred.write() = s.cred.clone();
+                }
+                if signed_in {
+                    // The failure, strikes and rate-limit pauses described the old token.
+                    let mut st = prev.state.lock();
+                    st.strikes = 0;
+                    st.cooldowns.clear();
+                    if st.last_error.as_ref().is_some_and(|e| e.pause.is_none()) {
+                        st.last_error = None;
+                    }
                 }
                 if identity_changed {
                     prev.state.lock().update_identity(identity);
@@ -2252,6 +2333,8 @@ struct AccountCooldowns {
     rate: BTreeMap<String, DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     quota: BTreeMap<String, DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credit: Option<DateTime<Utc>>,
     /// Which `rate` entries rate limits set, so they stay waits a client may be told.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     limits: BTreeMap<String, DateTime<Utc>>,
@@ -2295,8 +2378,9 @@ impl Pool {
                 (Some(hold), Credential::OAuth(o)) if hold.applies(o) => Some(hold.saved()),
                 _ => None,
             };
-            let entry = AccountCooldowns { rate, quota: live(&st.quota_cooldowns), limits, refusal, hold };
-            if !entry.rate.is_empty() || !entry.quota.is_empty() || entry.hold.is_some() {
+            let credit = st.credit_until.filter(|t| *t > now);
+            let entry = AccountCooldowns { rate, quota: live(&st.quota_cooldowns), credit, limits, refusal, hold };
+            if !entry.rate.is_empty() || !entry.quota.is_empty() || entry.credit.is_some() || entry.hold.is_some() {
                 out.insert(a.id.clone(), entry);
             }
         }
@@ -2353,6 +2437,9 @@ impl Pool {
                 let mut st = a.state.lock();
                 merge(&mut st.cooldowns, &c.rate);
                 merge(&mut st.quota_cooldowns, &c.quota);
+                if let Some(t) = c.credit.filter(|t| *t > now) {
+                    st.credit_until = Some(st.credit_until.map_or(t, |have| have.max(t)));
+                }
                 // Their kinds, while the merged deadline is still theirs.
                 for (model, until) in &c.limits {
                     if *until > now && st.cooldowns.get(model) == Some(until) {
@@ -2995,6 +3082,82 @@ mod tests {
         assert_eq!(new.state.lock().active_requests.load(Ordering::Relaxed), 1);
         drop(request);
         assert_eq!(new.state.lock().active_requests.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn an_out_of_credit_pause_is_saved_restored_and_reset() {
+        let cfg = Config {
+            auth_dir: "/nonexistent".into(),
+            claude_api_key: vec![crate::config::KeyEntry { api_key: "one".into(), ..Default::default() }],
+            ..Default::default()
+        };
+        let pool = Pool::default();
+        pool.reload(&cfg);
+        let acct = pool.all()[0].clone();
+        let until = Utc::now() + chrono::Duration::hours(1);
+        acct.out_of_credit(until, "out of credit: Insufficient credits");
+        assert_eq!(acct.snapshot()["cooldown_kinds"]["*"], "credit");
+        assert_eq!(acct.snapshot()["last_error"], "out of credit: Insufficient credits");
+        assert_eq!(acct.state.lock().last_error(until), None, "the error ends with the pause");
+        let saved: Cooldowns = serde_json::from_slice(&serde_json::to_vec(&pool.cooldowns()).unwrap()).unwrap();
+        assert_eq!(saved.0[&acct.id].credit, Some(until));
+        // A fresh process restores it; a shorter saved pause never cuts a longer one short.
+        acct.state.lock().credit_until = None;
+        pool.restore_cooldowns(&saved);
+        assert_eq!(acct.state.lock().credit_until, Some(until));
+        let mut shorter = saved.clone();
+        shorter.0.get_mut(&acct.id).unwrap().credit = Some(until - chrono::Duration::minutes(30));
+        pool.restore_cooldowns(&shorter);
+        assert_eq!(acct.state.lock().credit_until, Some(until));
+        // Older state files without the field still load.
+        let old: Cooldowns = serde_json::from_str(&format!(r#"{{"{}":{{"rate":{{}}}}}}"#, acct.id)).unwrap();
+        assert_eq!(old.0[&acct.id].credit, None);
+        let mut st = acct.state.lock();
+        st.credit_until = None;
+        assert!(st.pauses(Utc::now()).is_empty());
+    }
+
+    #[test]
+    fn a_new_sign_in_clears_the_old_tokens_failure() {
+        let dir = std::env::temp_dir().join(format!("fusebox-signin-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("codex-user@example.com-plus.json");
+        let oauth = |rt: &str| OAuth {
+            access_token: "at".into(),
+            refresh_token: rt.into(),
+            email: Some("user@example.com".into()),
+            ..Default::default()
+        };
+        write_oauth_file(&path, Provider::Codex, &oauth("rt-old"), &[]).unwrap();
+        let cfg = Config { auth_dir: dir.to_string_lossy().into(), ..Default::default() };
+        let pool = Pool::default();
+        pool.reload(&cfg);
+        let acct = pool.all()[0].clone();
+        {
+            let mut st = acct.state.lock();
+            st.set_error("401: Encountered invalidated oauth token for user, failing request");
+            st.strikes = 3;
+            st.cooldowns.insert("*".into(), Utc::now() + chrono::Duration::hours(1));
+        }
+        // A reload that finds the same token keeps the failure: nothing changed.
+        pool.reload(&cfg);
+        let same = pool.all()[0].clone();
+        assert!(Arc::ptr_eq(&acct, &same));
+        assert_eq!(
+            same.state.lock().last_error(Utc::now()),
+            Some("401: Encountered invalidated oauth token for user, failing request")
+        );
+        // Signing in again rewrites the file with a new refresh token.
+        write_oauth_file(&path, Provider::Codex, &oauth("rt-new"), &[]).unwrap();
+        pool.reload(&cfg);
+        let after = pool.all()[0].clone();
+        assert!(Arc::ptr_eq(&acct, &after), "same shape, same account");
+        let st = after.state.lock();
+        assert_eq!(st.last_error(Utc::now()), None);
+        assert_eq!(st.strikes, 0);
+        assert!(st.cooldowns.is_empty());
+        drop(st);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

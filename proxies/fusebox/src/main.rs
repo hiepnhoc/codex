@@ -26,6 +26,7 @@ mod golden_tests;
 mod inspect;
 mod ir;
 mod json_size;
+mod kiro;
 mod latency;
 mod media;
 mod metrics;
@@ -36,6 +37,7 @@ mod oauth;
 mod outlook;
 mod policy;
 mod pools;
+mod procs;
 mod provider_sessions;
 mod proxy;
 mod push;
@@ -80,7 +82,7 @@ use crate::state::App;
 #[command(
     name = "fusebox",
     version = metrics::VERSION,
-    about = "OpenAI / Claude / Gemini compatible proxy for your Claude, ChatGPT, Gemini, Antigravity, Grok, Kimi, Meta, Devin and Vertex accounts"
+    about = "OpenAI / Claude / Gemini compatible proxy for your Claude, ChatGPT, Gemini, Antigravity, Grok, Kimi, Meta, Devin, Kiro and Vertex accounts"
 )]
 struct Cli {
     /// Path to the config file (created with defaults if missing). Default: $FUSEBOX_CONFIG, else config.yaml.
@@ -104,7 +106,7 @@ enum Cmd {
     },
     /// Run the proxy server (default).
     Serve,
-    /// Sign in to an account: claude, codex, antigravity, kimi, xai, meta, devin or vertex.
+    /// Sign in to an account: claude, codex, antigravity, kimi, xai, meta, devin, kiro or vertex.
     Login {
         provider: String,
         /// Print the URL instead of opening a browser.
@@ -116,6 +118,12 @@ enum Cmd {
         /// Vertex: region, e.g. us-central1 or global.
         #[arg(long, default_value = "us-central1")]
         location: String,
+        /// Kiro: the IAM Identity Center start URL (https://d-….awsapps.com/start); without it, AWS Builder ID.
+        #[arg(long)]
+        start_url: Option<String>,
+        /// Kiro: the Identity Center region, e.g. us-east-1.
+        #[arg(long)]
+        region: Option<String>,
     },
     /// Show what the config and auth directory contain, without starting the server.
     /// Handy before switching from CLIProxyAPI.
@@ -246,8 +254,9 @@ async fn run() -> Result<()> {
 
     let app = tokio::task::spawn_blocking(move || App::new(cfg, path)).await?;
     match command {
-        Some(Cmd::Login { provider, no_browser, file, location }) => {
-            login(app, &provider, no_browser, file, &location).await
+        Some(Cmd::Login { provider, no_browser, file, location, start_url, region }) => {
+            let opts = mgmt::LoginOpts { start_url, region };
+            login(app, &provider, no_browser, file, &location, opts).await
         }
         _ => serve(app).await,
     }
@@ -343,6 +352,7 @@ async fn serve(app: Arc<App>) -> Result<()> {
     let background = [
         tokio::spawn(oauth::refresher(app.clone())),
         tokio::spawn(antigravity::version_updater(app.clone())),
+        tokio::spawn(kiro::version_updater(app.clone())),
         tokio::spawn(quota::poller(app.clone())),
         tokio::spawn(window_starter::poller(app.clone())),
         tokio::spawn(push::watcher(app.clone())),
@@ -369,7 +379,7 @@ async fn serve(app: Arc<App>) -> Result<()> {
     println!("  accounts   {} loaded from {}", accounts.len(), cfg.auth_dir().display());
     if accounts.is_empty() {
         println!(
-            "\n  No accounts yet. Run `fusebox login <provider>` (claude, codex, antigravity, kimi, xai,\n  meta, devin, vertex) or open the dashboard."
+            "\n  No accounts yet. Run `fusebox login <provider>` (claude, codex, antigravity, kimi, xai,\n  meta, devin, kiro, vertex) or open the dashboard."
         );
     }
     println!();
@@ -652,9 +662,18 @@ async fn watch(app: Arc<App>) {
     }
 }
 
-async fn login(app: Arc<App>, provider: &str, no_browser: bool, file: Option<PathBuf>, location: &str) -> Result<()> {
+async fn login(
+    app: Arc<App>,
+    provider: &str,
+    no_browser: bool,
+    file: Option<PathBuf>,
+    location: &str,
+    opts: mgmt::LoginOpts,
+) -> Result<()> {
     let Some(provider) = Provider::parse(provider) else {
-        anyhow::bail!("unknown provider `{provider}` (claude, codex, antigravity, kimi, xai, meta, devin, vertex)")
+        anyhow::bail!(
+            "unknown provider `{provider}` (claude, codex, antigravity, kimi, xai, meta, devin, kiro, vertex)"
+        )
     };
     if provider == Provider::Vertex {
         let Some(path) = file else { anyhow::bail!("pass the service account key with --file key.json") };
@@ -663,7 +682,7 @@ async fn login(app: Arc<App>, provider: &str, no_browser: bool, file: Option<Pat
         println!("\n✓ Added Vertex service account {label}");
         return Ok(());
     }
-    let (state, login) = mgmt::start_login(&app, provider).await?;
+    let (state, login) = mgmt::start_login_with(&app, provider, opts).await?;
     if login.kind == "device" {
         println!(
             "\nOpen this URL and enter the code:\n\n  {}\n\n  code: \x1b[1m{}\x1b[0m\n",

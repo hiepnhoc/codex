@@ -231,7 +231,13 @@ h1, h2, h3, p { margin: 0; }
 .idchip .tag { color: var(--brand); font-size: 11px; }
 .idchip.add { border-style: dashed; color: var(--fg-3); }
 .idchip.add:hover { color: var(--fg); }
+.idchip[aria-pressed="true"] { border-color: var(--brand); color: var(--brand); }
 .idchip-pair { display: inline-flex; }
+.field .fetch-models { margin-left: auto; font-size: 12.5px; }
+.model-pick { display: grid; gap: 8px; }
+.model-pick-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--fg-3); }
+.model-pick-head input { width: 180px; padding: 4px 8px; font-size: 12.5px; }
+.model-pick .chips { gap: 6px; max-height: 180px; overflow: auto; }
 .idchip-pair > .idchip { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .idchip-x { padding: 0 7px; background: transparent; color: var(--fg-3); font: 400 12px/1.5 var(--mono); border: 1px solid var(--line-strong); border-left: 0; border-radius: 0 4px 4px 0; }
 .idchip-x:hover { color: var(--err); border-color: var(--fg-3); }
@@ -269,7 +275,8 @@ h1, h2, h3, p { margin: 0; }
 }
 .brand { display: flex; align-items: center; flex: none; color: var(--fg); }
 .brand:hover { color: var(--fg); }
-.brand .wordmark { display: block; height: 16px; width: auto; aspect-ratio: 4327 / 914; }
+.brand .wordmark { display: block; font: 600 18px/1 var(--cond); letter-spacing: 0.01em; }
+.brand .wordmark .bkt { color: var(--brand); font-weight: 500; margin: 0 1px; }
 .brand .mark { display: none; width: 18px; height: 21px; }
 @media (max-width: 899px) { .brand .wordmark { display: none; } .brand .mark { display: block; } }
 .tabs { display: flex; flex: none; align-self: stretch; gap: clamp(14px, 1.6vw, 22px); margin-left: clamp(0px, 1vw, 12px); }
@@ -419,6 +426,8 @@ html.ios-pull-refresh, .ios-pull-refresh body { overscroll-behavior-y: none; }
 .pct.warn { color: var(--warn); }
 .pct.err { color: var(--err); }
 .rst { width: 10ch; flex: none; font: 400 11px/1 var(--mono); color: var(--fg-3); white-space: nowrap; }
+.mrow.has-amt { flex-wrap: wrap; }
+.mrow .rst.amt { width: 100%; padding-left: 30px; }
 .acct-table .segs { max-width: 140px; min-width: 56px; }
 .mini-meters { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .mini-meters .mrow { gap: 6px; }
@@ -1424,6 +1433,10 @@ button.u-sp-row:hover { background: var(--row-hover); }
 .u-inline input { flex: 1; }
 .u-inline input[name="label"] { font: 400 13px var(--sans); }
 .u-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.u-plan { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; padding: 11px 13px; border: 1px solid var(--line-strong); border-radius: 6px; font-size: 13px; }
+.u-plan .u-strong { margin-top: 4px; }
+.u-price { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 12.5px; padding: 3px 0; border-top: 1px solid var(--line); }
+.u-price .u-strong { min-width: 72px; }
 .u-collectors { display: flex; flex-direction: column; }
 .u-collector { display: flex; flex-direction: column; gap: 5px; padding: 12px 0; border-top: 1px solid var(--line); }
 .u-collector.faded { opacity: 1; }
@@ -1437,7 +1450,7 @@ button.u-sp-row:hover { background: var(--row-hover); }
   .bar .search-text { display: none; }
 }
 @media (max-width: 759px) {
-  .mtabs { grid-template-columns: repeat(6, 1fr); }
+  .mtabs { grid-template-columns: repeat(7, 1fr); }
   .usage-page, .usage-results { gap: 20px; }
   .u-head { gap: 10px; }
   .u-range { display: flex; width: 100%; border-radius: 8px; }
@@ -1612,3 +1625,34 @@ button.u-sp-row:hover { background: var(--row-hover); }
 .setup-footer .btn { flex-shrink:0; }
 .setup-footer .note { margin:0; }
 @media (max-width:600px) { .setup-footer { flex-direction:column; } }
+
+/* ---- Processes: agent trees and other programs, with signals ---- */
+.procs-figs { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.procs-figs b .meta { font-size: 12px; font-weight: 400; }
+.procs-table .th, .procs-table .tr { grid-template-columns: 90px minmax(0, 1.4fr) minmax(0, 1.1fr) 40px 60px 64px 56px 236px; gap: 12px; }
+.procs-table.others .th, .procs-table.others .tr { grid-template-columns: minmax(0, 1fr) 56px 60px 64px 236px; }
+.procs-kind { max-width: 90px; overflow: hidden; text-overflow: ellipsis; }
+.procs-name { font-weight: 500; }
+.procs-row.alert { box-shadow: -18px 0 0 var(--err-hover), 18px 0 0 var(--err-hover); background: var(--err-hover); }
+.procs-child { border-top: 1px dashed var(--line-soft); padding: 6px 0; font-size: 12.5px; color: var(--fg-2); }
+.procs-child .procs-cmd { padding-left: calc(var(--depth, 0) * 14px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.procs-sub { color: var(--fg); }
+.procs-fold { padding: 2px 6px; margin-right: 4px; background: transparent; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--fg-2); font: 400 12px var(--mono); }
+.procs-fold:hover { color: var(--fg); border-color: var(--fg-3); }
+.procs-cell-actions { display: flex; justify-content: flex-end; align-items: center; gap: 4px; min-width: 0; }
+.procs-actions { display: inline-flex; gap: 4px; }
+.procs-confirm { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.procs-confirm .small { font-size: 12px; color: var(--fg-2); text-align: right; }
+.procs-other.system { color: var(--fg-3); }
+.procs-sys-note { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+@media (max-width: 1100px) {
+  .procs-figs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .procs-table .th, .procs-table .tr { grid-template-columns: 70px minmax(0, 1.4fr) minmax(0, 1fr) 56px 64px 200px; }
+  .procs-table .th > :nth-child(4), .procs-table .tr > :nth-child(4), .procs-table .th > :nth-child(7), .procs-table .tr > :nth-child(7) { display: none; }
+}
+@media (max-width: 759px) {
+  .procs-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .procs-table { overflow-x: auto; }
+  .procs-table .th, .procs-table .tr { min-width: 620px; }
+  .procs-table.others .th, .procs-table.others .tr { min-width: 520px; }
+}

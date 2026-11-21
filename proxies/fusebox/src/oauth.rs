@@ -859,6 +859,11 @@ async fn refresh_locked(acct: &Arc<Account>, http: reqwest::Client, old: OAuth) 
             let (token, expires) = crate::vertex::mint(&http, &sa).await.map_err(sanitize_custom_error)?;
             OAuth { access_token: token, expires_at: Some(expires), ..old.clone() }
         }
+        Provider::Kiro => {
+            let (new, more) = crate::kiro::refresh(&http, &old).await?;
+            extra.extend(more);
+            new
+        }
         _ => return Ok(()),
     };
     if !publish_refreshed(acct, new, extra) {
@@ -906,6 +911,11 @@ pub(crate) fn publish_refreshed(acct: &Account, mut credential: OAuth, extra: Ve
             .unwrap_or_else(|| state.credential_identity.clone());
         *cred = refreshed;
         state.update_identity(identity);
+        // A fresh token proves the sign-in works; an earlier refresh failure
+        // (a network blip, say) no longer describes this account.
+        if state.last_error(Utc::now()).is_some_and(|message| message.starts_with("refresh failed:")) {
+            state.clear_error();
+        }
         if acct.path.is_some() {
             *pending = Some(PendingOAuthSave {
                 credential,
@@ -1051,6 +1061,28 @@ mod tests {
         assert_eq!(codex_refresh_account_id(&selected, &claims).as_deref(), Some("selected-workspace"));
         assert_eq!(codex_refresh_account_id(&OAuth::default(), &claims).as_deref(), Some("claims-default-workspace"));
         assert_eq!(codex_refresh_account_id(&OAuth::default(), &Value::Null), None);
+    }
+
+    #[test]
+    fn a_successful_refresh_clears_an_earlier_refresh_failure_but_not_a_request_error() {
+        let directory = Directory::new();
+        std::fs::write(
+            directory.0.join("account.json"),
+            json!({"type": "codex", "access_token": "FAKE_OLD_ACCESS", "refresh_token": "FAKE_REFRESH"}).to_string(),
+        )
+        .unwrap();
+        let cfg = Config { auth_dir: directory.0.to_string_lossy().into(), ..Default::default() };
+        let app = App::new(cfg, directory.0.join("config.yaml"));
+        let account = app.pool.all().pop().unwrap();
+        let Credential::OAuth(mut credential) = account.cred.read().clone() else { unreachable!() };
+        account.state.lock().set_error("refresh failed: OAuth connection failed");
+        credential.access_token = "FAKE_NEW_ACCESS".into();
+        assert!(publish_refreshed(&account, credential.clone(), vec![]));
+        assert_eq!(account.state.lock().last_error(Utc::now()), None);
+        account.state.lock().set_error("upstream returned 403");
+        credential.access_token = "FAKE_NEWER_ACCESS".into();
+        assert!(publish_refreshed(&account, credential, vec![]));
+        assert_eq!(account.state.lock().last_error(Utc::now()), Some("upstream returned 403"));
     }
 
     #[test]

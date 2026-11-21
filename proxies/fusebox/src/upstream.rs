@@ -397,6 +397,7 @@ pub fn prepare(t: &Target, body: Value) -> Prepared {
         Kimi => kimi(t, body),
         Xai | Meta => responses_api(t, body),
         Devin => crate::devin::prepare(t, body),
+        Kiro => crate::kiro::prepare(t, body),
         Compat => compat(t, body),
     };
     push_custom(t.acct, t.client_headers, &mut p.headers);
@@ -407,7 +408,9 @@ pub fn prepare(t: &Target, body: Value) -> Prepared {
 
 fn claude(t: &Target, mut body: Value) -> Prepared {
     let (token, base, oauth, account_uuid) = creds(t.acct);
-    let base = base.unwrap_or_else(|| CLAUDE_API.into());
+    // Anthropic-style base URLs end at the host; one given with `/v1` (the OpenAI habit)
+    // would otherwise be asked for `/v1/v1/messages`.
+    let base = base.map(|b| b.trim_end_matches("/v1").to_string()).unwrap_or_else(|| CLAUDE_API.into());
     let path = if t.count_tokens { "/v1/messages/count_tokens" } else { "/v1/messages" };
     let url = if oauth { format!("{base}{path}?beta=true") } else { format!("{base}{path}") };
     body["model"] = t.model.into();
@@ -848,6 +851,20 @@ pub fn codex_headers(client: &HeaderMap, token: &str, account_id: Option<&str>, 
     codex_headers_with_config(client, token, account_id, oauth, None)
 }
 
+/// Codex releases below this are refused current models ("not supported when using
+/// Codex with a ChatGPT account"), so they are treated as source builds.
+const MODEL_GATE_RELEASE: &str = "0.160.0";
+
+/// Whether `version` is a lower `major.minor.patch` than `newest`. An unparseable
+/// version is left alone rather than guessed at.
+fn older_release(version: &str, newest: &str) -> bool {
+    let parse = |v: &str| -> Option<(u64, u64, u64)> {
+        let mut parts = v.split(['-', '+']).next()?.split('.').map(|p| p.parse::<u64>().ok());
+        Some((parts.next()??, parts.next().flatten().unwrap_or(0), parts.next().flatten().unwrap_or(0)))
+    };
+    matches!((parse(version), parse(newest)), (Some(v), Some(n)) if v < n)
+}
+
 fn codex_headers_with_config(
     client: &HeaderMap,
     token: &str,
@@ -862,7 +879,13 @@ fn codex_headers_with_config(
         let generated_agent = CODEX_USER_AGENT.replace(CODEX_VERSION, &generated_version);
         // Recognition chooses the client profile, never the forwarding policy.
         let nominated = connection_headers(client);
+        // A source build of Codex calls itself 0.0.0, a fork its own 0.x number. The
+        // backend refuses new models to releases that old, so such a client goes out
+        // as the newest Codex Fusebox knows. Real releases keep their own identity.
+        let dev_build =
+            crate::clients::native_codex_version(client).is_some_and(|v| older_release(&v, MODEL_GATE_RELEASE));
         let native = crate::clients::is_codex(client)
+            && !dev_build
             && !["user-agent", "originator", "version"].iter().any(|name| nominated.contains(*name));
         if !native {
             set_header(&mut h, "version", generated_version);
@@ -1940,6 +1963,48 @@ mod tests {
             assert_eq!(get_header(outbound, "originator"), Some(CODEX_ORIGINATOR));
             assert_eq!(get_header(outbound, "version"), Some(CODEX_VERSION));
         }
+    }
+
+    #[test]
+    fn codex_source_builds_reporting_0_0_0_go_out_as_the_newest_known_release() {
+        let acct = oauth_account(Provider::Codex);
+        let cfg = Config::default();
+        let headers = request_headers(&[
+            ("user-agent", "codex_exec/0.0.0 (Mac OS 14.7.2; arm64) xterm-256color (codex_exec; 0.0.0)"),
+            ("originator", "codex_exec"),
+        ]);
+        let prepared = prepare(&test_target(&acct, &cfg, &headers), json!({"input":[]}));
+        let (_, websocket) = codex_ws_url(&acct, &cfg, &headers);
+        for outbound in [&prepared.headers, &websocket] {
+            assert_eq!(get_header(outbound, "user-agent"), Some(CODEX_USER_AGENT));
+            assert_eq!(get_header(outbound, "originator"), Some(CODEX_ORIGINATOR));
+            assert_eq!(get_header(outbound, "version"), Some(CODEX_VERSION));
+        }
+    }
+
+    #[test]
+    fn codex_forks_reporting_an_old_release_go_out_as_the_newest_known_release() {
+        let acct = oauth_account(Provider::Codex);
+        let cfg = Config::default();
+        let headers = request_headers(&[
+            ("user-agent", "codex_exec/0.1.1 (Mac OS 27.2.0; arm64) unknown (codex_exec; 0.1.1)"),
+            ("originator", "codex_exec"),
+        ]);
+        let prepared = prepare(&test_target(&acct, &cfg, &headers), json!({"input":[]}));
+        assert_eq!(get_header(&prepared.headers, "version"), Some(CODEX_VERSION));
+        assert_eq!(get_header(&prepared.headers, "user-agent"), Some(CODEX_USER_AGENT));
+    }
+
+    #[test]
+    fn older_release_compares_numerically_and_leaves_odd_versions_alone() {
+        assert!(older_release("0.1.1", "0.166.0"));
+        assert!(older_release("0.0.0", "0.166.0"));
+        assert!(older_release("0.99.9", "0.166.0"));
+        assert!(!older_release("0.163.0", MODEL_GATE_RELEASE));
+        assert!(!older_release("0.166.0", "0.166.0"));
+        assert!(!older_release("0.167.0-alpha.1", "0.166.0"));
+        assert!(!older_release("1.0.0", "0.166.0"));
+        assert!(!older_release("dev", "0.166.0"));
     }
 
     #[test]

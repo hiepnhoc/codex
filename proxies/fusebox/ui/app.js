@@ -31,7 +31,7 @@ const mob = () => PHONE.matches;
 const MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const STANDALONE = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const MOD = MAC ? '⌘' : 'Ctrl ';
-const ROUTES = ['overview', 'accounts', 'requests', 'usage', 'models', 'config'];
+const ROUTES = ['overview', 'accounts', 'requests', 'usage', 'models', 'procs', 'config'];
 
 const S = {
   key: store.get('key') || '',
@@ -113,7 +113,7 @@ applyTheme();
 
 const PROVIDER = {
   claude: 'Claude', codex: 'Codex', gemini: 'Gemini', vertex: 'Vertex AI', antigravity: 'Antigravity',
-  kimi: 'Kimi', xai: 'Grok', meta: 'Meta', devin: 'Devin', 'openai-compat': 'Compatible',
+  kimi: 'Kimi', xai: 'Grok', meta: 'Meta', devin: 'Devin', kiro: 'Kiro', 'openai-compat': 'Compatible',
 };
 // Accounts you can sign in to: [id, name, what it connects].
 const SIGNIN = [
@@ -124,6 +124,7 @@ const SIGNIN = [
   ['kimi', 'Kimi', 'Kimi Code membership'],
   ['meta', 'Meta', 'Muse Spark'],
   ['devin', 'Devin', 'Devin or Windsurf account'],
+  ['kiro', 'Kiro', 'AWS Builder ID or IAM Identity Center'],
   ['vertex', 'Vertex AI', 'Google Cloud service account key'],
 ];
 const LOGIN = {
@@ -134,6 +135,7 @@ const LOGIN = {
   kimi: { name: 'Kimi', intro: 'Connect a Kimi Code membership.' },
   xai: { name: 'Grok', intro: 'Connect a SuperGrok or X Premium subscription.' },
   meta: { name: 'Meta', intro: 'Connect a Meta account for Muse models.' },
+  kiro: { name: 'Kiro', intro: 'Connect a Kiro account: AWS Builder ID, or your organisation’s IAM Identity Center.', example: 'http://127.0.0.1:…/oauth/callback?code=…&state=…' },
 };
 const DEVICE_CODE = new Set(['kimi', 'xai', 'meta']);
 const CLIENT = { openai: 'OpenAI', responses: 'Responses', claude: 'Anthropic', gemini: 'Gemini' };
@@ -141,7 +143,7 @@ const ENDPOINT = { openai: '/v1/chat/completions', responses: '/v1/responses', c
 
 // Real provider logos live in the inline sprite (ui/logos.svg). OpenAI-compatible
 // groups get their vendor's logo when the name gives it away.
-const LOGOS = new Set(['claude', 'codex', 'gemini', 'vertex', 'antigravity', 'xai', 'kimi', 'meta', 'devin']);
+const LOGOS = new Set(['claude', 'codex', 'gemini', 'vertex', 'antigravity', 'xai', 'kimi', 'meta', 'devin', 'kiro']);
 const COMPAT_LOGOS = [
   ['openrouter', 'openrouter'], ['ollama', 'ollama'], ['lmstudio', 'lmstudio'], ['deepseek', 'deepseek'], ['groq', 'groq'],
   ['mistral', 'mistral'], ['qwen', 'qwen'], ['dashscope', 'qwen'], ['moonshot', 'kimi'], ['kimi', 'kimi'], ['grok', 'xai'],
@@ -842,7 +844,7 @@ function renderFaults() {
   }
 }
 
-const TITLES = { overview: 'Overview', accounts: 'Accounts', requests: 'Requests', usage: 'Usage', models: 'Models', config: 'Config' };
+const TITLES = { overview: 'Overview', accounts: 'Accounts', requests: 'Requests', usage: 'Usage', models: 'Models', procs: 'Processes', config: 'Config' };
 
 function renderChrome() {
   for (const a of $$('.tabs a, .mtabs a')) {
@@ -871,6 +873,7 @@ function viewClass() {
   if (S.route === 'accounts') return S.sub ? 'view detail' : 'view tight list';
   if (S.route === 'requests') return 'view tight list';
   if (S.route === 'models') return 'view tight list';
+  if (S.route === 'procs') return 'view tight list';
   if (S.route === 'config') return 'view tight config';
   return 'view';
 }
@@ -881,10 +884,11 @@ function render() {
   view.className = viewClass();
   if (S.locked) { closeResetModal(); closeLayers(); view.innerHTML = lockHTML(); bindLock(); return; }
   if (!S.overview) { view.innerHTML = skeletonHTML(); return; }
-  const pages = { overview: overviewHTML, accounts: accountsHTML, requests: requestsHTML, usage: usageHTML, models: modelsHTML, config: configHTML };
+  const pages = { overview: overviewHTML, accounts: accountsHTML, requests: requestsHTML, usage: usageHTML, models: modelsHTML, procs: procsHTML, config: configHTML };
   view.innerHTML = (pages[S.route] || overviewHTML)();
   if (S.route === 'config') bindConfig();
   if (S.route === 'usage') bindUsage();
+  if (S.route === 'procs') bindProcs();
   if (S.route === 'accounts' && S.sub) loadActivity(S.sub);
   renderDrawer();
   syncResetModal();
@@ -943,6 +947,7 @@ function acctState(a) {
     const [model, until] = cds[0];
     const kind = (a.cooldown_kinds || {})[model] || 'rate_limit';
     if (kind === 'quota' && model === '*' && a.quota_reset_unknown) return { cls: 'cooling', dot: 'warn', word: 'Quota used up', model, until, kind, resetUnknown: true };
+    if (kind === 'credit') return { cls: 'cooling', dot: 'err', word: 'Out of credit', model, until, kind, html: `Out of credit · ${liveLeft(until)}` };
     return { cls: 'cooling', dot: 'warn', word: 'Cooling', model, until, kind, html: `Cooling ${liveLeft(until)}` };
   }
   if (a.last_error) return { cls: 'error', dot: 'err', word: 'Error', signin: a.kind !== 'api-key' && SIGNIN_ERR.test(a.last_error) };
@@ -1024,8 +1029,8 @@ const noShortNote = (a) => (noShortLimit(a) ? ' · no 5h limit' : '')
   // Meta's key mint says when the subscription has lapsed; its meters then stop moving.
   + (a.quota?.subscription_inactive ? ' · subscription inactive' : '');
 
-const windowLabel = (w, short) => (w && !['week', 'day'].includes(w.name) ? w.name.toUpperCase() : short ? '5H' : w && w.name === 'day' ? 'DAY' : 'WK');
-const windowTitle = (w) => (/^\d+h$/.test(w.name) ? `${w.name.replace('h', '')}-hour` : w.name === 'day' ? 'Daily' : w.name.startsWith('week') ? (w.name === 'week' ? 'Weekly' : `Weekly · ${w.name.slice(5)}`) : w.name);
+const windowLabel = (w, short) => (w && w.name === 'month' ? 'MO' : w && !['week', 'day'].includes(w.name) ? w.name.toUpperCase() : short ? '5H' : w && w.name === 'day' ? 'DAY' : 'WK');
+const windowTitle = (w) => (/^\d+h$/.test(w.name) ? `${w.name.replace('h', '')}-hour` : w.name === 'day' ? 'Daily' : w.name === 'month' ? 'Monthly' : w.name.startsWith('week') ? (w.name === 'week' ? 'Weekly' : `Weekly · ${w.name.slice(5)}`) : w.name);
 
 // A window's length from its name ("5h", "day", "week"), in seconds. A model's window
 // ("week fable") is as long as its first word says, as in src/attribution.rs.
@@ -1035,7 +1040,7 @@ function windowSeconds(w) {
   if (h) return Number(h[1]) * 3600;
   const other = /^(\d+)([dms])$/.exec(name);
   if (other) return Number(other[1]) * ({ d: 86400, m: 60, s: 1 }[other[2]]);
-  return { day: 86400, week: 7 * 86400 }[name] || null;
+  return { day: 86400, week: 7 * 86400, month: 30 * 86400 }[name] || null;
 }
 
 // How far through its window we are, 0 to 1, when the window says when it resets.
@@ -1076,13 +1081,24 @@ function pctHTML(w) {
   return `<span class="pct ${q.cls}">${quotaPercent(q[S.quotaDisplay])}</span>`;
 }
 
+// A window's absolute amounts, when the provider reports them beside the percent
+// (Kiro: credits used of the month's allowance). Informative limits carry no percent.
+function windowAmount(a, w) {
+  if (!w) return '';
+  const l = (a.quota?.limits || []).find((l) => l.scope?.kind === 'account' && l.used_percent == null && l.used != null && l.limit != null && (!l.resets_at || !w.resets_at || l.resets_at === w.resets_at));
+  if (!l) return '';
+  const amount = (n) => n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  return `${amount(l.used)} / ${amount(l.limit)}${l.unit ? ` ${l.unit}` : ''}`;
+}
+
 // One meter row: "5H [segments] 47% ↺ 2h 14m"; full reset time on hover.
 function meterRowHTML(a, short) {
   const w = windowOf(a, short);
   const label = windowLabel(w, short);
   const reset = w && w.resets_at ? `↺ ${liveLeft(w.resets_at, true)}` : '';
   const title = w && w.resets_at ? ` title="${esc(windowTitle(w))} window resets ${esc(fullResetTime(w.resets_at))}"` : '';
-  return `<div class="mrow"><span class="capsm">${esc(label)}</span>${segsHTML(w, `${windowTitle(w || { name: short ? '5h' : 'week' })}`)}${pctHTML(w)}<span class="rst"${title}>${reset}</span></div>`;
+  const amount = windowAmount(a, w);
+  return `<div class="mrow${amount ? ' has-amt' : ''}"><span class="capsm">${esc(label)}</span>${segsHTML(w, `${windowTitle(w || { name: short ? '5h' : 'week' })}`)}${pctHTML(w)}<span class="rst"${title}>${reset}</span>${amount ? `<span class="rst amt">${esc(amount)}</span>` : ''}</div>`;
 }
 const meterRowsHTML = (a) => `${noShortLimit(a) ? '' : meterRowHTML(a, true)}${meterRowHTML(a, false)}`;
 const metersHTML = (a) => `<div class="meters">${!a.quota?.windows?.length && a.quota?.limits?.length ? quotaLimitsHTML(a, true) : meterRowsHTML(a)}</div>`;
@@ -1166,6 +1182,8 @@ function windowBlockHTML(a, w, title, size) {
   let note = 'Not reported yet';
   if (w && w.resets_at) note = `${q && (q.exhausted || spent) ? 'Back' : 'Resets'} ${esc(when(w.resets_at))} · in ${liveLeft(w.resets_at)}`;
   else if (q) note = 'No reset time reported';
+  const amount = windowAmount(a, w);
+  if (amount) note = `${esc(amount)} · ${note}`;
   const big = size === 'xl';
   return `<div class="window"><div class="window-top"><span>${title}${big ? ' window' : ''}</span>${q ? `<span class="pct ${q.cls}${big ? ' big' : ''}" style="width:auto">${quotaPercent(q[S.quotaDisplay])}</span>` : '<span class="dim">–</span>'}</div>
     ${segsHTML(w, `${title} window`, size === 'xl' ? 'xl' : 'lg')}<span class="note">${note}</span>${usedByHTML(a, w)}</div>`;
@@ -1275,8 +1293,8 @@ function alertsList() {
       out.push({ lvl: 'warn', id: a.id, title: `${spent ? windowTitle(spent) : 'Usage'} limit used up`,
         detail: `${st.resetUnknown ? 'Provider did not report a reset time. Refresh quota to check availability.' : `Back at ${when(back)}, in ${left(back)}.`}${others ? ` Its sessions moved to another ${provName(a)} account.` : ''}`, act: 'View' });
     } else if (st.cls === 'cooling' && st.kind === 'credit') {
-      out.push({ lvl: 'err', id: a.id, title: 'API credit used up',
-        detail: `Add credit to this API key. Requests skip it until ${when(st.until)}, in ${left(st.until)}.`, act: 'View' });
+      out.push({ lvl: 'err', id: a.id, title: 'Out of credit',
+        detail: `${provName(a)} says this key has no credit left. Other accounts answer for it; it is tried again at ${when(st.until)}, in ${left(st.until)}. Top it up, or remove the key.`, act: 'View' });
     } else if (st.cls === 'cooling' && st.kind === 'rate_limit') {
       out.push({ lvl: 'warn', id: a.id, title: 'Rate limited',
         detail: `${st.model === '*' ? 'Every model' : st.model} is paused until ${when(st.until)}, in ${left(st.until)}.`, act: 'View' });
@@ -1825,6 +1843,7 @@ const ROUTING_REASON = {
   new_session: 'New session',
   session_reused: 'Same session',
   quota_exhausted: 'Moved: quota used up',
+  out_of_credit: 'Moved: key out of credit',
   account_disabled: 'Moved: account disabled',
   account_removed: 'Moved: account removed',
   model_unavailable: 'Moved: model not served',
@@ -1869,6 +1888,7 @@ function whySentence(r) {
     session_reused: 'Stayed on the account this session is pinned to, so its prompt cache keeps working.',
     temporary_detour: 'The session’s account was busy, so this one request used another. The session stays pinned to its account.',
     quota_exhausted: 'The session’s account ran out of quota, so the session moved here and stays here. Its prompt cache starts cold.',
+    out_of_credit: 'The session’s key has no credit left at its provider, so the session moved here and stays here. Its prompt cache starts cold.',
     account_disabled: 'The session’s account was disabled, so the session moved here and stays here. Its prompt cache starts cold.',
     account_removed: 'The session’s account was removed, so the session moved here and stays here. Its prompt cache starts cold.',
     model_unavailable: 'The session’s account doesn’t serve this model, so the session moved here and stays here.',
@@ -1934,9 +1954,12 @@ function tokensText(r, field) {
   return `<span title="${Number(r[field] || 0).toLocaleString('en-US')} reported tokens${partial ? '; partial usage, total consumption is unknown' : ''}">${partial ? '≥' : ''}${fmt(r[field] || 0)}</span>`;
 }
 
+// Provider credits (Kiro meters each response in credits of its monthly allowance).
+const creditsText = (r) => typeof r.credits === 'number' && r.credits > 0 ? ` · ${r.credits.toLocaleString('en-US', { maximumFractionDigits: 3 })} credits` : '';
+
 function requestTokensHTML(r) {
-  if (usageState(r) === 'missing') return '<span class="dim">Unknown · provider usage not reported</span>';
-  return `${tokensText(r, 'input_tokens')} in · ${tokensText(r, 'output_tokens')} out · ${tokensText(r, 'cache_tokens')} cached${usageState(r) === 'partial' ? ' · partial usage' : ''}`;
+  if (usageState(r) === 'missing') return `<span class="dim">Unknown · provider usage not reported</span>${creditsText(r)}`;
+  return `${tokensText(r, 'input_tokens')} in · ${tokensText(r, 'output_tokens')} out · ${tokensText(r, 'cache_tokens')} cached${usageState(r) === 'partial' ? ' · partial usage' : ''}${creditsText(r)}`;
 }
 
 function recentRowHTML(r) {
@@ -2035,7 +2058,7 @@ function drawerHTML(a) {
       <button class="close-btn" type="button" data-act="close-drawer"><kbd class="kbd">Esc</kbd>Close</button></div>
     <div class="drawer-body">
       <div class="statline">${statusHTML(a)}<span class="dim">· last used ${liveAgo(a.last_used)}</span></div>
-      ${st.cls === 'cooling' ? `<div class="notice warn"><div class="cell2"><span class="mono">${esc(modelScope(st.model))}</span><span class="small warn">${st.kind === 'quota' ? 'Usage limit used up' : 'Cooling down'} · ${st.resetUnknown ? 'Reset time unknown' : `back at ${esc(when(st.until))}, in ${liveLeft(st.until)}`}</span></div><button class="btn sm" type="button" data-act="reset" data-id="${esc(a.id)}">Clear cooldowns</button></div>` : ''}
+      ${st.cls === 'cooling' ? `<div class="notice warn"><div class="cell2"><span class="mono">${esc(modelScope(st.model))}</span><span class="small warn">${st.kind === 'quota' ? 'Usage limit used up' : st.kind === 'credit' ? 'Out of credit' : 'Cooling down'} · ${st.resetUnknown ? 'Reset time unknown' : `back at ${esc(when(st.until))}, in ${liveLeft(st.until)}`}</span></div><button class="btn sm" type="button" data-act="reset" data-id="${esc(a.id)}">Clear cooldowns</button></div>` : ''}
       ${hasQuota ? `<div class="block" style="gap:14px"><span class="label">Limits · ${quotaWord()}</span>${quotaWindowsHTML(a, 'lg')}${quotaLimitsHTML(a)}</div>` : ''}
       ${windowStarterHTML(a)}
       ${banked && (count || ['pending', 'unknown'].includes(banked.operation?.status)) ? `<div class="notice"><div class="cell2"><span style="font-size:13px">${esc(bankedLabel(a))}</span><span class="small dim">${esc(bankedPolicyText(a))}</span></div><button class="btn sm" type="button" data-act="banked-details" data-id="${esc(a.id)}" aria-haspopup="dialog">Reset details</button></div>` : ''}
@@ -2720,12 +2743,86 @@ function detSigninHTML(a) {
   }
   const models = (a.models || []).slice(0, 24);
   const more = (a.models || []).length - models.length;
+  const compat = a.provider === 'openai-compat';
+  const editing = compat && S.modelEdit && S.modelEdit.id === a.id;
+  const fetchBtn = compat && !editing ? `<button class="linkbtn fetch-models" type="button" data-act="acct-fetch-models" data-id="${esc(a.id)}">Fetch models</button>` : '';
+  const serves = editing
+    ? `<div class="kv col" style="gap:6px"><span>Serves</span>${acctModelPickerHTML(S.modelEdit)}</div>`
+    : `<div class="kv col" style="gap:6px"><span>Serves ${fetchBtn}</span><span class="chipset">${models.map((m) => `<span class="idchip static">${esc(m)}</span>`).join('')}${more > 0 ? `<span class="idchip static">+${more} more</span>` : ''}${models.length ? '' : '<span class="dim">No models</span>'}</span></div>`;
   const kv = (list) => list.map(([k, v]) => `<div class="kv"><span>${k}</span><span>${esc(v)}</span></div>`).join('');
   return `<section class="card" style="padding:${pad}" aria-label="Sign-in"><span class="label">Sign-in</span>
     <div style="margin-top:10px">${kv(rows)}${billingRowHTML(a)}${kv(after)}
       <div class="kv col"><span>Stored in</span><span class="mono fg2" style="font-size:12px;word-break:break-all">${esc(storedIn(a))}</span></div>
-      <div class="kv col" style="gap:6px"><span>Serves</span><span class="chipset">${models.map((m) => `<span class="idchip static">${esc(m)}</span>`).join('')}${more > 0 ? `<span class="idchip static">+${more} more</span>` : ''}${models.length ? '' : '<span class="dim">No models</span>'}</span></div></div>
+      ${serves}</div>
     ${canSignIn(a) ? `<button class="btn" type="button" data-act="signin-again" data-id="${esc(a.id)}" style="margin:8px 0;${mob() ? 'width:100%;height:44px' : ''}">Sign in again</button>` : ''}</section>`;
+}
+
+// Editing an OpenAI-compatible key's model list on its account page: the server's
+// list as chips, the configured ones pressed (aliases kept), saved back to config.yaml.
+function acctModelPickerHTML(M) {
+  if (M.status === 'loading') return '<span class="wait"><span class="pulse"></span>Asking the server for its models…</span>';
+  if (M.status === 'error') return `<span class="msg err">${esc(M.message)}</span> <button class="linkbtn" type="button" data-act="acct-cancel-models">Close</button>`;
+  const all = acctModelUniverse(M);
+  return `<div class="model-pick">
+    <div class="model-pick-head"><span><span class="mono">${esc(M.host)}</span> · ${M.list.length} models · ${M.picked.length} picked</span>${all.length > 12 ? `<input type="search" name="acct-model-filter" placeholder="Filter" value="${esc(M.filter || '')}" autocomplete="off">` : ''}</div>
+    <div class="chips" id="acct-model-chips">${acctModelChipsHTML(M)}</div>
+    <div class="actions" style="margin:0"><button class="btn primary sm" type="button" data-act="acct-save-models" data-id="${esc(M.id)}" ${M.picked.length ? '' : 'disabled'}>Save models</button><button class="btn ghost sm" type="button" data-act="acct-cancel-models">Cancel</button></div>
+  </div>`;
+}
+
+// Every model worth a chip: what the server lists, plus configured ones it no longer lists.
+const acctModelUniverse = (M) => [...M.list, ...M.picked.filter((n) => !M.list.includes(n))];
+
+function acctModelChipsHTML(M) {
+  const q = (M.filter || '').trim().toLowerCase();
+  const shown = acctModelUniverse(M).filter((n) => !q || n.toLowerCase().includes(q) || (M.aliases[n] || '').toLowerCase().includes(q));
+  if (!shown.length) return '<span class="msg">No model matches.</span>';
+  return shown.map((n) => {
+    const alias = M.aliases[n];
+    const missing = !M.list.includes(n);
+    return `<button class="idchip" type="button" data-act="acct-pick-model" data-id="${esc(n)}" aria-pressed="${M.picked.includes(n)}" title="${missing ? 'Configured, but the server does not list it' : ''}">${alias ? `<span class="pfx">${esc(alias)}=</span>` : ''}${esc(n)}${missing ? '<span class="tag">not listed</span>' : ''}</button>`;
+  }).join('');
+}
+
+// The entries to save: picked models in order, each with the alias it had.
+const acctModelEntries = (M) => M.picked.map((name) => (M.aliases[name] ? { name, alias: M.aliases[name] } : { name }));
+
+async function fetchAccountModels(id) {
+  const a = accountById(id);
+  if (!a) return;
+  const current = a.model_map || [];
+  S.modelEdit = { id, status: 'loading' };
+  patch('det-root', detailBodyHTML);
+  try {
+    const r = await api(`/accounts/${encodeURIComponent(id)}/models/fetch`, { method: 'POST' });
+    let host = storedIn(a);
+    try { host = new URL(a.base_url || '').host || host; } catch {}
+    const aliases = Object.fromEntries(current.filter((m) => m.alias).map((m) => [m.name, m.alias]));
+    S.modelEdit = { id, status: 'done', list: r.models, picked: current.map((m) => m.name), aliases, host, filter: '' };
+  } catch (e) {
+    S.modelEdit = { id, status: 'error', message: e.message };
+  }
+  if (S.route === 'accounts' && S.sub === id) patch('det-root', detailBodyHTML);
+}
+
+function pickAccountModel(name) {
+  const M = S.modelEdit;
+  if (!M || M.status !== 'done') return;
+  M.picked = M.picked.includes(name) ? M.picked.filter((n) => n !== name) : [...M.picked, name];
+  patch('det-root', detailBodyHTML);
+}
+
+async function saveAccountModels(id) {
+  const M = S.modelEdit;
+  if (!M || M.id !== id || !M.picked.length) return;
+  try {
+    await api(`/accounts/${encodeURIComponent(id)}/models`, { method: 'PUT', body: JSON.stringify({ models: acctModelEntries(M) }) });
+    S.modelEdit = null;
+    toast(`Model list saved · ${M.picked.length} models`);
+    refreshAccounts();
+  } catch (e) {
+    toast(e.message);
+  }
 }
 
 function detSessionsHTML() {
@@ -2774,6 +2871,7 @@ function panelHTML() {
   if (S.panel === 'connect') return connectPanelHTML();
   if (S.panel === 'vertex') return vertexPanelHTML();
   if (S.panel === 'vertex-done') return doneHTML('Vertex AI', S.login);
+  if (S.panel === 'kiro' && !S.login) return kiroPanelHTML();
   if (LOGIN[S.panel]) return S.login && S.login.kind === 'device' ? devicePanelHTML() : loginPanelHTML();
   return '';
 }
@@ -2792,7 +2890,7 @@ function connectPanelHTML() {
 }
 
 function loginStatus(L, port) {
-  if (!L || L.status === 'starting') return '<span class="wait"><span class="pulse"></span>Opening the sign-in page…</span>';
+  if (!L || L.status === 'starting') return `<span class="wait"><span class="pulse"></span>Preparing the sign-in link…</span>`;
   if (L.status === 'done') return `<span class="ok">Connected ${esc(who(L.message) || '')}</span>`;
   if (L.status === 'error') return `<span class="err">${esc(hideEmails(L.message) || 'Sign-in failed')}</span>`;
   if (L.kind === 'device') return '<span class="wait"><span class="pulse"></span>Waiting for you to approve…</span>';
@@ -2806,7 +2904,10 @@ function doneHTML(name, L) {
     <div class="actions"><button class="btn" type="button" data-act="close-panel">Done</button></div></div>`;
 }
 
-const reopen = (L, text) => (L && L.url ? ` <a class="link" href="${esc(L.url)}" target="_blank" rel="noopener">${text} ${ICON.external.replace('<svg', '<svg style="width:12px;height:12px;vertical-align:-1px"')}</a>` : '');
+const reopen = (L, text) => (L && L.url ? ` <a class="link" href="${esc(L.url)}" target="_blank" rel="noopener">${text} ${ICON.external.replace('<svg', '<svg style="width:12px;height:12px;vertical-align:-1px"')}</a> <button class="linkbtn" type="button" data-act="copy" data-text="${esc(L.url)}" data-toast="Sign-in link copied">Copy link</button>` : '');
+// Step one of a sign-in: nothing opens by itself, so the link can go into a private
+// window signed in to the account that should be added.
+const openStep = (L) => `<b>Open the sign-in link</b> in a private window, with the account you want.${reopen(L, 'Open it here')}`;
 
 function loginPanelHTML() {
   const L = S.login;
@@ -2816,7 +2917,7 @@ function loginPanelHTML() {
     <h3>Sign in with ${info.name}</h3>
     <p>${info.intro} Credentials stay on this machine.</p>
     <ol class="steps">
-      <li><span class="n">1</span><div class="t"><b>Approve access</b> in the tab that opened.${reopen(L, 'Open sign-in page again')}</div></li>
+      <li><span class="n">1</span><div class="t">${openStep(L)}</div></li>
       <li><span class="n">2</span><div class="t" aria-live="polite">${loginStatus(L, info.port)}</div></li>
     </ol>
     <div class="divider"></div>
@@ -2843,7 +2944,7 @@ function devicePanelHTML() {
     <h3>Sign in with ${info.name}</h3>
     <p>${info.intro} Credentials stay on this machine.</p>
     <ol class="steps">
-      <li><span class="n">1</span><div class="t"><b>Open ${esc(host || 'the sign-in page')}</b> in the tab that opened.${reopen(L, 'Open it again')}</div></li>
+      <li><span class="n">1</span><div class="t">${openStep(L)}</div></li>
       <li><span class="n">2</span><div class="t"><b>Check the code matches</b> <span class="code-chip">${esc(L.user_code || '')}</span> <button class="linkbtn" type="button" data-act="copy" data-text="${esc(L.user_code || '')}" data-toast="Code copied">Copy</button></div></li>
       <li><span class="n">3</span><div class="t" aria-live="polite">${loginStatus(L)}</div></li>
     </ol>
@@ -2864,6 +2965,20 @@ function vertexPanelHTML() {
   </form>`;
 }
 
+// Kiro signs in through AWS: Builder ID needs nothing, Identity Center its start URL.
+function kiroPanelHTML() {
+  return `<form class="panel" data-form="kiro" aria-label="Sign in with Kiro">
+    <h3>Sign in with Kiro</h3>
+    <p>${LOGIN.kiro.intro} Credentials stay on this machine.</p>
+    <div class="grid">
+      <label class="field wide"><span>Identity Center start URL</span><input type="url" name="start_url" placeholder="https://d-…….awsapps.com/start" autocomplete="off" spellcheck="false"><small>Leave empty to sign in with AWS Builder ID.</small></label>
+      <label class="field"><span>Region</span><input type="text" name="region" placeholder="us-east-1" autocomplete="off" spellcheck="false"><small>Where the Identity Center or Builder ID lives.</small></label>
+    </div>
+    <div class="actions"><button class="btn primary" type="submit">Sign in</button><button class="btn ghost" type="button" data-act="close-panel">Cancel</button></div>
+    <p class="msg" id="kiro-msg" aria-live="polite"></p>
+  </form>`;
+}
+
 function keyPanelHTML() {
   const p = S.keyProvider;
   const opts = [['claude', 'Claude'], ['codex', 'OpenAI'], ['gemini', 'Gemini'], ['vertex', 'Vertex AI'], ['kimi', 'Kimi'], ['xai', 'xAI'], ['meta', 'Meta'], ['compat', 'OpenAI-compatible']];
@@ -2881,15 +2996,86 @@ function keyPanelHTML() {
       <label class="field wide"><span>API key${compat ? ' (optional for local servers)' : ''}</span><input type="password" name="api_key" autocomplete="off" spellcheck="false" ${compat ? '' : 'required'}></label>
       <label class="field ${compat ? '' : 'wide'}"><span>Base URL${compat ? '' : ' (optional)'}</span><input type="url" name="base_url" placeholder="${esc(base)}" ${compat ? 'required' : ''}></label>
       ${compat ? `<label class="field"><span>Name</span><input type="text" name="name" placeholder="openrouter"></label>
-      <label class="field wide"><span>Models</span><input type="text" name="models" placeholder="moonshotai/kimi-k3, kimi=moonshotai/kimi-k3" required><small>Comma separated. Write alias=upstream-name to expose a model under a shorter name.</small></label>` : ''}
+      <label class="field wide"><span>Models <button class="linkbtn fetch-models" type="button" data-act="fetch-models">Fetch models</button></span><input type="text" name="models" placeholder="moonshotai/kimi-k3, kimi=moonshotai/kimi-k3" required><small>Comma separated. Write alias=upstream-name to expose a model under a shorter name. Fetch models asks the server what it serves, then click to pick.</small></label>
+      <div class="field wide" id="key-models">${keyModelsHTML()}</div>` : ''}
     </div>
     <div class="actions"><button class="btn primary" type="submit">Add key</button><button class="btn ghost" type="button" data-act="close-panel">Cancel</button></div>
     <p class="msg" id="key-msg" aria-live="polite"></p>
   </form>`;
 }
 
+// The models an OpenAI-compatible server listed for the "Add an API key" form.
+function keyModelsHTML() {
+  const M = S.keyModels;
+  if (!M) return '';
+  if (M.status === 'loading') return '<span class="wait"><span class="pulse"></span>Asking the server for its models…</span>';
+  return `<div class="model-pick">
+    <div class="model-pick-head"><span><span class="mono">${esc(M.host)}</span> · ${M.list.length} models</span>${M.list.length > 12 ? `<input type="search" name="key-model-filter" placeholder="Filter" value="${esc(M.filter || '')}" autocomplete="off">` : ''}</div>
+    <div class="chips" id="key-model-chips">${keyModelChipsHTML()}</div>
+  </div>`;
+}
+
+function keyModelChipsHTML() {
+  const M = S.keyModels;
+  const q = (M.filter || '').trim().toLowerCase();
+  const shown = M.list.filter((id) => !q || id.toLowerCase().includes(q));
+  if (!shown.length) return '<span class="msg">No model matches.</span>';
+  const picked = pickedKeyModels();
+  return shown.map((id) => `<button class="idchip" type="button" data-act="pick-model" data-id="${esc(id)}" aria-pressed="${picked.has(id)}">${esc(id)}</button>`).join('');
+}
+
+// Entries of the Models field as "alias=upstream" or "upstream".
+const keyModelEntries = () => ($('#acct-panel input[name="models"]')?.value || '').split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+const upstreamOf = (entry) => (entry.includes('=') ? entry.slice(entry.indexOf('=') + 1).trim() : entry);
+const pickedKeyModels = () => new Set(keyModelEntries().map(upstreamOf));
+
+function pickKeyModel(id) {
+  const input = $('#acct-panel input[name="models"]');
+  if (!input) return;
+  const entries = keyModelEntries();
+  const has = entries.some((e) => upstreamOf(e) === id);
+  input.value = (has ? entries.filter((e) => upstreamOf(e) !== id) : [...entries, id]).join(', ');
+  syncKeyModelChips();
+}
+
+function syncKeyModelChips() {
+  const picked = pickedKeyModels();
+  for (const b of $$('#key-model-chips [data-act="pick-model"]')) b.setAttribute('aria-pressed', String(picked.has(b.dataset.id)));
+}
+
+async function fetchKeyModels(btn) {
+  const form = btn.closest('form');
+  const base_url = form.elements.base_url.value.trim();
+  const api_key = form.elements.api_key.value.trim();
+  const msg = $('#key-msg');
+  if (!base_url) {
+    msg.className = 'msg err';
+    msg.textContent = 'Enter the base URL first.';
+    form.elements.base_url.focus();
+    return;
+  }
+  btn.disabled = true;
+  S.keyModels = { status: 'loading' };
+  patch('key-models', keyModelsHTML);
+  try {
+    const r = await api('/keys/models', { method: 'POST', body: JSON.stringify({ base_url, api_key }) });
+    let host = base_url;
+    try { host = new URL(base_url).host; } catch {}
+    S.keyModels = { status: 'done', list: r.models, host, filter: '' };
+    msg.className = 'msg';
+    msg.textContent = '';
+  } catch (e) {
+    S.keyModels = null;
+    msg.className = 'msg err';
+    msg.textContent = e.message;
+  }
+  btn.disabled = false;
+  patch('key-models', keyModelsHTML);
+}
+
 function openPanel(panel) {
   S.panel = panel;
+  if (panel === 'key') S.keyModels = null;
   if (panel !== 'vertex-done' && !LOGIN[panel]) S.login = null;
   if (S.route !== 'accounts' || S.sub) { location.hash = '#/accounts'; return; }
   patch('acct-panel', panelHTML);
@@ -3405,7 +3591,7 @@ function groupsCardHTML() {
 
 const MODEL_EXAMPLE = {
   claude: 'claude-opus-6', codex: 'gpt-7', gemini: 'gemini-4-pro', vertex: 'gemini-4-pro', antigravity: 'gemini-4-pro',
-  kimi: 'kimi-k4', xai: 'grok-5', meta: 'muse-spark-2', devin: 'swe-2',
+  kimi: 'kimi-k4', xai: 'grok-5', meta: 'muse-spark-2', devin: 'swe-2', kiro: 'claude-opus-5',
 };
 
 // Providers a model can be added for: the connected ones (compatible providers list their own).
@@ -3792,26 +3978,23 @@ function bindLock() {
 
 // ---------------------------------------------------------------- actions
 
-async function startLogin(provider) {
+async function startLogin(provider, opts) {
   S.panel = provider;
-  if (provider === 'vertex') {
+  if (provider === 'vertex' || (provider === 'kiro' && !opts)) {
     S.login = null;
     if (S.route !== 'accounts' || S.sub) location.hash = '#/accounts';
     else { patch('acct-panel', panelHTML); patch('acct-head', accountHeadHTML); }
-    $('textarea[name="json"]')?.focus();
+    $(provider === 'vertex' ? 'textarea[name="json"]' : 'input[name="start_url"]')?.focus();
     return;
   }
   S.login = { provider, status: 'starting' };
   if (S.route !== 'accounts' || S.sub) location.hash = '#/accounts';
   else { patch('acct-panel', panelHTML); patch('acct-head', accountHeadHTML); }
-  // Open the tab synchronously so popup blockers allow it.
-  const tab = window.open('about:blank', '_blank');
+  // Nothing opens by itself: the panel shows the link, to copy into a private window.
   try {
-    const r = await api(`/login/${provider}`, { method: 'POST' });
+    const r = await api(`/login/${provider}`, { method: 'POST', body: opts ? JSON.stringify(opts) : undefined });
     S.login = { provider, state: r.state, url: r.url, callback: r.callback, kind: r.kind, user_code: r.user_code, status: 'pending' };
-    if (tab) { tab.opener = null; tab.location.href = r.url; }
   } catch (e) {
-    tab?.close();
     S.login = { provider, status: 'error', message: e.message };
   }
   patch('acct-panel', panelHTML);
@@ -3857,6 +4040,11 @@ async function submitPaste(form) {
   }
   patch('acct-panel', panelHTML);
   schedulePoll();
+}
+
+function submitKiro(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  return startLogin('kiro', { start_url: (data.start_url || '').trim(), region: (data.region || '').trim() });
 }
 
 async function submitVertex(form) {
@@ -4144,8 +4332,15 @@ document.addEventListener('click', (e) => {
       clearTimeout(pollTimer);
       patch('acct-panel', panelHTML);
       return patch('acct-head', accountHeadHTML);
+    case 'fetch-models': return fetchKeyModels(el);
+    case 'acct-fetch-models': return fetchAccountModels(id);
+    case 'acct-pick-model': return pickAccountModel(id);
+    case 'acct-save-models': return saveAccountModels(id);
+    case 'acct-cancel-models': S.modelEdit = null; return patch('det-root', detailBodyHTML);
+    case 'pick-model': return pickKeyModel(id);
     case 'key-provider':
       S.keyProvider = id;
+      S.keyModels = null;
       return patch('acct-panel', panelHTML);
     case 'confirm-delete':
       S.confirm = id;
@@ -4218,6 +4413,14 @@ document.addEventListener('input', (e) => {
     store.set('snippet', S.snippet);
     refreshSetups();
     document.getElementById(select)?.focus();
+  } else if (e.target.name === 'acct-model-filter' && S.modelEdit) {
+    S.modelEdit.filter = e.target.value;
+    patch('acct-model-chips', acctModelChipsHTML, S.modelEdit);
+  } else if (e.target.name === 'key-model-filter' && S.keyModels) {
+    S.keyModels.filter = e.target.value;
+    patch('key-model-chips', keyModelChipsHTML);
+  } else if (e.target.name === 'models' && e.target.closest('form[data-form="key"]')) {
+    syncKeyModelChips();
   } else if (e.target.id === 'model-filter') {
     S.modelFilter = e.target.value;
     patch('models-root', modelsBodyHTML);
@@ -4288,6 +4491,7 @@ document.addEventListener('submit', async (e) => {
   if (kind === 'add-model') return submitAddModel(form);
   if (kind === 'billing') return saveBilling(form.dataset.id, form.elements.date.value);
   if (kind === 'vertex') return submitVertex(form);
+  if (kind === 'kiro') return submitKiro(form);
   if (kind === 'unlock') {
     S.key = form.elements.key.value.trim();
     try {
@@ -4531,7 +4735,7 @@ async function boot() {
     await loadAll();
   } catch (e) {
     if (!(e instanceof ApiError && (e.status === 401 || e.status === 403))) {
-      view.innerHTML = `<div class="lock"><h1>Can't reach Fusebox</h1><p>${esc(e.message)}. Check that the server is running, then reload.</p></div>`;
+      view.innerHTML = `<div class="lock"><h1>Can't reach HiBox</h1><p>${esc(e.message)}. Check that the server is running, then reload.</p></div>`;
     }
     return;
   }

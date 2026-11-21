@@ -449,6 +449,7 @@ pub(crate) fn openai_usage(u: &Value, wire: Format) -> Option<Usage> {
         cache_write: write,
         write_30m: details["cache_write_tokens_details"]["ttl_30m_tokens"].as_u64(),
         write_12h: details["cache_write_tokens_details"]["ttl_12h_tokens"].as_u64(),
+        credits: None,
     })
 }
 

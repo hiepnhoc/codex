@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use axum::Json;
 use axum::Router;
 use axum::extract::ws::{Message, WebSocketUpgrade};
@@ -13,7 +13,7 @@ use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -34,8 +34,18 @@ pub struct Login {
     pub user_code: Option<String>,
     #[serde(skip)]
     pub verifier: String,
+    /// Kiro: the OIDC client registered for this sign-in.
+    #[serde(skip)]
+    pub kiro: Option<crate::kiro::Pending>,
     #[serde(skip)]
     pub created: Instant,
+}
+
+/// What a sign-in may need beyond the provider (Kiro's Identity Center).
+#[derive(Clone, Default, Deserialize)]
+pub struct LoginOpts {
+    pub start_url: Option<String>,
+    pub region: Option<String>,
 }
 
 static CLAUDE_CB: AtomicBool = AtomicBool::new(false);
@@ -64,7 +74,7 @@ fn settle(app: &Arc<App>, state: &str, result: &Result<String>) {
     app.broadcast("login", json!({ "state": state }));
 }
 
-pub async fn start_login(app: &Arc<App>, provider: Provider) -> Result<(String, Login)> {
+pub async fn start_login_with(app: &Arc<App>, provider: Provider, opts: LoginOpts) -> Result<(String, Login)> {
     let state = oauth::random_state(provider);
     match provider {
         Provider::Claude | Provider::Codex | Provider::Antigravity => {
@@ -80,6 +90,7 @@ pub async fn start_login(app: &Arc<App>, provider: Provider) -> Result<(String, 
                 kind: "redirect",
                 user_code: None,
                 verifier: pkce.verifier,
+                kiro: None,
                 created: Instant::now(),
             };
             remember(app, &state, &login);
@@ -96,6 +107,7 @@ pub async fn start_login(app: &Arc<App>, provider: Provider) -> Result<(String, 
                 kind: "device",
                 user_code: Some(dev.user_code.clone()),
                 verifier: String::new(),
+                kiro: None,
                 created: Instant::now(),
             };
             remember(app, &state, &login);
@@ -130,6 +142,68 @@ pub async fn start_login(app: &Arc<App>, provider: Provider) -> Result<(String, 
                 kind: "redirect",
                 user_code: None,
                 verifier: pkce.verifier,
+                kiro: None,
+                created: Instant::now(),
+            };
+            remember(app, &state, &login);
+            Ok((state, login))
+        }
+        Provider::Kiro => {
+            let http = app.http.control(None);
+            let region = opts
+                .region
+                .as_deref()
+                .map(str::trim)
+                .filter(|r| !r.is_empty())
+                .unwrap_or(crate::kiro::DEFAULT_REGION)
+                .to_string();
+            let start_url = opts.start_url.as_deref().map(str::trim).filter(|u| !u.is_empty());
+            let Some(start_url) = start_url else {
+                // AWS Builder ID: approve a code in the browser.
+                let dev = crate::kiro::begin_device(&http, &region).await?;
+                let login = Login {
+                    provider,
+                    status: "pending",
+                    message: None,
+                    url: dev.verification_uri.clone(),
+                    callback: true,
+                    kind: "device",
+                    user_code: Some(dev.user_code.clone()),
+                    verifier: String::new(),
+                    kiro: None,
+                    created: Instant::now(),
+                };
+                remember(app, &state, &login);
+                let (app2, state2) = (app.clone(), state.clone());
+                tokio::spawn(async move {
+                    let result = async {
+                        let signed = crate::kiro::wait_device(&http, &dev).await?;
+                        save_signed(&app2, provider, signed).await
+                    }
+                    .await;
+                    settle(&app2, &state2, &result);
+                });
+                return Ok((state, login));
+            };
+            // IAM Identity Center: the redirect must be registered with AWS, port and all.
+            let pkce = oauth::pkce();
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .context("cannot listen on localhost for the AWS redirect")?;
+            let port = listener.local_addr()?.port();
+            let redirect = format!("http://127.0.0.1:{port}/oauth/callback");
+            let (url, pending) = crate::kiro::begin_pkce(&http, start_url, &region, &redirect, &state, &pkce).await?;
+            serve_callback(app, listener, "/oauth/callback", provider, None);
+            let login = Login {
+                provider,
+                status: "pending",
+                message: None,
+                url,
+                callback: true,
+                kind: "redirect",
+                user_code: None,
+                verifier: pkce.verifier,
+                kiro: Some(pending),
                 created: Instant::now(),
             };
             remember(app, &state, &login);
@@ -345,10 +419,10 @@ async fn callback(State(app): State<Arc<App>>, Query(q): Query<CallbackQuery>) -
     };
     // Served from the OAuth callback port, so the page carries its own styles and no assets.
     Html(format!(
-        r##"<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><meta name="theme-color" content="#0b0b0a"><title>{title} · Fusebox</title>
+        r##"<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><meta name="theme-color" content="#0b0b0a"><title>{title} · HiBox</title>
 <body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0b0a;color:#f2efe8;font:14px/1.45 'IBM Plex Sans',system-ui,-apple-system,sans-serif">
 <main style="box-sizing:border-box;width:min(420px,calc(100% - 32px));padding:22px 24px 24px;background:#121210;border:1px solid #24231f;border-radius:8px">
-<div style="font:600 11px/1 'IBM Plex Sans Condensed','IBM Plex Sans',system-ui,sans-serif;letter-spacing:.12em;text-transform:uppercase;color:#857f74">Fusebox</div>
+<div style="font:600 11px/1 'IBM Plex Sans Condensed','IBM Plex Sans',system-ui,sans-serif;letter-spacing:.12em;text-transform:uppercase;color:#857f74">HiBox</div>
 <h1 style="display:flex;align-items:center;gap:10px;font-size:17px;font-weight:600;margin:14px 0 6px"><span style="width:8px;height:8px;border-radius:50%;background:{dot}"></span>{title}</h1>
 <p style="color:#b4afa4;margin:0;font-size:13px">{body}</p></main></body>"##
     ))
@@ -359,7 +433,7 @@ fn html_escape(s: &str) -> String {
 }
 
 pub async fn complete_login(app: &Arc<App>, state: &str, code: &str) -> Result<String> {
-    let (provider, verifier) = {
+    let (provider, verifier, kiro) = {
         let logins = app.logins.lock();
         let l = logins.get(state).ok_or_else(|| anyhow!("unknown or expired login, start again"))?;
         if l.status != "pending" {
@@ -368,11 +442,16 @@ pub async fn complete_login(app: &Arc<App>, state: &str, code: &str) -> Result<S
         if l.kind == "device" {
             return Err(anyhow!("approve the code in your browser; there is nothing to paste"));
         }
-        (l.provider, l.verifier.clone())
+        (l.provider, l.verifier.clone(), l.kiro.clone())
     };
     let result = async {
         if provider == Provider::Devin {
             let signed = crate::devin::complete_login(app, code.trim(), &verifier).await?;
+            return save_signed(app, provider, signed).await;
+        }
+        if provider == Provider::Kiro {
+            let pending = kiro.ok_or_else(|| anyhow!("this Kiro sign-in has no registered client; start again"))?;
+            let signed = crate::kiro::complete_pkce(&app.http.control(None), &pending, code.trim()).await?;
             return save_signed(app, provider, signed).await;
         }
         let (cred, name, extra) = oauth::exchange(app, provider, code.trim(), state, &verifier).await?;
@@ -422,11 +501,15 @@ pub fn router(app: Arc<App>) -> Router<Arc<App>> {
         .route("/accounts/{id}/activity", get(account_activity))
         .route("/accounts/{id}/test", post(test_account))
         .route("/accounts/{id}/priority", post(set_priority))
+        .route("/accounts/{id}/models", put(set_account_models))
+        .route("/accounts/{id}/models/fetch", post(fetch_account_models))
         .route("/accounts/{id}/billing", post(set_billing))
         .route("/clients/usage", get(client_usage))
         .route("/client-identities", get(client_identities))
         .route("/client-identities/reset", post(reset_client_identities))
         .route("/playground", post(crate::server::playground))
+        .route("/procs", get(procs))
+        .route("/procs/signal", post(procs_signal))
         // A pasted request may be as large as one a client sends.
         .route(
             "/inspect",
@@ -434,6 +517,7 @@ pub fn router(app: Arc<App>) -> Router<Arc<App>> {
         )
         .route("/routes", get(routes))
         .route("/keys", post(add_key))
+        .route("/keys/models", post(list_key_models))
         .route("/vertex", post(import_vertex))
         .route("/requests", get(requests))
         .route("/faults", get(faults))
@@ -446,6 +530,33 @@ pub fn router(app: Arc<App>) -> Router<Arc<App>> {
         .route("/login/{target}/code", post(login_code))
         .route("/live", get(live))
         .layer(middleware::from_fn_with_state(app, auth))
+}
+
+#[derive(Deserialize)]
+struct ProcsQuery {
+    others: Option<usize>,
+}
+
+/// The Processes page: agents and the heaviest other programs on this machine.
+async fn procs(Query(q): Query<ProcsQuery>) -> Json<Value> {
+    Json(crate::procs::snapshot(q.others.unwrap_or(crate::procs::DEFAULT_OTHERS).min(100)).await)
+}
+
+#[derive(Deserialize)]
+struct SignalBody {
+    action: crate::procs::Action,
+    pids: Vec<i32>,
+}
+
+/// Pauses, resumes, ends or kills a process tree, given its pids root first.
+async fn procs_signal(Json(b): Json<SignalBody>) -> Response {
+    if b.pids.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "no processes named");
+    }
+    match crate::procs::signal(b.action, &b.pids) {
+        Ok(sent) => Json(json!({ "ok": true, "sent": sent })).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, e.to_string()),
+    }
 }
 
 async fn client_identities() -> Json<Value> {
@@ -662,6 +773,7 @@ async fn overview(State(app): State<Arc<App>>) -> Json<Value> {
         } else if st.quota_refreshing
             || st.cooldowns.get("*").is_some_and(|t| *t > chrono::Utc::now())
             || st.quota_cooldowns.get("*").is_some_and(|t| *t > chrono::Utc::now())
+            || st.credit_until.is_some_and(|t| t > chrono::Utc::now())
             || st.quota.exhausted_until("").is_some()
         {
             cooling += 1;
@@ -1186,6 +1298,7 @@ async fn reset_account(State(app): State<Arc<App>>, Path(id): Path<String>) -> R
     let mut st = acct.state.lock();
     st.cooldowns.clear();
     st.quota_cooldowns.clear();
+    st.credit_until = None;
     st.strikes = 0;
     st.clear_error();
     drop(st);
@@ -1262,10 +1375,12 @@ async fn apply_banked_reset(
 }
 async fn refresh_quota(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
     let Some(acct) = app.pool.get(&id) else { return err(StatusCode::NOT_FOUND, "unknown account") };
-    if !matches!(acct.provider, Provider::Codex | Provider::Claude | Provider::Meta) || !acct.is_oauth() {
+    if !matches!(acct.provider, Provider::Codex | Provider::Claude | Provider::Meta | Provider::Kiro)
+        || !acct.is_oauth()
+    {
         return err(
             StatusCode::BAD_REQUEST,
-            "Subscription quota is only available for Codex, Claude and Meta OAuth accounts",
+            "Subscription quota is only available for Codex, Claude, Meta and Kiro OAuth accounts",
         );
     }
     if oauth::ensure_fresh(&app, &acct, chrono::Duration::minutes(5), false).await.is_err() {
@@ -1319,6 +1434,103 @@ async fn delete_account(State(app): State<Arc<App>>, Path(id): Path<String>) -> 
     };
     let group = if acct.provider == Provider::Compat { acct.group.clone() } else { None };
     edit_config(&app, |doc| crate::compat::remove_key(doc, &key, group.as_deref()))
+}
+
+#[derive(Deserialize)]
+struct KeyModelsBody {
+    #[serde(default)]
+    api_key: String,
+    #[serde(default)]
+    base_url: String,
+}
+
+/// `GET {base_url}/models` with the key, as a sorted id list, or why not.
+async fn upstream_model_ids(app: &App, base_url: &str, api_key: &str) -> Result<Vec<String>, (StatusCode, String)> {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "base URL is required".into()));
+    }
+    if url::Url::parse(base).is_err() {
+        return Err((StatusCode::BAD_REQUEST, "base URL is not a valid URL".into()));
+    }
+    let mut req = app.http.control(None).get(format!("{base}/models")).timeout(Duration::from_secs(20));
+    let key = api_key.trim();
+    if !key.is_empty() {
+        req = req.bearer_auth(key);
+    }
+    let resp =
+        req.send().await.map_err(|e| (StatusCode::BAD_GATEWAY, format!("could not reach {base}/models: {e}")))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let snippet: String = text.chars().take(200).collect();
+        return Err((StatusCode::BAD_GATEWAY, format!("{base}/models answered {status}: {}", snippet.trim())));
+    }
+    let v: Value = serde_json::from_str(&text)
+        .map_err(|_| (StatusCode::BAD_GATEWAY, format!("{base}/models did not answer with JSON")))?;
+    let models = crate::compat::model_ids(&v);
+    if models.is_empty() {
+        return Err((StatusCode::BAD_GATEWAY, format!("{base}/models listed no models")));
+    }
+    Ok(models)
+}
+
+/// Asks an OpenAI-compatible server which models it serves, for the "Add an API
+/// key" form: `GET {base_url}/models` with the key, answered as a sorted id list.
+async fn list_key_models(State(app): State<Arc<App>>, Json(b): Json<KeyModelsBody>) -> Response {
+    match upstream_model_ids(&app, &b.base_url, &b.api_key).await {
+        Ok(models) => Json(json!({ "models": models })).into_response(),
+        Err((status, msg)) => err(status, msg),
+    }
+}
+
+/// The same question for an API key that is already configured, so its model
+/// list can be brought up to date from the account page.
+async fn fetch_account_models(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
+    let Some(acct) = app.pool.get(&id) else { return err(StatusCode::NOT_FOUND, "unknown account") };
+    if acct.provider != Provider::Compat {
+        return err(StatusCode::BAD_REQUEST, "only OpenAI-compatible keys list their models this way");
+    }
+    let (key, base) = match &*acct.cred.read() {
+        Credential::ApiKey { key, base_url } => (key.clone(), base_url.clone().unwrap_or_default()),
+        _ => (String::new(), String::new()),
+    };
+    match upstream_model_ids(&app, &base, &key).await {
+        Ok(models) => Json(json!({ "models": models })).into_response(),
+        Err((status, msg)) => err(status, msg),
+    }
+}
+
+#[derive(Deserialize)]
+struct AccountModelsBody {
+    models: Vec<ModelAlias>,
+}
+
+/// Replaces the model list of the openai-compatibility group an account belongs to.
+async fn set_account_models(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    Json(b): Json<AccountModelsBody>,
+) -> Response {
+    let Some(acct) = app.pool.get(&id) else { return err(StatusCode::NOT_FOUND, "unknown account") };
+    let Some(group) = acct.group.clone().filter(|_| acct.provider == Provider::Compat) else {
+        return err(StatusCode::BAD_REQUEST, "only OpenAI-compatible keys have an editable model list");
+    };
+    let models: Vec<(String, Option<String>)> = b
+        .models
+        .into_iter()
+        .map(|m| (m.name.trim().to_string(), m.alias.map(|a| a.trim().to_string()).filter(|a| !a.is_empty())))
+        .filter(|(n, _)| !n.is_empty())
+        .collect();
+    if models.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "list at least one model");
+    }
+    let mut found = false;
+    let resp = edit_config(&app, |doc| found = crate::compat::set_models(doc, &group, &models));
+    if !found {
+        return err(StatusCode::NOT_FOUND, format!("config.yaml has no openai-compatibility group named {group}"));
+    }
+    resp
 }
 
 #[derive(Deserialize)]
@@ -1548,9 +1760,16 @@ async fn patch_settings(State(app): State<Arc<App>>, Json(body): Json<SettingsBo
     Json(response).into_response()
 }
 
-async fn login_start(State(app): State<Arc<App>>, Path(target): Path<String>) -> Response {
+async fn login_start(State(app): State<Arc<App>>, Path(target): Path<String>, body: String) -> Response {
     let Some(provider) = Provider::parse(&target) else { return err(StatusCode::BAD_REQUEST, "unknown provider") };
-    match start_login(&app, provider).await {
+    let opts = match body.trim() {
+        "" => LoginOpts::default(),
+        text => match serde_json::from_str::<LoginOpts>(text) {
+            Ok(o) => o,
+            Err(e) => return err(StatusCode::BAD_REQUEST, format!("invalid sign-in options: {e}")),
+        },
+    };
+    match start_login_with(&app, provider, opts).await {
         Ok((state, l)) => Json(json!({
             "state": state, "url": l.url, "callback": l.callback, "kind": l.kind, "user_code": l.user_code,
         }))

@@ -126,6 +126,10 @@ pub struct Tracker {
     batch_completeness: Option<&'static str>,
     /// Keeps the request on the dashboard's connected list until it ends.
     connected: Option<crate::addresses::Guard>,
+    /// Local prompt estimate, for a success whose provider reports no usage at all.
+    input_estimate: Option<u64>,
+    /// Local estimate of the output text, reasoning and tool arguments seen so far.
+    output_estimate: u64,
 }
 
 impl Tracker {
@@ -145,6 +149,8 @@ impl Tracker {
             latency_context: None,
             latency_model: None,
             connected: None,
+            input_estimate: None,
+            output_estimate: 0,
             started: Instant::now(),
             attempt_started: Instant::now(),
             prepared_ms: None,
@@ -189,6 +195,7 @@ impl Tracker {
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_tokens: 0,
+                credits: None,
                 stream,
                 transport,
                 attempts: 0,
@@ -226,6 +233,7 @@ impl Tracker {
     }
     fn account_attempt(&mut self, acct: &Arc<Account>) {
         self.cache_diagnostics.reset();
+        self.output_estimate = 0;
         self.load = Some(crate::accounts::RequestLoad::new(acct));
         self.log.attempts += 1;
         self.log.provider = acct.provider.as_str().to_string();
@@ -427,7 +435,16 @@ impl Tracker {
         self.generation_ms.filter(|_| status < 400 && !hidden)
     }
 
+    /// Keep a local estimate of the prompt so a successful response whose provider
+    /// reports no usage at all can still be priced, labelled as an estimate.
+    pub fn estimate_prompt(&mut self, body: &Value) {
+        self.input_estimate = Some(crate::token_count::estimate_tokens(body));
+    }
+
     pub(crate) fn observe_stream_event(&mut self, event: &Event) {
+        if let Event::Text(t) | Event::Reasoning(t) | Event::ToolArgs { delta: t, .. } = event {
+            self.output_estimate = self.output_estimate.saturating_add(crate::token_count::text_tokens(t));
+        }
         match event {
             Event::Usage(usage) => self.stream_usage.merge(usage),
             Event::Error { status, message } => self.stream_error = Some((*status, message.clone())),
@@ -500,6 +517,11 @@ impl Tracker {
                 c.metadata("cache_downgraded", u64::from(p.downgrade_reason.is_some()));
             }
         }
+        if status < 400
+            && let (Some(input), Some(c)) = (self.input_estimate, self.usage_tap())
+        {
+            c.estimate(input, self.output_estimate, usage);
+        }
         let failure = self.usage_tap().and_then(|c| c.failure_detail());
         let captured = self.analytics.as_mut().and_then(|a| a.finish(Some(status), Some(usage), self.logical_final));
         self.log.usage_completeness =
@@ -525,6 +547,7 @@ impl Tracker {
         self.log.input_tokens = input;
         self.log.output_tokens = output;
         self.log.cache_tokens = cache;
+        self.log.credits = usage.credits.filter(|c| *c > 0.0);
         self.log.speed = captured.as_deref().map_or("standard", |o| o.speed().as_str());
         self.log.stream_ms = crate::usage::types::stream_ms(output, speed_start, self.log.latency_ms);
         self.log.error = error.map(|e| e.chars().take(400).collect());
@@ -717,6 +740,11 @@ fn soft_failure(
 /// A 429 is also used for burst limits. Move a pinned task only when quota
 /// headers or an explicit provider error confirm subscription exhaustion.
 pub fn quota_exhausted(acct: &Account, model: &str, status: u16, body: &str) -> bool {
+    // A key without credit is paused already; its refusal must not be re-read as a
+    // spent allowance when the request's usage is settled.
+    if acct.credit_paused() {
+        return false;
+    }
     if acct.exhausted_until(model).is_some() {
         return true;
     }
@@ -741,6 +769,53 @@ pub fn quota_exhausted(acct: &Account, model: &str, status: u16, body: &str) -> 
     ]
     .iter()
     .any(|s| b.contains(s))
+}
+
+/// A pay-as-you-go key that its provider says has no money left: a 402, or a refusal
+/// about credit, balance or billing. Only API keys: a subscription's "quota" is its
+/// allowance, handled by `quota_exhausted`. Retrying would fail on every account the
+/// same way, so the key sits out for `CREDIT_PAUSE` while other accounts answer.
+pub fn out_of_credit(acct: &Account, status: u16, body: &str) -> bool {
+    if acct.is_oauth() {
+        return false;
+    }
+    if status == 402 {
+        return true;
+    }
+    if !matches!(status, 400 | 401 | 403 | 429) {
+        return false;
+    }
+    let b = body.to_ascii_lowercase();
+    [
+        "credit balance is too low",
+        "insufficient credits",
+        "insufficient_credits",
+        "insufficient balance",
+        "insufficient_balance",
+        "insufficient funds",
+        "insufficient_quota",
+        "exceeded your current quota",
+        "out of credits",
+        "credits exhausted",
+        "no credits",
+        "not enough credits",
+        "add credits",
+        "top up",
+        "payment required",
+        "billing hard limit",
+        "balance is insufficient",
+        "prepaid balance",
+    ]
+    .iter()
+    .any(|s| b.contains(s))
+}
+
+/// How long an out-of-credit key sits out before it is tried again, in case the
+/// account has been topped up since.
+const CREDIT_PAUSE: Duration = Duration::hours(1);
+
+pub fn mark_out_of_credit(acct: &Account, body: &str) {
+    acct.out_of_credit(Utc::now() + CREDIT_PAUSE, &format!("out of credit: {}", error_message(body)));
 }
 
 /// Codex answers "Codex is at capacity, please try again later" with a 429 when OpenAI
@@ -1818,6 +1893,7 @@ pub(crate) struct AttemptShape {
     /// Always when translating (the answer is re-rendered), and for Codex subscriptions.
     pub(crate) upstream_stream: bool,
     pub(crate) devin: bool,
+    pub(crate) kiro: bool,
 }
 
 /// What stays the same on every attempt of one request.
@@ -1917,13 +1993,14 @@ pub(crate) fn attempt_shape(input: &PlanInput, acct: &Account) -> Result<Attempt
         }));
     }
     let devin = provider == Provider::Devin;
+    let kiro = provider == Provider::Kiro;
     // Freeform (custom) tools only exist on OpenAI's own Responses backends.
     let custom_tools = input.format == Format::Responses
         && input.body["tools"].as_array().is_some_and(|t| t.iter().any(|t| t["type"] == "custom"));
     let passthrough = provider.wires().contains(&input.format) && (!custom_tools || native_custom_tools(provider));
     let native = if passthrough { input.format } else { provider.wires().first().copied().unwrap_or(Format::Chat) };
     let upstream_stream = !passthrough || input.stream || (provider == Provider::Codex && acct.is_oauth());
-    Ok(AttemptShape { passthrough, native, upstream_stream, devin })
+    Ok(AttemptShape { passthrough, native, upstream_stream, devin, kiro })
 }
 
 /// The exact request one attempt sends to `acct`: URL, headers and body bytes,
@@ -1938,7 +2015,9 @@ pub(crate) fn plan_attempt(
     memo: &mut PlanMemo,
 ) -> Result<Plan, Box<Refusal>> {
     let shape = attempt_shape(input, acct)?;
-    let AttemptShape { passthrough, native, upstream_stream, devin } = shape;
+    let AttemptShape { passthrough, native, upstream_stream, devin, kiro } = shape;
+    // Providers with their own dialect are built from the IR and decoded by their module.
+    let custom = devin || kiro;
     let provider = acct.provider;
     let cfg = input.cfg;
     let format = input.format;
@@ -1981,13 +2060,14 @@ pub(crate) fn plan_attempt(
             .flatten();
         let req = hoisted.as_ref().unwrap_or(req);
         if native == Format::Claude
-            && !devin
+            && !custom
             && let Err(message) = formats::claude::validate_thinking_budget(req, upstream_model)
         {
             return Err(Refusal::new(format, 400, message));
         }
         match native {
             _ if devin => crate::devin::build_request(req, upstream_model),
+            _ if kiro => crate::kiro::build_request(req, upstream_model),
             Format::Claude => formats::claude::build_request(req, upstream_model),
             Format::Responses => formats::responses::build_request(
                 req,
@@ -2049,7 +2129,7 @@ pub(crate) fn plan_attempt(
         return Err(rejected(&body, reason, cache_downgrade.clone()));
     }
     if native == Format::Claude
-        && !devin
+        && !custom
         && let Err(message) = formats::claude::validate_native_thinking_budget(&body, upstream_model)
     {
         let mut refusal = Refusal::new(format, 400, message);
@@ -2113,6 +2193,7 @@ async fn execute_inner(app: Arc<App>, call: Call, budget: &mut RetryBudget) -> R
     let mut tracker = Tracker::new(&app, call.format, call.stream, call.transport, &model);
     tracker.client_app(&call.headers);
     tracker.requested_speed(&call.body);
+    tracker.estimate_prompt(&call.body);
     tracker.session(call.session.as_deref(), call.session_source, &cfg);
     let requested_cache = crate::cache::Requested::of(&call.body);
     tracker.latency_context = cfg.latency_routing.then(|| crate::latency::Context::new(&call.body, call.transport));
@@ -2296,10 +2377,12 @@ async fn execute_inner(app: Arc<App>, call: Call, budget: &mut RetryBudget) -> R
             cache_scope,
             residency: residency.is_some(),
         };
-        let AttemptShape { passthrough, native, upstream_stream, devin } = match attempt_shape(&input, &acct) {
+        let AttemptShape { passthrough, native, upstream_stream, devin, kiro } = match attempt_shape(&input, &acct) {
             Ok(shape) => shape,
             Err(refusal) => return refuse(&mut tracker, *refusal),
         };
+        // Providers with their own dialect are built from the IR and decoded by their module.
+        let custom = devin || kiro;
         let provider_session =
             app.sessions.provider_session(call.session.as_deref(), &acct, cfg.provider_session_idle_seconds);
         let preparation_key = (
@@ -2446,6 +2529,15 @@ async fn execute_inner(app: Arc<App>, call: Call, budget: &mut RetryBudget) -> R
                 tracker.finish(status, &Usage::default(), Some(msg));
                 return Reply::Error(status, client_body);
             }
+            if out_of_credit(&acct, status, &text) {
+                tracing::warn!(request_id = tracker.log.id, account = ?crate::diagnostics::fingerprint(Some(&acct.id)),
+                    status, "the key is out of credit; trying another account");
+                mark_out_of_credit(&acct, &text);
+                app.broadcast("accounts", Value::Null);
+                tried.push(acct.id.clone());
+                last_error = Some((status, client_body));
+                continue;
+            }
             if quota_exhausted(&acct, &model, status, &text) {
                 mark_quota_exhausted(&acct, &model, &headers, &text);
                 if let (Some((claim, resets)), Some(until)) =
@@ -2582,7 +2674,7 @@ async fn execute_inner(app: Arc<App>, call: Call, budget: &mut RetryBudget) -> R
         // A stream is held back until it shows content, so an overload or rate limit
         // that arrives inside a 200 still goes to another account (see `bootstrap`).
         let mut body: Option<ByteStream> = None;
-        if is_sse && !devin {
+        if is_sse && !custom {
             // A wait the provider names for a failure inside the stream is in these headers.
             let stream_headers = resp.as_ref().map(|r| r.headers().clone()).unwrap_or_default();
             let stream: ByteStream = Box::pin(resp.take().expect("response").bytes_stream());
@@ -2631,7 +2723,9 @@ async fn execute_inner(app: Arc<App>, call: Call, budget: &mut RetryBudget) -> R
                     // The error's code tells a capacity shortage too, whatever its message says.
                     let capacity = at_capacity(status, &message)
                         || first_error.as_ref().is_some_and(|e| at_capacity(status, &e.raw));
-                    if status == 429 && quota_exhausted(&acct, &model, status, &message) {
+                    if out_of_credit(&acct, status, &message) {
+                        mark_out_of_credit(&acct, &message);
+                    } else if status == 429 && quota_exhausted(&acct, &model, status, &message) {
                         mark_quota_exhausted(&acct, &model, &reqwest::header::HeaderMap::new(), &message);
                     } else if status == 429 && !capacity {
                         acct.rate_limit(&model, Utc::now() + Duration::seconds(30), &format!("429: {message}"));
@@ -2737,7 +2831,10 @@ async fn execute_inner(app: Arc<App>, call: Call, budget: &mut RetryBudget) -> R
             }
             tracker.observe_wire(&v);
             let mut agg = Aggregate::default();
-            checked_full_events(native, &v).iter().for_each(|e| agg.push(e));
+            for e in checked_full_events(native, &v) {
+                tracker.observe_stream_event(&e);
+                agg.push(&e);
+            }
             if let Some((status, message)) = &agg.error {
                 tracker.finish(*status, &agg.usage, Some(message.clone()));
                 return error_reply(call.format, *status, message);
@@ -2748,6 +2845,8 @@ async fn execute_inner(app: Arc<App>, call: Call, budget: &mut RetryBudget) -> R
 
         let events = if devin {
             crate::devin::event_stream(resp.take().expect("response"), names)
+        } else if kiro {
+            crate::kiro::event_stream(resp.take().expect("response"), names, upstream_model.clone())
         } else if let Some(body) = body {
             sse_events(
                 body,

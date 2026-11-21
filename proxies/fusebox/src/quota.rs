@@ -654,6 +654,11 @@ pub async fn poll(app: &App, acct: &Arc<Account>) -> anyhow::Result<()> {
                 .await?;
             readings::antigravity(&v)
         }
+        Provider::Kiro => {
+            let Some((token, profile, region, machine)) = crate::kiro::account_creds(acct) else { return Ok(()) };
+            let v = crate::kiro::fetch_usage(&http, &token, profile.as_deref(), &region, &machine).await?;
+            kiro_reading(&v)
+        }
         _ => return Ok(()),
     };
     let mut st = acct.state.lock();
@@ -802,11 +807,19 @@ fn apply_reading(st: &mut crate::accounts::AccountState, reading: Reading) {
     st.settle_quota_error(Utc::now());
 }
 
+/// Kiro reports one monthly credit window and no per-model limits; the same
+/// reading also carries the credits as absolute amounts, for display.
+fn kiro_reading(value: &Value) -> Reading {
+    let (windows, plan) = crate::kiro::windows(value);
+    Reading { windows, limits: crate::kiro::limits(value), plan, ..Default::default() }
+}
+
 pub fn usage(st: &mut crate::accounts::AccountState, provider: Provider, value: &Value) {
     let reading = match provider {
         Provider::Claude => readings::claude(value),
         Provider::Codex => readings::codex(value),
         Provider::Antigravity => readings::antigravity(value),
+        Provider::Kiro => kiro_reading(value),
         Provider::Meta => readings::meta(value),
         _ => return,
     };
@@ -869,6 +882,27 @@ async fn poll_account(app: &Arc<App>, acct: Arc<Account>) -> bool {
             Err(e) => tracing::debug!(account = %acct.label, "antigravity setup failed: {e:#}"),
         }
     }
+    // Kiro accounts learn their profile's models once, then follow their monthly credits.
+    if acct.provider == Provider::Kiro {
+        if !acct.is_oauth() || acct.state.lock().disabled {
+            return changed;
+        }
+        if acct.discovered.read().is_empty()
+            && crate::oauth::ensure_fresh(app, &acct, chrono::Duration::minutes(5), false).await.is_ok()
+            && let Some((token, profile, region, machine)) = crate::kiro::account_creds(&acct)
+        {
+            let http = app.http.control(acct.proxy_url.as_deref());
+            match crate::kiro::fetch_models(&http, &token, profile.as_deref(), &region, &machine).await {
+                Ok(models) if !models.is_empty() => {
+                    *acct.discovered.write() = models;
+                    changed = true;
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!(account = %acct.label, "kiro model list failed: {e:#}"),
+            }
+        }
+        return changed | poll_usage(app, &acct).await;
+    }
     if !matches!(acct.provider, Provider::Claude | Provider::Codex | Provider::Antigravity | Provider::Meta)
         || !acct.is_oauth()
     {
@@ -910,15 +944,20 @@ async fn poll_account(app: &Arc<App>, acct: Arc<Account>) -> bool {
         let st = acct.state.lock();
         changed |= (st.quota.plan.clone(), st.quota.subscription_plan.clone()) != before;
     }
+    changed | poll_usage(app, &acct).await
+}
+
+/// Asks the usage endpoint when the last reading is stale; true when it answered.
+async fn poll_usage(app: &Arc<App>, acct: &Arc<Account>) -> bool {
     let stale = {
         let st = acct.state.lock();
         !st.disabled && st.quota.needs_refresh(Utc::now(), st.quota_cooldowns.values().copied())
     };
-    if !stale || crate::oauth::ensure_fresh(app, &acct, chrono::Duration::minutes(5), false).await.is_err() {
-        return changed;
+    if !stale || crate::oauth::ensure_fresh(app, acct, chrono::Duration::minutes(5), false).await.is_err() {
+        return false;
     }
     let before = acct.state.lock().quota.refreshed_at;
-    let mut result = poll(app, &acct).await;
+    let mut result = poll(app, acct).await;
     // A refused read says little while the token may simply be stale: the token
     // above was refreshed only if it was near expiry. So the first refusal of a
     // run refreshes the token and reads again, and only a refused read with a
@@ -926,8 +965,8 @@ async fn poll_account(app: &Arc<App>, acct: Arc<Account>) -> bool {
     // fault reports it.
     let mut countable = true;
     if refused(&result).is_some() && acct.state.lock().quota.refused_checks == 0 {
-        match crate::oauth::ensure_fresh(app, &acct, chrono::Duration::minutes(5), true).await {
-            Ok(()) => result = poll(app, &acct).await,
+        match crate::oauth::ensure_fresh(app, acct, chrono::Duration::minutes(5), true).await {
+            Ok(()) => result = poll(app, acct).await,
             Err(e) => {
                 countable = false;
                 tracing::debug!(account = %acct.label, "refresh after a refused usage read failed: {e:#}");
@@ -949,10 +988,12 @@ async fn poll_account(app: &Arc<App>, acct: Arc<Account>) -> bool {
         }
     }
     match result {
-        Ok(()) => changed = true,
-        Err(e) => tracing::debug!(account = %acct.label, "quota check failed: {e:#}"),
+        Ok(()) => true,
+        Err(e) => {
+            tracing::debug!(account = %acct.label, "quota check failed: {e:#}");
+            false
+        }
     }
-    changed
 }
 
 /// The status of a usage read the provider refused with 401 or 403.
