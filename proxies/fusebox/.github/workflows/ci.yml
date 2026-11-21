@@ -1,0 +1,97 @@
+name: CI
+
+# The tests on Linux, macOS and Windows. Day to day, changes are tested with fast-test
+# (Linux, on The Dragon and The Beast; see AGENTS.md) and nobody waits for this workflow.
+# It runs:
+# - every night for main: fast-test's nightly run starts it and reports its result;
+# - before a release: release.yml calls it for the tag and publishes only when it passes;
+# - on pull requests;
+# - by hand, for a change that Windows or macOS may take differently:
+#   gh workflow run ci.yml --ref <branch>
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: What to test, when it isn't the commit that started the workflow
+        type: string
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+  # CI builds keep only line numbers (enough for panic backtraces), which
+  # compiles about 25 s faster on Windows and macOS. Local builds are unchanged.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
+concurrency:
+  group: fusebox-ci-${{ inputs.ref || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Read the Rust version
+        id: rust
+        shell: bash
+        # rust-toolchain.toml names it; a tag from before that file gets the newest stable.
+        run: |
+          version=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml 2> /dev/null || true)
+          echo "version=${version:-stable}" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The cache can't see the Test step's --config; change this with it,
+          # or every run rebuilds the dependencies.
+          key: deps-opt-level-2
+      - name: Keep temporary files on the work drive (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        # The tests' SQLite databases sync every write to disk. C: on Windows
+        # runners is slow at that; the runner's work drive is not. This took
+        # the Windows test run from 147-213 s to 87-117 s.
+        run: |
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      # Not for a release (inputs.ref): the tag's formatting and lints were checked when
+      # its changes were made, and an older tag has no pinned Rust to lint with.
+      - name: Format
+        if: matrix.os == 'ubuntu-latest' && !inputs.ref
+        run: cargo fmt --check
+      - name: Clippy
+        if: matrix.os == 'ubuntu-latest' && !inputs.ref
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test
+        # Dependencies, SQLite's C code above all, are built optimised. That
+        # halves the test run; Fusebox itself stays unoptimised, with debug
+        # assertions. Not in Cargo.toml: it doubles a build from scratch, and
+        # every local worktree starts from scratch. The quoting works in both
+        # bash and PowerShell.
+        run: cargo test --locked --config "profile.dev.package.'*'.opt-level=2"
+      - uses: actions/setup-node@v4
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          node-version: '22'
+      - name: Dashboard regression tests
+        if: matrix.os == 'ubuntu-latest'
+        run: node --test tests/*.test.cjs
+      - uses: actions/setup-python@v5
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          python-version: '3.12'
+      - name: Operational and benchmark regression tests
+        if: matrix.os == 'ubuntu-latest'
+        run: python3 -m unittest discover -s tests -p 'test_*.py'

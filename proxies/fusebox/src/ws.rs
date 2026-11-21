@@ -1,0 +1,1121 @@
+//! Responses API over websocket (`GET /v1/responses`), the transport Codex uses.
+//!
+//! Each `response.create` message is one turn. Codex OAuth accounts get a
+//! native upstream websocket (server-side `previous_response_id` works as-is);
+//! every other provider is served through the normal pipeline, with
+//! `previous_response_id` expanded from a small local history.
+
+use std::collections::{HashSet, VecDeque};
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::extract::ws::{Message, WebSocket};
+use axum::http::HeaderMap;
+use futures::{FutureExt, SinkExt, StreamExt};
+use serde_json::{Value, json};
+use tokio_tungstenite::tungstenite;
+
+use crate::accounts::{Account, Provider};
+use crate::formats::{StreamParser, responses};
+use crate::ir::{self, Event, Format, Usage};
+use crate::proxy::{self, Call, Reply, Tracker};
+use crate::sse::SseEvent;
+use crate::state::App;
+
+type Upstream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type ClientTx = futures::stream::SplitSink<WebSocket, Message>;
+
+const UPSTREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_PENDING_TURNS: usize = 32;
+const MAX_PENDING_BYTES: usize = 16 * 1024 * 1024;
+/// A turn upload also gets time for a slow (about 256 kbit/s) uplink, so a long
+/// conversation isn't cut off while it is still moving.
+const SLOW_UPLINK_BYTES_PER_SEC: usize = 32 * 1024;
+const MAX_IDLE_DRAIN: usize = 32;
+
+struct UpstreamFailure {
+    operation: &'static str,
+    status: u16,
+    message: String,
+    diagnostic: crate::diagnostics::Failure,
+}
+
+impl UpstreamFailure {
+    fn timeout(operation: &'static str) -> Self {
+        Self {
+            operation,
+            status: 504,
+            message: format!("codex websocket {operation} timed out"),
+            diagnostic: crate::diagnostics::Failure { kind: "upstream_timeout", causes: vec!["timeout"] },
+        }
+    }
+
+    fn socket(operation: &'static str, error: &tungstenite::Error) -> Self {
+        Self {
+            operation,
+            status: 502,
+            message: format!("codex websocket {operation} failed: {}", socket_error(error)),
+            diagnostic: crate::diagnostics::Failure {
+                kind: "upstream_websocket",
+                causes: crate::diagnostics::cause_chain(error),
+            },
+        }
+    }
+
+    fn log(&self, connection_id: &str, phase: &'static str) {
+        tracing::warn!(connection_id, phase, operation = self.operation, status = self.status,
+            failure_kind = self.diagnostic.kind, error_causes = ?self.diagnostic.causes, "codex upstream websocket failure");
+    }
+}
+
+// Some errors contain raw frames, HTTP bodies, or URLs. Keep transport diagnostics safe.
+fn socket_error(error: &tungstenite::Error) -> String {
+    match error {
+        tungstenite::Error::Io(error) => format!("I/O {:?}, OS error {:?}", error.kind(), error.raw_os_error()),
+        tungstenite::Error::Protocol(error) => format!("protocol error: {error}"),
+        tungstenite::Error::Http(response) => format!("handshake rejected: {}", response.status()),
+        tungstenite::Error::ConnectionClosed => "connection closed".into(),
+        tungstenite::Error::AlreadyClosed => "connection already closed".into(),
+        tungstenite::Error::Tls(_) => "TLS error".into(),
+        tungstenite::Error::Capacity(_) => "capacity exceeded".into(),
+        tungstenite::Error::WriteBufferFull(_) => "write buffer full".into(),
+        tungstenite::Error::Utf8(_) => "invalid UTF-8".into(),
+        tungstenite::Error::AttackAttempt => "attack attempt detected".into(),
+        tungstenite::Error::Url(_) => "invalid websocket URL".into(),
+        tungstenite::Error::HttpFormat(_) => "invalid HTTP format".into(),
+    }
+}
+
+async fn upstream_write(
+    operation: &'static str,
+    write: impl Future<Output = Result<(), tungstenite::Error>>,
+) -> Result<(), UpstreamFailure> {
+    upstream_write_within(UPSTREAM_WRITE_TIMEOUT, operation, write).await
+}
+
+fn send_deadline(len: usize) -> Duration {
+    UPSTREAM_WRITE_TIMEOUT + Duration::from_secs((len / SLOW_UPLINK_BYTES_PER_SEC) as u64)
+}
+
+async fn upstream_write_within(
+    deadline: Duration,
+    operation: &'static str,
+    write: impl Future<Output = Result<(), tungstenite::Error>>,
+) -> Result<(), UpstreamFailure> {
+    tokio::time::timeout(deadline, write)
+        .await
+        .map_err(|_| UpstreamFailure::timeout(operation))?
+        .map_err(|error| UpstreamFailure::socket(operation, &error))
+}
+
+async fn close_upstream(up: &mut Upstream, connection_id: &str, phase: &'static str) {
+    if let Err(failure) = upstream_write("close", up.close(None)).await {
+        failure.log(connection_id, phase);
+    }
+}
+
+struct Session {
+    upstream: Option<(Arc<Account>, Upstream)>,
+    /// Response ids known to the current upstream socket.
+    upstream_responses: HashSet<String>,
+    /// Epoch of the last turn, so late quota events cannot undo a newer quota refresh.
+    upstream_quota_epoch: u64,
+    /// Credential identity used by the upstream handshake, independent of quota polls.
+    upstream_identity_epoch: u64,
+    upstream_session: Option<String>,
+    /// The access token the upstream handshake used, so a later 401 on that socket is
+    /// told about that token rather than a newer one on file. Never logged.
+    upstream_token: Option<String>,
+    key: Option<String>,
+    source: Option<&'static str>,
+    pending_selection: Option<crate::affinity::Selected>,
+    connection_id: String,
+    /// `response.interrupt` messages the client sent during a native turn, for upstream.
+    interrupts: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            upstream: None,
+            upstream_responses: HashSet::new(),
+            upstream_quota_epoch: 0,
+            upstream_identity_epoch: 0,
+            upstream_session: None,
+            upstream_token: None,
+            key: None,
+            source: None,
+            pending_selection: None,
+            connection_id: uuid::Uuid::new_v4().to_string(),
+            interrupts: None,
+        }
+    }
+}
+
+impl Session {
+    fn discard_upstream(&mut self) -> Option<(Arc<Account>, Upstream)> {
+        self.upstream_responses.clear();
+        self.upstream_quota_epoch = 0;
+        self.upstream_identity_epoch = 0;
+        self.upstream_session = None;
+        self.upstream_token = None;
+        self.upstream.take()
+    }
+
+    async fn close_upstream(&mut self, phase: &'static str) {
+        if let Some((_, mut up)) = self.discard_upstream() {
+            close_upstream(&mut up, &self.connection_id, phase).await;
+        }
+    }
+}
+
+async fn idle_upstream(sess: &mut Session, event: Option<Result<tungstenite::Message, tungstenite::Error>>) {
+    match event {
+        Some(Ok(tungstenite::Message::Ping(_))) => {
+            // Tungstenite queues its automatic Pong until the next write/flush.
+            let (_, up) = sess.upstream.as_mut().unwrap();
+            if let Err(failure) = upstream_write("flush", up.flush()).await {
+                failure.log(&sess.connection_id, "idle");
+                sess.discard_upstream();
+            }
+        }
+        Some(Ok(tungstenite::Message::Close(frame))) => {
+            tracing::debug!(
+                connection_id = sess.connection_id,
+                phase = "idle",
+                close_code = frame.as_ref().map(|frame| u16::from(frame.code)),
+                "codex upstream websocket closed"
+            );
+            if let Some((_, mut up)) = sess.discard_upstream()
+                && let Err(failure) = upstream_write("flush", up.flush()).await
+            {
+                failure.log(&sess.connection_id, "idle_close");
+            }
+        }
+        Some(Err(error)) => {
+            UpstreamFailure::socket("read", &error).log(&sess.connection_id, "idle");
+            sess.discard_upstream();
+        }
+        None => {
+            tracing::debug!(connection_id = sess.connection_id, phase = "idle", "codex upstream websocket ended");
+            sess.discard_upstream();
+        }
+        Some(Ok(tungstenite::Message::Text(text))) => idle_data(sess, &text),
+        Some(Ok(tungstenite::Message::Binary(data))) => idle_data(sess, &String::from_utf8_lossy(&data)),
+        Some(Ok(_)) => {}
+    }
+}
+
+fn idle_data(sess: &mut Session, data: &str) {
+    if let Ok(value) = serde_json::from_str::<Value>(data)
+        && value["type"] == "codex.rate_limits"
+    {
+        if let Some((acct, _)) = &sess.upstream {
+            crate::quota::observe_codex_event(acct, &value, sess.upstream_quota_epoch);
+        }
+    } else {
+        tracing::warn!(
+            connection_id = sess.connection_id,
+            phase = "idle",
+            "unexpected codex upstream application frame between turns"
+        );
+        sess.discard_upstream();
+    }
+}
+
+async fn drain_idle_upstream(sess: &mut Session) {
+    for _ in 0..MAX_IDLE_DRAIN {
+        let Some((_, up)) = &mut sess.upstream else { return };
+        // The finite drain supplies its own budget; a cooperative yield is not an empty socket.
+        let Some(event) = tokio::task::unconstrained(up.next()).now_or_never() else { return };
+        idle_upstream(sess, event).await;
+    }
+    // A busy upstream must not prevent a ready client from submitting or closing.
+    tracing::warn!(
+        connection_id = sess.connection_id,
+        phase = "idle",
+        "codex upstream idle drain limit reached; reconnecting on the next turn"
+    );
+    sess.discard_upstream();
+}
+
+#[derive(Debug)]
+struct ClientGone;
+
+async fn send(tx: &mut ClientTx, text: String) -> Result<(), ClientGone> {
+    client_write(tx.send(Message::Text(text.into()))).await
+}
+
+async fn client_write<E>(write: impl Future<Output = Result<(), E>>) -> Result<(), ClientGone> {
+    match tokio::time::timeout(CLIENT_WRITE_TIMEOUT, write).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => {
+            crate::diagnostics::Downstream::current().set("downstream_write_error");
+            Err(ClientGone)
+        }
+        Err(_) => {
+            crate::diagnostics::Downstream::current().set("downstream_write_timeout");
+            Err(ClientGone)
+        }
+    }
+}
+
+fn message_bytes(message: &Message) -> usize {
+    match message {
+        Message::Text(text) => text.len(),
+        Message::Binary(data) => data.len(),
+        _ => 0,
+    }
+}
+
+fn error_event(status: u16, body: &Value) -> String {
+    let mut err = if body["error"].is_object() {
+        body["error"].clone()
+    } else {
+        json!({ "message": proxy::error_message(&body.to_string()) })
+    };
+    // Codex reads `error.code` as a string or null, and ignores the whole event (waiting
+    // for its idle timeout) when it is anything else, such as `error_body`'s status number.
+    if err.get("code").is_some_and(|code| !code.is_string() && !code.is_null()) {
+        err["code"] = responses::error_code(status).into();
+    }
+    let mut event = json!({ "type": "error", "status": status, "error": err });
+    // A socket has no response headers: Codex reads the wait from the event's own.
+    if let Some(wait) = proxy::retry_after_of(body) {
+        event["headers"] = json!({ "retry-after": wait.to_string() });
+    }
+    event.to_string()
+}
+
+fn input_items(body: &Value) -> Vec<Value> {
+    crate::affinity::input_items(body)
+}
+
+pub async fn handle(app: Arc<App>, headers: HeaderMap, auth: crate::server::ClientAuth, socket: WebSocket) {
+    let cfg = app.cfg();
+    if crate::clients::observe_trusted(&headers, crate::policy::trusted_identity_source(&cfg, &headers)) {
+        app.models.save_clients();
+    }
+    // An open socket shows on the dashboard's connected list until it closes.
+    let key = crate::usage::capture::client_id(&headers).unwrap_or_default();
+    let _connected = crate::source::Source::from_headers(&headers).map(|s| app.addresses.begin(key, &s, true));
+    let (mut tx, mut rx) = socket.split();
+    let mut sess = Session::default();
+    let (interrupt, interrupts) = tokio::sync::mpsc::unbounded_channel();
+    sess.interrupts = Some(interrupts);
+    let mut pending = VecDeque::new();
+    let mut pending_bytes = 0usize;
+    'connection: loop {
+        let msg = if let Some(message) = pending.pop_front() {
+            let message: Message = message;
+            pending_bytes -= message_bytes(&message);
+            Ok(message)
+        } else {
+            tokio::select! {
+                // The client gets priority; queued upstream frames are drained before submission.
+                biased;
+                msg = rx.next() => {
+                    let Some(msg) = msg else { break };
+                    msg
+                }
+                // Shutting down between turns: say so; Codex reconnects to the next run.
+                _ = app.shutdown.cancelled() => {
+                    let close = axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::AWAY,
+                        reason: "Fusebox is restarting".into(),
+                    };
+                    let _ = tx.send(Message::Close(Some(close))).await;
+                    break;
+                }
+                upstream = async {
+                    match &mut sess.upstream {
+                        Some((_, up)) => up.next().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    idle_upstream(&mut sess, upstream).await;
+                    continue;
+                }
+            }
+        };
+        let text = match msg {
+            Ok(Message::Text(t)) => t.to_string(),
+            Ok(Message::Binary(b)) => String::from_utf8_lossy(&b).into_owned(),
+            Ok(Message::Close(_)) | Err(_) => break,
+            Ok(_) => continue,
+        };
+        let Ok(mut body) = serde_json::from_str::<Value>(&text) else {
+            if send(&mut tx, error_event(400, &json!({ "error": { "message": "invalid JSON" } }))).await.is_err() {
+                break;
+            }
+            continue;
+        };
+        // Codex stops a response early with `response.interrupt`; once it has ended there
+        // is nothing to stop.
+        if body["type"] == "response.interrupt" {
+            continue;
+        }
+        if body["type"] != "response.create" {
+            let msg = format!("unsupported message type `{}`", body["type"].as_str().unwrap_or_default());
+            if send(&mut tx, error_event(400, &json!({ "error": { "message": msg, "type": "invalid_request_error" } })))
+                .await
+                .is_err()
+            {
+                break;
+            }
+            continue;
+        }
+        if let Some(o) = body.as_object_mut() {
+            o.remove("type");
+        }
+        // Continue reading the client during setup, upload, generation and writes.
+        // Dropping this future cancels the HTTP body or native socket immediately.
+        let downstream = crate::diagnostics::Downstream::default();
+        let running = crate::diagnostics::downstream_scope(downstream.clone(), async {
+            drain_idle_upstream(&mut sess).await;
+            turn(&app, &headers, &auth, &mut sess, body, &mut tx).await
+        });
+        tokio::pin!(running);
+        loop {
+            tokio::select! {
+                // The time to finish at shutdown ran out: dropping the turn records it,
+                // with what it used, before the usage database is saved.
+                _ = app.cutoff.cancelled() => break 'connection,
+                message = rx.next() => match message {
+                    Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => {
+                        if let Some(text) = interrupt_text(&message) {
+                            let _ = interrupt.send(text);
+                            continue;
+                        }
+                        if pending.len() >= MAX_PENDING_TURNS || message_bytes(&message) > MAX_PENDING_BYTES - pending_bytes {
+                            downstream.set("downstream_queue_limit");
+                            tracing::warn!("websocket pending turn limit exceeded; closing connection");
+                            break 'connection;
+                        }
+                        pending_bytes += message_bytes(&message);
+                        pending.push_back(message);
+                    }
+                    Some(Err(_)) => {
+                        downstream.set("downstream_read_error");
+                        break 'connection;
+                    }
+                    Some(Ok(Message::Close(_))) | None => {
+                        downstream.set("downstream_disconnect");
+                        break 'connection;
+                    }
+                    Some(Ok(_)) => {}
+                },
+                result = &mut running => {
+                    if result.is_err() { break 'connection; }
+                    break;
+                }
+            }
+        }
+    }
+    // There is no next turn to reuse this socket; dropping it never waits for a
+    // provider that may have stopped reading its close handshake.
+    sess.discard_upstream();
+}
+
+/// A `response.interrupt` for the running turn, which goes upstream instead of queueing.
+fn interrupt_text(message: &Message) -> Option<String> {
+    let text = match message {
+        Message::Text(t) => t.to_string(),
+        Message::Binary(b) => String::from_utf8_lossy(b).into_owned(),
+        _ => return None,
+    };
+    let is_interrupt = text.contains("response.interrupt")
+        && serde_json::from_str::<Value>(&text).is_ok_and(|v| v["type"] == "response.interrupt");
+    is_interrupt.then_some(text)
+}
+
+async fn next_interrupt(rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<String>>) -> Option<String> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn turn(
+    app: &Arc<App>,
+    headers: &HeaderMap,
+    auth: &crate::server::ClientAuth,
+    sess: &mut Session,
+    mut body: Value,
+    tx: &mut ClientTx,
+) -> Result<(), ClientGone> {
+    let cfg = app.cfg();
+    if !auth.valid(&cfg) {
+        let err = crate::formats::error_body(Format::Responses, 401, "invalid or missing API key");
+        send(tx, error_event(401, &err)).await?;
+        return Err(ClientGone);
+    }
+    let mut request_headers = headers.clone();
+    request_headers.insert(crate::usage::capture::REQUEST_HEADER, uuid::Uuid::new_v4().to_string().parse().unwrap());
+    let headers = &request_headers;
+    sess.pending_selection = None;
+    // Full conversation for local history (and for providers without server state).
+    let prev = body["previous_response_id"].as_str().map(String::from);
+    let requested = crate::affinity::session_identity(headers, &body);
+    let previous =
+        prev.as_deref().and_then(|id| app.sessions.previous(headers, id, requested.as_ref().map(|s| s.key.as_str())));
+    let (key, source) = if let Some(identity) = requested {
+        (identity.key, identity.source)
+    } else if let Some((key, _)) = &previous {
+        (key.clone(), "previous_response_id")
+    } else if let Some(key) = &sess.key {
+        (key.clone(), "websocket_connection")
+    } else {
+        (crate::affinity::connection_key(headers, &sess.connection_id), "websocket_connection")
+    };
+    if sess.key.as_ref().is_some_and(|old| old != &key) {
+        sess.close_upstream("session_changed").await;
+    }
+    sess.key = Some(key);
+    sess.source = Some(source);
+    let _lease = app.sessions.hold(sess.key.as_deref().unwrap(), app.cfg().session_affinity_idle_seconds);
+    let mut full =
+        if prev.is_some() { previous.map(|(_, items)| items) } else { Some(crate::affinity::History::default()) };
+    if let Some(items) = &mut full {
+        items.extend(input_items(&body));
+    }
+
+    // Each turn counts against a named client's limits, and is a request from its address,
+    // as an HTTP request would be. The client is the one the handshake authenticated.
+    if let Some(client) = auth.named(&cfg) {
+        let source = crate::source::Source::from_headers(headers);
+        if let Err(d) = app.clients.admit(client, headers, true) {
+            if let Some(source) = &source
+                && !crate::policy::address_allowed(client, headers)
+            {
+                crate::server::address_refused(app, client, source);
+            }
+            let err = crate::formats::error_body(Format::Responses, d.status, &d.message);
+            return send(tx, error_event(d.status, &err)).await;
+        }
+        if let Some(source) = &source {
+            crate::server::address_used(app, client, source);
+        }
+    }
+    if cfg.codex_websockets {
+        match native_turn(app, headers, sess, &body, full.as_ref(), tx).await {
+            Native::Done => {
+                app.stats.performance.lock().websocket("native");
+                sess.pending_selection = None;
+                if crate::affinity::ends_session(headers) {
+                    app.sessions.end(sess.key.as_deref().unwrap());
+                    app.sessions.save_async().await;
+                }
+                return Ok(());
+            }
+            Native::Gone => {
+                sess.pending_selection = None;
+                return Err(ClientGone);
+            }
+            Native::Fallback(reason) => {
+                app.stats.performance.lock().websocket(reason);
+            }
+        }
+    }
+
+    if prev.is_some() {
+        if full.is_none() {
+            let err = json!({ "error": {
+                "message": "Previous response is not available on this websocket; resend the full conversation input without previous_response_id",
+                "type": "invalid_request_error", "code": "previous_response_not_found", "param": "previous_response_id"
+            }});
+            return send(tx, error_event(400, &err)).await;
+        }
+        body["input"] = Value::Array(full.as_ref().unwrap().to_values());
+        body.as_object_mut().unwrap().remove("previous_response_id");
+    }
+
+    let call = Call {
+        format: Format::Responses,
+        body,
+        headers: headers.clone(),
+        stream: true,
+        transport: "ws",
+        path_model: None,
+        session: sess.key.clone(),
+        session_source: sess.source,
+        routing_selection: sess.pending_selection.take(),
+        pinned_account: None,
+    };
+    match proxy::execute(app.clone(), call).await {
+        Reply::Stream { mut frames, .. } => {
+            while let Some(f) = frames.next().await {
+                send(tx, f.data).await?;
+            }
+            Ok(())
+        }
+        Reply::Json(v) => send(tx, json!({ "type": "response.completed", "response": v }).to_string()).await,
+        Reply::Error(status, body) => send(tx, error_event(status, &body)).await,
+    }
+}
+
+fn capture(
+    app: &App,
+    headers: &HeaderMap,
+    sess: &mut Session,
+    v: &Value,
+    full: Option<&crate::affinity::History>,
+    aggregate: &ir::Aggregate,
+) {
+    let r = &v["response"];
+    let Some(id) = r["id"].as_str() else { return };
+    // Only the most recent responses need connection-local continuation state.
+    if sess.upstream_responses.len() >= 100 {
+        sess.upstream_responses.clear();
+    }
+    sess.upstream_responses.insert(id.to_string());
+    if let (Some(key), Some(full)) = (&sess.key, full) {
+        let mut response = r.clone();
+        crate::affinity::complete_output(&mut response, aggregate);
+        app.sessions.remember(headers, key, &response, full.clone());
+    }
+}
+
+enum Native {
+    Done,
+    Gone,
+    Fallback(&'static str),
+}
+
+async fn connect(
+    app: &App,
+    acct: &Arc<Account>,
+    client_headers: &HeaderMap,
+    session: &str,
+) -> Result<Upstream, UpstreamFailure> {
+    let (url, mut headers) = crate::upstream::codex_ws_url(acct, &app.cfg(), client_headers);
+    crate::upstream::bind_codex_session(&mut headers, session);
+    let mut req = tungstenite::client::IntoClientRequest::into_client_request(url.as_str())
+        .map_err(|e| UpstreamFailure::socket("handshake", &e))?;
+    for (k, v) in headers {
+        if let (Ok(name), Ok(val)) =
+            (tungstenite::http::HeaderName::from_bytes(k.as_bytes()), tungstenite::http::HeaderValue::from_str(&v))
+        {
+            req.headers_mut().insert(name, val);
+        }
+    }
+    // The shared TLS setup: roots are read once, sessions resume, and frames go out
+    // without waiting for Nagle's algorithm.
+    let tls = Some(tokio_tungstenite::Connector::Rustls(app.http.websocket_tls_for_account(acct)));
+    let connecting = tokio_tungstenite::connect_async_tls_with_config(req, None, true, tls);
+    let (ws, _) = tokio::time::timeout(Duration::from_secs(20), connecting)
+        .await
+        .map_err(|_| UpstreamFailure::timeout("handshake"))?
+        .map_err(|e| UpstreamFailure::socket("handshake", &e))?;
+    Ok(ws)
+}
+
+async fn native_turn(
+    app: &Arc<App>,
+    headers: &HeaderMap,
+    sess: &mut Session,
+    body: &Value,
+    full: Option<&crate::affinity::History>,
+    tx: &mut ClientTx,
+) -> Native {
+    let cfg = app.cfg();
+    if let Err(message) = crate::upstream::residency_requirement(headers) {
+        return if send(tx, error_event(400, &json!({"error":{"message":message}}))).await.is_ok() {
+            Native::Done
+        } else {
+            Native::Gone
+        };
+    }
+    // Native websockets don't go through HTTP proxies.
+    if !cfg.proxy_url.is_empty() {
+        return Native::Fallback("global_proxy");
+    }
+    let (model, suffix) = ir::split_model_suffix(body["model"].as_str().unwrap_or_default());
+    // Model groups, mapped models and the client's model limits are handled
+    // on the HTTP pipeline.
+    let admitted = crate::policy::admit_model(app, headers, &model);
+    if model.is_empty()
+        || cfg.model_groups.contains_key(&model)
+        || admitted.as_ref().is_ok_and(|a| a.mapped.is_some())
+        || admitted.is_err()
+    {
+        return Native::Fallback("model_group_or_policy");
+    }
+
+    let (only, model) = app.pool.route(&model);
+    let model = app.pool.canonical(&model, only.as_ref());
+    if only.as_ref().is_some_and(|o| *o != crate::accounts::Only::Provider(Provider::Codex)) {
+        return Native::Fallback("provider_route");
+    }
+
+    // Refresh the shared assignment every turn, including on an existing socket.
+    let latency_context = cfg.latency_routing.then(|| crate::latency::Context::new(body, "ws"));
+    let selected = match app.sessions.pick_session_with_context(
+        &app.pool,
+        &cfg,
+        &model,
+        sess.key.as_deref(),
+        false,
+        &[],
+        only.as_ref(),
+        latency_context.as_ref(),
+    ) {
+        Ok(pair) => pair,
+        Err((status, message)) => {
+            let result = send(tx, error_event(status, &json!({"error":{"message":message}}))).await;
+            return if result.is_ok() { Native::Done } else { Native::Gone };
+        }
+    };
+    app.sessions.persist_selection(&selected).await;
+    sess.pending_selection = Some(selected.clone());
+    let acct = selected.account.clone();
+    let upstream_model = selected.model.clone();
+    if acct.provider != Provider::Codex || !acct.is_oauth() || acct.proxy_url.is_some() {
+        return Native::Fallback("account_ineligible");
+    }
+    let (cache_key, cache_scope) =
+        crate::cache::key(headers, body, sess.key.as_deref(), sess.source, &cfg.prompt_cache);
+    let identity_epoch = acct.state.lock().identity_epoch;
+    let provider_session = app.sessions.provider_session(sess.key.as_deref(), &acct, cfg.provider_session_idle_seconds);
+    let reuse = sess.upstream.as_ref().is_some_and(|(a, _)| a.id == acct.id)
+        && sess.upstream_identity_epoch == identity_epoch
+        && sess.upstream_session.as_deref() == Some(provider_session.as_str());
+    if !reuse {
+        sess.close_upstream("account_changed").await;
+        if crate::oauth::ensure_fresh(app, &acct, chrono::Duration::minutes(5), false).await.is_err() {
+            return Native::Fallback("oauth_refresh");
+        }
+        let token = match &*acct.cred.read() {
+            crate::accounts::Credential::OAuth(o) => Some(o.access_token.clone()),
+            crate::accounts::Credential::ApiKey { .. } => None,
+        };
+        match connect(app, &acct, headers, &provider_session).await {
+            Ok(ws) => {
+                sess.upstream_token = token;
+                sess.upstream_quota_epoch = acct.quota_epoch();
+                sess.upstream_identity_epoch = identity_epoch;
+                sess.upstream_session = Some(provider_session);
+                sess.upstream = Some((acct, ws));
+            }
+            Err(e) => {
+                e.log(&sess.connection_id, "handshake_fallback");
+                return Native::Fallback("connect_failed");
+            }
+        }
+    }
+    let (acct, mut up) = sess.upstream.take().unwrap();
+    let mut payload = body.clone();
+    if payload["prompt_cache_key"].is_null()
+        && let Some(key) = cache_key
+    {
+        payload["prompt_cache_key"] = key.into();
+    }
+    if let Some(prev) = body["previous_response_id"].as_str()
+        && !sess.upstream_responses.contains(prev)
+    {
+        let Some(full) = full else {
+            sess.upstream = Some((acct, up));
+            let err = json!({"error":{"message":"Previous response is unavailable on this connection; resend full conversation input without previous_response_id", "code":"previous_response_not_found"}});
+            return if send(tx, error_event(400, &err)).await.is_ok() { Native::Done } else { Native::Gone };
+        };
+        payload["input"] = Value::Array(full.to_values());
+        payload.as_object_mut().unwrap().remove("previous_response_id");
+    }
+    crate::upstream::sanitize_codex_body(&mut payload, &upstream_model, true);
+    if let Some(r) = &suffix
+        && let Some(e) = r.effort_level()
+    {
+        payload["reasoning"]["effort"] = e.into();
+    }
+    payload["type"] = "response.create".into();
+    crate::upstream::order_codex_body(&mut payload);
+
+    let quota_epoch = acct.quota_epoch();
+    sess.upstream_quota_epoch = quota_epoch;
+    let mut tracker = Tracker::new(app, Format::Responses, true, "ws", &model);
+    tracker.client_app(headers);
+    tracker.requested_speed(body);
+    tracker.session(sess.key.as_deref(), sess.source, &cfg);
+    tracker.latency_context(latency_context);
+    tracker.selected(&selected);
+    tracker.cache_policy(crate::cache::Policy::new(body, &payload, Format::Responses, cache_scope, None));
+    let payload = payload.to_string();
+    let pre_output_deadline = (cfg.stream_limits.pre_output_timeout_seconds > 0)
+        .then(|| tokio::time::Instant::now() + Duration::from_secs(cfg.stream_limits.pre_output_timeout_seconds));
+    let deadline = pre_output_deadline.map_or_else(
+        || send_deadline(payload.len()),
+        |d| d.saturating_duration_since(tokio::time::Instant::now()).min(send_deadline(payload.len())),
+    );
+    if let Err(failure) =
+        upstream_write_within(deadline, "send", up.send(tungstenite::Message::Text(payload.into()))).await
+    {
+        failure.log(&sess.connection_id, "send_fallback");
+        tracker.diagnostic_failure(failure.diagnostic.clone());
+        if pre_output_deadline.is_some_and(|d| tokio::time::Instant::now() >= d) {
+            sess.discard_upstream();
+            tracker.finish(504, &Usage::default(), Some("upstream pre-output deadline exceeded".into()));
+            return if send(tx, error_event(504, &json!({"error":{"message":"upstream pre-output deadline exceeded"}})))
+                .await
+                .is_ok()
+            {
+                Native::Done
+            } else {
+                Native::Gone
+            };
+        }
+        // A send only fails or times out with part of the message still unwritten, and the
+        // socket is dropped here, so upstream never received the request: HTTP runs it once.
+        sess.discard_upstream();
+        tracker.cancel();
+        return Native::Fallback("send_failed");
+    }
+
+    let mut parser = responses::Parser::default();
+    let mut aggregate = ir::Aggregate::default();
+    let mut usage = Usage::default();
+    let mut evs = Vec::new();
+    let mut error: Option<(u16, String)> = None;
+    let mut forwarded = false;
+    let mut terminal = false;
+    let drop_private = !proxy::reads_private_events(headers);
+    // An interrupt meant for an earlier response must not stop this one.
+    while let Some(Ok(_)) = sess.interrupts.as_mut().map(|rx| rx.try_recv()) {}
+    loop {
+        let next = tokio::select! {
+            next = tokio::time::timeout(if !forwarded { pre_output_deadline.map(|d|d.saturating_duration_since(tokio::time::Instant::now())).unwrap_or(Duration::from_secs(600)) } else { Duration::from_secs(600) }, up.next()) => next,
+            Some(text) = next_interrupt(&mut sess.interrupts) => {
+                // The response still ends with response.completed, read as usual.
+                if let Err(failure) = upstream_write("interrupt", up.send(tungstenite::Message::Text(text.into()))).await {
+                    failure.log(&sess.connection_id, "interrupt");
+                }
+                continue;
+            }
+        };
+        let text = match next {
+            Ok(Some(Ok(tungstenite::Message::Text(t)))) => t.to_string(),
+            Ok(Some(Ok(tungstenite::Message::Binary(b)))) => String::from_utf8_lossy(&b).into_owned(),
+            Ok(Some(Ok(tungstenite::Message::Close(frame)))) => {
+                tracing::warn!(
+                    connection_id = sess.connection_id,
+                    phase = "turn",
+                    close_code = frame.as_ref().map(|frame| u16::from(frame.code)),
+                    "codex upstream websocket closed during turn"
+                );
+                if let Err(failure) = upstream_write("flush", up.flush()).await {
+                    failure.log(&sess.connection_id, "turn_close");
+                }
+                tracker.diagnostic_failure(crate::diagnostics::Failure::classified("upstream_websocket_closed"));
+                error = Some((502, "codex websocket closed".into()));
+                break;
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    connection_id = sess.connection_id,
+                    phase = "turn",
+                    "codex upstream websocket ended during turn"
+                );
+                tracker.diagnostic_failure(crate::diagnostics::Failure::classified("upstream_websocket_closed"));
+                error = Some((502, "codex websocket closed".into()));
+                break;
+            }
+            Ok(Some(Ok(tungstenite::Message::Ping(_)))) => {
+                if let Err(failure) = upstream_write("flush", up.flush()).await {
+                    failure.log(&sess.connection_id, "turn");
+                    tracker.diagnostic_failure(failure.diagnostic.clone());
+                    error = Some((failure.status, failure.message));
+                    break;
+                }
+                continue;
+            }
+            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Err(e))) => {
+                let failure = UpstreamFailure::socket("read", &e);
+                failure.log(&sess.connection_id, "turn");
+                tracker.diagnostic_failure(failure.diagnostic.clone());
+                error = Some((failure.status, failure.message));
+                break;
+            }
+            Err(_) => {
+                let failure = UpstreamFailure::timeout("read");
+                failure.log(&sess.connection_id, "turn");
+                tracker.diagnostic_failure(failure.diagnostic.clone());
+                error = Some((failure.status, failure.message));
+                break;
+            }
+        };
+        if text.len() > cfg.stream_limits.for_model(&upstream_model) {
+            tracker.diagnostic_failure(crate::diagnostics::Failure::classified("upstream_event_limit"));
+            error = Some((502, crate::sse::LIMIT_ERROR.into()));
+            break;
+        }
+        let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        tracker.observe_wire(&v);
+        let kind = v["type"].as_str().unwrap_or_default().to_string();
+        crate::quota::observe_codex_event(&acct, &v, quota_epoch);
+        // The message is already parsed; the parser reads the value, not the text.
+        parser.feed_value(&SseEvent { event: None, data: String::new() }, Some(&v), &mut evs);
+        let private = drop_private && proxy::private_frame(None, Some(&v), &evs);
+        for ev in evs.drain(..) {
+            aggregate.push(&ev);
+            tracker.observe_stream_event(&ev);
+            match ev {
+                Event::Usage(u) => usage.merge(&u),
+                Event::Error { status, message } => error = Some((status, message)),
+                _ => {}
+            }
+        }
+        // Read by the observers above, but not sent to a client that isn't Codex; it
+        // reached no client, so the turn still counts as having forwarded nothing.
+        if private {
+            proxy::count_private_dropped(proxy::client_app(headers));
+            tracing::debug!(
+                connection_id = sess.connection_id,
+                client_app = proxy::client_app(headers),
+                event = kind,
+                "left out a private Responses event this client does not read"
+            );
+            continue;
+        }
+        if matches!(kind.as_str(), "error" | "response.failed")
+            && let Some((status, msg)) = error.clone()
+        {
+            if proxy::quota_exhausted(&acct, &model, status, &text) {
+                proxy::mark_quota_exhausted(&acct, &model, &reqwest::header::HeaderMap::new(), &text);
+                app.broadcast("accounts", Value::Null);
+                if !forwarded {
+                    sess.discard_upstream();
+                    close_upstream(&mut up, &sess.connection_id, "quota_rejected").await;
+                    tracker.finish_fallback(status, &usage, Some(msg));
+                    return Native::Fallback("upstream_failed");
+                }
+            } else if !forwarded && matches!(status, 401 | 403) {
+                // HTTP fallback refreshes credentials on the same assigned account.
+                sess.discard_upstream();
+                close_upstream(&mut up, &sess.connection_id, "auth_rejected").await;
+                tracker.cancel();
+                return Native::Fallback("upstream_closed");
+            } else if proxy::protection_refused(Provider::Codex, status, &msg) {
+                // The request itself is refused: the client sees it, the account is fine,
+                // and a turn the client saw is never replayed.
+                tracker.diagnostic_failure(crate::diagnostics::Failure::classified("response_protection_unavailable"));
+            } else if proxy::at_capacity(status, &text) {
+                // OpenAI is short of servers: shown, but other sessions keep the account.
+                acct.state
+                    .lock()
+                    .set_temporary_error(format!("429: {msg}"), chrono::Utc::now() + chrono::Duration::seconds(30));
+                app.broadcast("accounts", Value::Null);
+            } else if status == 429 {
+                // A plain rate limit: step aside briefly. Sessions detour meanwhile.
+                acct.rate_limit(&model, chrono::Utc::now() + chrono::Duration::seconds(60), &format!("429: {msg}"));
+                app.broadcast("accounts", Value::Null);
+            } else if matches!(status, 401 | 403) {
+                if status == 401 {
+                    proxy::log_codex_401(&acct, sess.upstream_token.as_deref(), tracker.request_id());
+                }
+                // An error after response.created also invalidates this socket.
+                // Refresh the same subscription before the client's next turn. As over
+                // HTTP, a 401 whose refresh token was refused for good puts the account
+                // out until a sign-in, which a cooldown would only hide.
+                if let Err(e) = crate::oauth::ensure_fresh(app, &acct, chrono::Duration::minutes(5), true).await
+                    && (status != 401 || !acct.refuse_access())
+                {
+                    acct.cool(
+                        None,
+                        chrono::Utc::now() + chrono::Duration::seconds(60),
+                        &format!("token refresh failed: {e}"),
+                    );
+                }
+            }
+            // A rate limit or capacity shortage as the first frame ran nothing and reached no
+            // client: HTTP serves the turn, with its own retries and failover. Never a 5xx,
+            // or anything after output, which the client has already seen. A plain rate limit
+            // just paused this account, so HTTP helps only if another account can serve;
+            // otherwise the provider's own refusal, and any wait it names, reaches the client.
+            let elsewhere = || app.pool.another_can_serve(&model, &acct.id, only.as_ref());
+            if !forwarded && status == 429 && (proxy::at_capacity(status, &text) || elsewhere()) {
+                sess.discard_upstream();
+                close_upstream(&mut up, &sess.connection_id, "busy_rejected").await;
+                tracker.finish_fallback(status, &usage, Some(msg));
+                return Native::Fallback("upstream_busy");
+            }
+        }
+        if kind == "response.completed" || kind == "response.incomplete" {
+            capture(app, headers, sess, &v, full, &aggregate);
+        }
+        terminal = matches!(kind.as_str(), "response.completed" | "response.incomplete" | "response.failed" | "error");
+        forwarded = true;
+        if send(tx, text).await.is_err() {
+            sess.discard_upstream();
+            tracker.finish(499, &usage, Some("client disconnected".into()));
+            return Native::Gone;
+        }
+        if terminal {
+            break;
+        }
+    }
+    if terminal && !error.as_ref().is_some_and(|(status, _)| matches!(status, 401 | 403)) {
+        sess.upstream = Some((acct.clone(), up));
+    } else {
+        sess.discard_upstream();
+    }
+    if !terminal {
+        // The upstream socket died mid-turn: tell the client and reconnect next turn.
+        let (status, msg) = error.clone().unwrap_or((502, "codex websocket closed".into()));
+        let body = json!({ "error": { "message": msg, "type": "upstream_error" } });
+        if send(tx, error_event(status, &body)).await.is_err() {
+            tracker.finish(status, &usage, Some(msg));
+            return Native::Gone;
+        }
+    }
+    match error {
+        Some((s, m)) => tracker.finish(s, &usage, Some(m)),
+        None => {
+            acct.record_ok();
+            tracker.finish(200, &usage, None)
+        }
+    }
+    Native::Done
+}
+
+#[cfg(test)]
+#[path = "ws_cancel_tests.rs"]
+mod cancellation_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{DuplexStream, duplex};
+    use tokio_tungstenite::WebSocketStream;
+    use tungstenite::protocol::Role;
+
+    async fn blocked_upstream() -> (WebSocketStream<DuplexStream>, DuplexStream) {
+        let (socket, peer) = duplex(1);
+        (WebSocketStream::from_raw_socket(socket, Role::Client, None).await, peer)
+    }
+
+    async fn buffered_upstream(buffer: Vec<u8>) -> (Session, WebSocketStream<tokio::net::TcpStream>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = tokio::net::TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        let peer = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        let up = WebSocketStream::from_partially_read(
+            tokio_tungstenite::MaybeTlsStream::Plain(client),
+            buffer,
+            Role::Client,
+            None,
+        )
+        .await;
+        let pool = crate::accounts::Pool::default();
+        pool.reload(&crate::config::Config {
+            auth_dir: "/nonexistent".into(),
+            codex_api_key: vec![crate::config::KeyEntry { api_key: "local-mock".into(), ..Default::default() }],
+            ..Default::default()
+        });
+        let acct = pool.all().pop().unwrap();
+        let sess = Session {
+            upstream: Some((acct, up)),
+            upstream_responses: HashSet::from(["prior-response".into()]),
+            upstream_quota_epoch: 7,
+            key: Some("retained-session".into()),
+            ..Default::default()
+        };
+        (sess, peer)
+    }
+
+    #[tokio::test]
+    async fn ready_upstream_drain_stops_at_frame_budget() {
+        for frames in [MAX_IDLE_DRAIN - 1, MAX_IDLE_DRAIN, MAX_IDLE_DRAIN + 1] {
+            // Every Pong is already buffered, so TCP batching cannot change the ready-frame count.
+            let (mut sess, _peer) = buffered_upstream([0x8a, 0].repeat(frames)).await;
+            tokio::time::timeout(Duration::from_secs(1), drain_idle_upstream(&mut sess))
+                .await
+                .expect("a ready upstream drain must return within its frame budget");
+            if frames < MAX_IDLE_DRAIN {
+                assert!(sess.upstream.is_some());
+                assert!(sess.upstream_responses.contains("prior-response"));
+                assert_eq!(sess.upstream_quota_epoch, 7);
+            } else {
+                assert!(sess.upstream.is_none());
+                assert!(sess.upstream_responses.is_empty());
+                assert_eq!(sess.upstream_quota_epoch, 0);
+            }
+            assert_eq!(sess.key.as_deref(), Some("retained-session"));
+        }
+    }
+
+    #[tokio::test]
+    async fn ready_upstream_close_is_drained_before_submitting_next_turn() {
+        // Buffered server Ping and normal Close make readiness independent of network scheduling.
+        let (mut sess, mut peer) = buffered_upstream(vec![0x89, 1, b'p', 0x88, 2, 0x03, 0xe8]).await;
+        tokio::time::timeout(Duration::from_secs(1), drain_idle_upstream(&mut sess)).await.unwrap();
+        assert!(sess.upstream.is_none());
+        assert!(sess.upstream_responses.is_empty());
+        assert_eq!(sess.upstream_quota_epoch, 0);
+        assert_eq!(sess.key.as_deref(), Some("retained-session"));
+        let pong = tokio::time::timeout(Duration::from_secs(1), peer.next()).await.unwrap().unwrap().unwrap();
+        assert_eq!(pong, tungstenite::Message::Pong(vec![b'p'].into()));
+        let close = tokio::time::timeout(Duration::from_secs(1), peer.next()).await.unwrap().unwrap().unwrap();
+        assert!(matches!(close, tungstenite::Message::Close(_)));
+    }
+
+    #[test]
+    fn turn_uploads_get_time_for_slow_uplinks() {
+        assert_eq!(send_deadline(1024), UPSTREAM_WRITE_TIMEOUT);
+        // A 6 MB turn at 300 KB/s takes about 20 s; the deadline covers a 256 kbit/s uplink.
+        assert_eq!(send_deadline(6 << 20), UPSTREAM_WRITE_TIMEOUT + Duration::from_secs(192));
+    }
+
+    #[tokio::test]
+    async fn upstream_send_flush_and_close_stop_at_write_deadline() {
+        let (mut sender, _sender_peer) = blocked_upstream().await;
+        let (mut flusher, _flusher_peer) = blocked_upstream().await;
+        let (mut closer, _closer_peer) = blocked_upstream().await;
+        // Feed queues a frame; the unread one-byte transport blocks its flush.
+        flusher.feed(tungstenite::Message::Text("queued request".into())).await.unwrap();
+        let started = tokio::time::Instant::now();
+        let failures = tokio::time::timeout(UPSTREAM_WRITE_TIMEOUT + Duration::from_secs(3), async {
+            futures::join!(
+                upstream_write("send", sender.send(tungstenite::Message::Text("submitted request".into()))),
+                upstream_write("flush", flusher.flush()),
+                upstream_write("close", closer.close(None)),
+            )
+        })
+        .await
+        .expect("blocked websocket writes outlived their deadline");
+        assert!(started.elapsed() >= UPSTREAM_WRITE_TIMEOUT);
+        for (operation, result) in [("send", failures.0), ("flush", failures.1), ("close", failures.2)] {
+            let failure = result.expect_err("an unread duplex transport must block");
+            assert_eq!(failure.status, 504);
+            assert_eq!(failure.operation, operation);
+            assert_eq!(failure.message, format!("codex websocket {operation} timed out"));
+        }
+    }
+
+    #[test]
+    fn upstream_failure_diagnostics_exclude_frames_credentials_bodies_and_urls() {
+        let secret = "private-prompt-token-account";
+        let errors = [
+            tungstenite::Error::WriteBufferFull(Box::new(tungstenite::Message::Text(secret.into()))),
+            tungstenite::Error::Utf8(secret.into()),
+            tungstenite::Error::Url(tungstenite::error::UrlError::UnableToConnect(secret.into())),
+            tungstenite::Error::Io(std::io::Error::other(secret)),
+            tungstenite::Error::Http(Box::new(
+                tungstenite::http::Response::builder()
+                    .status(403)
+                    .header("authorization", secret)
+                    .body(Some(secret.as_bytes().to_vec()))
+                    .unwrap(),
+            )),
+        ];
+        for error in errors {
+            let failure = UpstreamFailure::socket("send", &error);
+            assert_eq!(failure.status, 502);
+            assert!(!failure.message.contains(secret));
+            assert!(failure.message.starts_with("codex websocket send failed:"));
+        }
+        let error = tungstenite::Error::Protocol(tungstenite::error::ProtocolError::ResetWithoutClosingHandshake);
+        assert!(UpstreamFailure::socket("read", &error).message.contains("Connection reset without closing handshake"));
+    }
+}

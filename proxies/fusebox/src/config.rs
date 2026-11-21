@@ -1,0 +1,1173 @@
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value as Yaml;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default)]
+pub struct Config {
+    /// Interface to bind. Use 0.0.0.0 to expose on the network (set api-keys first).
+    pub host: String,
+    pub port: u16,
+    /// Directory holding OAuth credential files. Compatible with CLIProxyAPI.
+    pub auth_dir: String,
+    /// Keys clients must send (Authorization: Bearer, x-api-key or x-goog-api-key).
+    /// Empty means no client authentication.
+    pub api_keys: Vec<String>,
+    pub named_clients: Vec<NamedClient>,
+    pub usage: crate::usage::types::UsageConfig,
+    /// Protects the dashboard and management API. Empty means localhost-only access.
+    /// A bcrypt hash (as CLIProxyAPI stores it) works too.
+    pub management_key: String,
+    /// With a management key set, allow the dashboard from other machines (default true).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub management_allow_remote: Option<bool>,
+    /// Proxies whose word on a client's address counts: forwarding headers from them,
+    /// and PROXY protocol headers on `proxy-protocol-port`. Addresses or ranges; this
+    /// machine (127.0.0.0/8, ::1) when unset, nobody when empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trusted_proxies: Option<Vec<String>>,
+    /// A second port, on the same address, for a TCP forwarder in front (one that passes
+    /// TLS through, such as HAProxy in TCP mode): every connection must start with a
+    /// PROXY protocol header naming the client. 0 is off. Needs a restart.
+    #[serde(skip_serializing_if = "port_off")]
+    pub proxy_protocol_port: u16,
+    /// Optional upstream proxy (http://, https://, socks5://).
+    pub proxy_url: String,
+    /// How many different accounts to try before giving up on a request.
+    #[serde(deserialize_with = "lenient_u32")]
+    pub request_retry: u32,
+    /// Seconds a streamed answer may stay silent before its first event; the request
+    /// then moves to the next account. 0 turns the check off.
+    pub first_token_timeout_seconds: u64,
+    /// How new sessions choose an account.
+    pub routing: Routing,
+    /// Break exact smart-quota ties for new sessions using comparable cold TTFT samples.
+    pub latency_routing: bool,
+    /// Smart routing reserves this 5-hour remaining percentage for active/recent sessions.
+    #[serde(deserialize_with = "percentage")]
+    pub five_hour_reserve_percent: u8,
+    /// Keep each coding session on its account until subscription quota is exhausted.
+    pub session_affinity: bool,
+    /// Forget inactive sessions after this many seconds (default one day).
+    pub session_affinity_idle_seconds: u64,
+    /// Rotate generated provider sessions after inactivity, independently of routing.
+    pub provider_session_idle_seconds: u64,
+    /// Derived cache-key scope and handling of incompatible explicit cache hints.
+    pub prompt_cache: crate::cache::Config,
+    pub translation: crate::formats::TranslationConfig,
+    pub embeddings: crate::embeddings::Config,
+    pub request_limits: crate::admission::Config,
+    pub stream_limits: crate::stream_limits::Limits,
+    /// Keep an upstream websocket open to Codex when clients connect over websocket.
+    pub codex_websockets: bool,
+    /// Rewrite non-Claude-Code requests on Claude OAuth accounts so they look like Claude Code.
+    pub claude_cloak: bool,
+    /// Send Claude fast mode (`speed: "fast"`) to subscription accounts as asked. Off by
+    /// default: subscriptions bill fast mode to usage credits only, and without credits
+    /// Anthropic refuses it with a 429, so Fusebox sends those requests at standard speed.
+    pub claude_subscription_fast_mode: bool,
+    /// Check Claude and ChatGPT subscriptions for banked rate-limit resets and allow
+    /// spending them from the dashboard. Off by default: it uses unofficial endpoints.
+    pub banked_resets: bool,
+    /// Expiry-aware smart routing and separately authorized automatic redemption.
+    pub banked_reset_policy: crate::banked_resets::Policy,
+    /// Optional, account-specific requests to start idle Claude subscription windows.
+    pub window_starter: crate::window_starter::Config,
+    pub debug: bool,
+    /// `text` (default) or `json` log lines. Needs a restart.
+    pub log_format: LogFormat,
+    /// Serve HTTPS with this certificate.
+    #[serde(skip_serializing_if = "Tls::is_off")]
+    pub tls: Tls,
+    /// Which faults send a push notification to the devices that turned them on.
+    #[serde(skip_serializing_if = "Notifications::is_default")]
+    pub notifications: Notifications,
+    /// Native push for the Fusebox iPhone app, through Apple's push service.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apns: Option<Apns>,
+    /// The push relay iPhone apps without `apns` get their notifications through;
+    /// empty turns it off.
+    #[serde(skip_serializing_if = "is_default_push_relay")]
+    pub push_relay: String,
+    /// Only route unprefixed model names to accounts without a `prefix`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub force_model_prefix: bool,
+    /// Per-provider renames for OAuth accounts (`claude: [{name, alias, fork}]`).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub oauth_model_alias: BTreeMap<String, Vec<OAuthAlias>>,
+    /// Per-provider model patterns OAuth accounts must not serve (`*` wildcards).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub oauth_excluded_models: BTreeMap<String, Vec<String>>,
+    /// Models added from the dashboard before Fusebox knows them (`claude: [claude-opus-6]`).
+    /// Each is dropped once a release lists it or the provider's model list includes it.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra_models: BTreeMap<String, Vec<String>>,
+    /// One name for several models (`smart: [claude-opus-5-5, gpt-6-astra]`): tried in
+    /// order, or spread across new sessions with `balance: true`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_groups: BTreeMap<String, ModelGroup>,
+    /// User-maintained metadata for public model IDs, including prefixes/aliases.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_capabilities: BTreeMap<String, crate::model_catalog::Capabilities>,
+    /// Claude Code's quick background calls (its Haiku model) go to this model instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_model: Option<String>,
+    /// Client releases to speak as when newer than this build's (`claude-code: 2.1.310`),
+    /// for catching up before a Fusebox release does. Claude Code and Codex are also
+    /// learned from authenticated named clients explicitly trusted to teach identities.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub client_identities: BTreeMap<String, String>,
+    /// Explicit additional inbound header names permitted to reach each provider.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub upstream_header_allowlist: BTreeMap<String, Vec<String>>,
+    /// CLIProxyAPI settings found in the file that have no effect here.
+    #[serde(skip)]
+    pub ignored: Vec<String>,
+    /// The file names no auth-dir and only the pre-Fusebox directory exists, so it is used.
+    #[serde(skip)]
+    pub legacy_auth_dir: bool,
+    pub claude_api_key: Vec<KeyEntry>,
+    pub codex_api_key: Vec<KeyEntry>,
+    pub gemini_api_key: Vec<KeyEntry>,
+    /// Vertex AI express-mode API keys (service accounts go in the auth dir).
+    pub vertex_api_key: Vec<KeyEntry>,
+    /// Kimi Code (api.kimi.com/coding) or Moonshot platform keys.
+    pub kimi_api_key: Vec<KeyEntry>,
+    pub xai_api_key: Vec<KeyEntry>,
+    pub meta_api_key: Vec<KeyEntry>,
+    pub openai_compatibility: Vec<CompatEntry>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+/// The models behind a group name, and whether new sessions are spread across them
+/// (`balance`) or each model only takes over when the one before it can't answer.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ModelGroup {
+    pub models: Vec<String>,
+    pub balance: bool,
+}
+
+impl Serialize for ModelGroup {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        if !self.balance {
+            return self.models.serialize(s);
+        }
+        let mut map = s.serialize_map(Some(2))?;
+        map.serialize_entry("models", &self.models)?;
+        map.serialize_entry("balance", &true)?;
+        map.end()
+    }
+}
+
+/// `smart: [a, b]`, or `fast: { models: [a, b], balance: true }`.
+impl<'de> Deserialize<'de> for ModelGroup {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Form {
+            List(Vec<String>),
+            Map {
+                models: Vec<String>,
+                #[serde(default)]
+                balance: bool,
+            },
+        }
+        Ok(match Form::deserialize(d)? {
+            Form::List(models) => ModelGroup { models, balance: false },
+            Form::Map { models, balance } => ModelGroup { models, balance },
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Routing {
+    /// The account with the most subscription quota left (falls back to round-robin).
+    #[default]
+    LeastUsed,
+    /// Drain the earliest eligible weekly renewal; quota and load break close ties.
+    SmartQuota,
+    RoundRobin,
+    FillFirst,
+}
+
+/// Accepts `routing: fill-first` and CLIProxyAPI's `routing: { strategy: fill-first }`.
+/// Strategies this crate doesn't have (weighted-round-robin) fall back to round-robin.
+impl<'de> Deserialize<'de> for Routing {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = Yaml::deserialize(d)?;
+        let s = match &v {
+            Yaml::String(s) => s.as_str(),
+            Yaml::Object(m) => m.get("strategy").and_then(Yaml::as_str).unwrap_or_default(),
+            _ => "",
+        };
+        Ok(match s.trim().to_ascii_lowercase().as_str() {
+            "smart-quota" | "soonest-reset" => Routing::SmartQuota,
+            "fill-first" => Routing::FillFirst,
+            "round-robin" | "weighted-round-robin" => Routing::RoundRobin,
+            _ => Routing::LeastUsed,
+        })
+    }
+}
+
+fn lenient_u32<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let v = Yaml::deserialize(d)?;
+    Ok(v.as_i64().map(|n| n.clamp(0, u32::MAX as i64) as u32).unwrap_or(3))
+}
+
+fn percentage<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
+    let n = u8::deserialize(d)?;
+    if n > 100 {
+        return Err(serde::de::Error::custom("5-hour reserve must be a whole percentage between 0 and 100"));
+    }
+    Ok(n)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct NamedClient {
+    pub id: String,
+    pub label: String,
+    pub key: String,
+    /// Allow this authenticated client to update the shared emulation profile.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trust_client_identity: bool,
+    /// Model patterns this client may use (`*` wildcards); empty allows every model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    /// Rewrite the requested model before routing: pattern (`*` wildcards,
+    /// matched case-insensitively on the suffix-stripped base model) to the
+    /// model or group to serve instead, which may carry its own reasoning
+    /// suffix. The `models` allowlist is checked against the mapped model.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_map: BTreeMap<String, String>,
+    /// User-Agent patterns its requests must match (`claude-cli/*`); empty allows any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_agents: Vec<String>,
+    /// Addresses or ranges its requests must come from (`10.10.0.0/24`); empty allows any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requests_per_minute: Option<u32>,
+    /// Input, cache-write and output tokens per day (cache reads are not counted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_per_day: Option<u64>,
+    /// Estimated spend per month at API list prices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd_per_month: Option<f64>,
+    /// The last day the key works (`2026-12-31`), in the server's time zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<chrono::NaiveDate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case", default)]
+pub struct Tls {
+    pub enable: bool,
+    pub cert: String,
+    pub key: String,
+}
+
+impl Tls {
+    fn is_off(&self) -> bool {
+        !self.enable && self.cert.is_empty() && self.key.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct Notifications {
+    /// A signed-in account needs signing in again.
+    pub sign_in_expired: bool,
+    /// Every account of a provider is used up or unavailable, and when one is back.
+    pub provider_exhausted: bool,
+    /// One account used up its 5-hour or weekly limit.
+    pub account_used_up: bool,
+    /// An account error, or three or more failed requests in an hour.
+    pub account_errors: bool,
+    /// A named client's key used from an address it wasn't used from before, or refused
+    /// at one its address list doesn't allow.
+    pub client_new_address: bool,
+    /// A new banked reset, one used automatically, needing review, or expired unused.
+    pub banked_resets: bool,
+    /// Two days before a subscription charges again, or ends: ChatGPT's own date, or the
+    /// billing day set on a Claude or Meta account.
+    pub renewals: bool,
+    /// The same reminder a day before; with both on, each date is reminded twice.
+    pub renewals_day_before: bool,
+    /// Chat and webhook URLs that get the same notifications (Discord, Slack, Teams,
+    /// Telegram, ntfy, or any URL that takes JSON).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub webhooks: Vec<String>,
+}
+
+impl Default for Notifications {
+    fn default() -> Self {
+        Self {
+            sign_in_expired: true,
+            provider_exhausted: true,
+            account_used_up: false,
+            account_errors: false,
+            client_new_address: true,
+            banked_resets: true,
+            renewals: true,
+            renewals_day_before: false,
+            webhooks: vec![],
+        }
+    }
+}
+
+impl Notifications {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// The Apple Push Notification service key that sends to the iPhone app: a token
+/// signing key (`AuthKey_<key-id>.p8`) from the developer account the app is signed with.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct Apns {
+    pub team_id: String,
+    pub key_id: String,
+    pub key_file: String,
+    /// The app's bundle ID.
+    #[serde(default = "default_apns_topic")]
+    pub topic: String,
+}
+
+fn is_default_push_relay(url: &String) -> bool {
+    url == crate::push::relay::DEFAULT_URL
+}
+
+fn default_apns_topic() -> String {
+    "com.digitalpals.fusebox".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "kebab-case", default)]
+pub struct OAuthAlias {
+    /// Upstream model name.
+    pub name: String,
+    /// Name clients use.
+    pub alias: String,
+    /// Keep serving `name` as well (otherwise the alias replaces it).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fork: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case", default)]
+pub struct KeyEntry {
+    pub api_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Restrict (and optionally rename) models served by this key.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelAlias>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// Clients must call `prefix/model` to reach this key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// Model patterns this key must not serve (`*` wildcards).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub excluded_models: Vec<String>,
+    /// Higher goes first: accounts below the highest ready priority only take over.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub priority: i32,
+}
+
+fn is_zero(n: &i32) -> bool {
+    *n == 0
+}
+
+fn port_off(port: &u16) -> bool {
+    *port == 0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case", default)]
+pub struct CompatEntry {
+    pub name: String,
+    pub base_url: String,
+    pub api_keys: Vec<String>,
+    pub models: Vec<ModelAlias>,
+    /// Translations use one leading system message and merge repeated turns for
+    /// local templates that cannot represent OpenAI's instruction/message roles.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub strict_chat_template: bool,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub excluded_models: Vec<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub priority: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case", default)]
+pub struct ModelAlias {
+    /// Model name sent upstream.
+    pub name: String,
+    /// Name clients use. Defaults to `name`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+impl ModelAlias {
+    pub fn public(&self) -> &str {
+        self.alias.as_deref().filter(|a| !a.is_empty()).unwrap_or(&self.name)
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            host: default_host(),
+            port: 8317,
+            auth_dir: DEFAULT_AUTH_DIR.into(),
+            api_keys: vec![],
+            named_clients: vec![],
+            usage: Default::default(),
+            management_key: String::new(),
+            management_allow_remote: None,
+            trusted_proxies: None,
+            proxy_protocol_port: 0,
+            proxy_url: String::new(),
+            request_retry: 3,
+            first_token_timeout_seconds: 120,
+            latency_routing: false,
+            routing: Routing::LeastUsed,
+            five_hour_reserve_percent: 30,
+            session_affinity: true,
+            session_affinity_idle_seconds: 86_400,
+            provider_session_idle_seconds: 1800,
+            prompt_cache: Default::default(),
+            translation: Default::default(),
+            embeddings: Default::default(),
+            request_limits: Default::default(),
+            stream_limits: Default::default(),
+            codex_websockets: true,
+            claude_cloak: true,
+            claude_subscription_fast_mode: false,
+            banked_resets: false,
+            banked_reset_policy: Default::default(),
+            window_starter: Default::default(),
+            debug: false,
+            log_format: LogFormat::Text,
+            tls: Tls::default(),
+            notifications: Notifications::default(),
+            apns: None,
+            push_relay: crate::push::relay::DEFAULT_URL.into(),
+            force_model_prefix: false,
+            oauth_model_alias: BTreeMap::new(),
+            oauth_excluded_models: BTreeMap::new(),
+            extra_models: BTreeMap::new(),
+            client_identities: BTreeMap::new(),
+            upstream_header_allowlist: BTreeMap::new(),
+            model_groups: BTreeMap::new(),
+            model_capabilities: BTreeMap::new(),
+            background_model: None,
+            ignored: vec![],
+            legacy_auth_dir: false,
+            claude_api_key: vec![],
+            codex_api_key: vec![],
+            gemini_api_key: vec![],
+            vertex_api_key: vec![],
+            kimi_api_key: vec![],
+            xai_api_key: vec![],
+            meta_api_key: vec![],
+            openai_compatibility: vec![],
+        }
+    }
+}
+
+pub const DEFAULT_AUTH_DIR: &str = "~/.fusebox";
+/// Where sign-ins lived before the rename (and where CLIProxyAPI keeps them).
+pub const LEGACY_AUTH_DIR: &str = "~/.cli-proxy-api";
+
+const TEMPLATE: &str = r#"# Fusebox configuration. Changes are picked up automatically.
+
+host: "127.0.0.1"          # use 0.0.0.0 to expose on your network (add named-clients first!)
+port: 8317
+auth-dir: "~/.fusebox"      # OAuth credentials (CLIProxyAPI's files work too)
+
+# Shared keys from before named clients: any tool may send them. With neither these nor
+# named-clients, anyone who can reach the port can use it.
+api-keys: []
+
+# Protects the dashboard + management API. Empty = only reachable from localhost.
+management-key: ""
+
+# Where requests come from. Reverse proxies on this machine (tailscale serve, nginx, Caddy)
+# name the client in X-Forwarded-For; a TCP forwarder that passes TLS through can't, so
+# give it a port of its own where each connection starts with a PROXY protocol header.
+# trusted-proxies: [127.0.0.1, ::1]   # whose word counts (default: this machine)
+# proxy-protocol-port: 8319           # 0 = off; same address as host; needs a restart.
+#                                     # When on, forwarding headers count only on this port.
+
+proxy-url: ""               # optional upstream proxy, e.g. socks5://127.0.0.1:1080
+request-retry: 3            # accounts to try before failing a request
+first-token-timeout-seconds: 120 # a stream silent this long moves to the next account (0 = off)
+routing: least-used         # new sessions: least-used | smart-quota | round-robin | fill-first
+latency-routing: false     # break exact smart-quota ties for new sessions using comparable cold timings
+five-hour-reserve-percent: 30 # smart-quota: keep this 5-hour share for sessions already on an account
+session-affinity: true      # keep a session on its subscription until quota is exhausted
+session-affinity-idle-seconds: 86400 # expire assignments after a day without requests
+prompt-cache:
+  scope: session           # session | client | workspace (x-fusebox-cache-workspace)
+  namespace: ""            # optional shared prompt/tool version
+  on-incompatible: drop    # drop (preserve intent) | automatic | reject
+translation:
+  allow-service-tier: false # preserve caller tiers on supported OpenAI translations (may cost more)
+embeddings:
+  concurrency: 1           # Google chunks in flight, 1–16; completed chunks are never replayed
+  cache-seconds: 0         # exact result reuse per client/account/model/options; 0 is off
+  cache-bytes: 16777216    # serialized cache capacity; process memory overhead is additional
+request-limits:
+  text-body-bytes: 268435456
+  media-body-bytes: 268435456
+  max-in-flight: 0 # 0 is unlimited; HTTP POST requests through stream completion
+  max-in-flight-body-bytes: 0 # aggregate decoded body bytes; 0 is unlimited
+stream-limits:
+  event-bytes: 16777216    # maximum SSE event/unfinished line or native WS event
+  media-event-bytes: 67108864 # models whose names contain image, audio or video
+  bootstrap-bytes: 2097152 # after the first event, release buffered chunks at this threshold
+  pre-output-timeout-seconds: 0 # optional combined headers/first-event deadline; expiry is terminal
+codex-websockets: true      # native upstream websocket for Codex websocket clients
+claude-cloak: true          # make non-Claude-Code clients look like Claude Code on OAuth accounts
+claude-subscription-fast-mode: false # pass fast mode to Claude subscriptions (needs usage credits)
+banked-resets: false        # show and spend banked Claude/ChatGPT limit resets (unofficial endpoints)
+window-starter:
+  mode: off                # off | always | working-hours; sends small subscription requests
+  accounts: []             # explicit account IDs from the dashboard; empty selects nobody
+  model: claude-haiku-4-5-20251001
+  timezone: UTC            # IANA timezone; applies to working-hours mode
+  weekdays: [1, 2, 3, 4, 5] # Monday=1, Sunday=7
+  start: "08:00"
+  end: "18:00"             # exclusive; overnight hours belong to their start day
+banked-reset-policy:
+  expiry-priority-hours: 168 # smart-quota: prefer accounts with a reset expiring within 7 days; 0 disables
+  auto-redeem: false        # spend expiring resets automatically after substantial use (opt-in)
+debug: false
+
+# Persistent proxy usage; imports/collectors are opt-in. Storage changes need a restart.
+usage:
+  enabled: true
+  retention-days: 90          # each request's record; budgets need 32 or more
+  totals-retention-days: 0    # 15-minute cost and token totals after that; 0 keeps them for good
+  queue-capacity: 1024
+  # database: /path/to/usage.sqlite3  # default: beside config.yaml
+  # pricing-overrides: /path/to/rates.json
+
+# Push notifications for devices that turn them on in the dashboard (needs HTTPS).
+# notifications:
+#   sign-in-expired: true      # an account needs signing in again
+#   provider-exhausted: true   # every account of a provider is out, and when one is back
+#   account-used-up: false     # one account used up its 5-hour or weekly limit
+#   account-errors: false      # account errors and runs of failed requests
+#   client-new-address: true   # a named client's key used from a new address, or refused at one
+#   banked-resets: true        # a new reset, one used automatically, needing review, or expired unused
+#   renewals: true             # two days before a subscription charges again, or ends
+#   renewals-day-before: false # the same a day before
+#   webhooks:                  # the same notifications in chat: Discord, Slack, Teams, Telegram, ntfy or any URL
+#     - https://discord.com/api/webhooks/...
+
+# The same notifications for the Fusebox iPhone app, sent through Apple's push service
+# with a key from the Apple developer account the app is signed with.
+# apns:
+#   team-id: ABCDE12345
+#   key-id: KEY1234567
+#   key-file: /path/to/AuthKey_KEY1234567.p8
+#   topic: com.digitalpals.fusebox   # the app's bundle ID
+#
+# Without apns, the app gets them through the Fusebox push relay, sealed so the relay
+# can't read them. Another relay, or "" to turn it off:
+# push-relay: https://push.whombat.com
+
+# Models released after this Fusebox version, served until it knows them. The dashboard's
+# "Add model" writes here; an entry is removed once Fusebox or the provider lists the model.
+# extra-models:
+#   claude: [claude-opus-6]
+
+# One name for several models. Each takes over when the one before it can't answer;
+# with balance: true, new sessions are spread across them instead.
+# model-groups:
+#   smart: [claude-opus-5-5, gpt-6-astra]
+#   fast: { models: [claude-sonnet-5-5, gemini-3.8-flash], balance: true }
+# background-model: gemini-3.8-flash  # Claude Code's quick Haiku calls (titles, summaries)
+
+# A key for each machine or tool, so the Usage page shows each by name and limits can
+# apply. The dashboard's Config, Clients adds them.
+named-clients: []
+#  - id: desktop
+#    label: Work desktop
+#    key: choose-a-distinct-random-key
+#    models: [claude-*, gpt-*]           # optional limits, each on its own
+#    requests-per-minute: 60
+#    tokens-per-day: 5000000             # input + output; cache reads don't count
+#    usd-per-month: 100                  # estimated at API list prices
+#    expires: 2026-12-31
+#    addresses: [10.10.0.0/24]           # only from these addresses or ranges
+
+# API keys (optional). Accounts (Claude, Codex, Antigravity, Kimi, xAI, Meta, Devin, Vertex)
+# are added with `fusebox login <provider>` or from the dashboard.
+claude-api-key: []
+#  - api-key: "sk-ant-..."
+#    base-url: "https://api.anthropic.com"   # optional
+
+codex-api-key: []
+#  - api-key: "sk-..."
+#    base-url: "https://api.openai.com/v1"   # optional
+
+gemini-api-key: []
+#  - api-key: "AIza..."
+
+vertex-api-key: []          # Vertex AI express mode; service accounts: `fusebox login vertex --file sa.json`
+#  - api-key: "AQ..."
+
+kimi-api-key: []
+#  - api-key: "sk-kimi-..."                 # Kimi Code key
+#  - api-key: "sk-..."                      # Moonshot platform key
+#    base-url: "https://api.moonshot.ai/v1"
+
+xai-api-key: []
+#  - api-key: "xai-..."
+
+meta-api-key: []
+#  - api-key: "..."
+
+openai-compatibility: []
+#  - name: openrouter
+#    base-url: "https://openrouter.ai/api/v1"
+#    api-keys: ["sk-or-..."]
+#    models:
+#      - name: "moonshotai/kimi-k3"
+#        alias: "kimi-k3"
+"#;
+
+/// An upstream proxy URL with a scheme Fusebox can use. A proxy that can't be used must
+/// never quietly turn into a direct connection, so anything else is refused.
+pub fn check_proxy_url(value: &str) -> Result<(), String> {
+    let value = value.trim();
+    if value.is_empty() || value == "direct" || value == "none" {
+        return Ok(());
+    }
+    let url = url::Url::parse(value).map_err(|_| format!("{value} is not a URL; write it as scheme://host:port"))?;
+    if !matches!(url.scheme(), "http" | "https" | "socks5" | "socks5h") {
+        return Err(format!("{value}: use an http://, https://, socks5:// or socks5h:// address"));
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err(format!("{value} has no host"));
+    }
+    reqwest::Proxy::all(value).map(|_| ()).map_err(|e| format!("{value}: {e}"))
+}
+
+fn validate_upstream_header(provider: &str, name: &str) -> Result<(), String> {
+    let parsed = axum::http::HeaderName::from_bytes(name.as_bytes())
+        .map_err(|_| "upstream-header-allowlist needs exact HTTP header names".to_string())?;
+    let provider = crate::accounts::Provider::parse(provider)
+        .ok_or_else(|| "upstream-header-allowlist needs a supported provider".to_string())?;
+    if !crate::upstream::header_extension_allowed(provider, parsed.as_str()) {
+        return Err(format!("upstream-header-allowlist: {} is reserved or private", parsed.as_str()));
+    }
+    Ok(())
+}
+
+fn validate_custom_headers(
+    provider: crate::accounts::Provider,
+    headers: &BTreeMap<String, String>,
+) -> anyhow::Result<()> {
+    for (name, value) in headers {
+        anyhow::ensure!(
+            crate::upstream::custom_header_allowed(provider, false, name),
+            "{} configured header is invalid or protected: {name}",
+            provider.as_str()
+        );
+        anyhow::ensure!(
+            axum::http::HeaderValue::from_str(value).is_ok(),
+            "{} configured header has an invalid value: {name}",
+            provider.as_str()
+        );
+    }
+    Ok(())
+}
+
+/// Webhook destinations are plain HTTPS (or HTTP, for a local relay) URLs.
+pub fn check_webhook_url(value: &str) -> Result<(), String> {
+    let shown = crate::push::webhook_name(value);
+    let url = url::Url::parse(value.trim()).map_err(|_| format!("{shown} is not a URL"))?;
+    if !matches!(url.scheme(), "https" | "http") || url.host_str().is_none_or(str::is_empty) {
+        return Err(format!("{shown}: use an https:// address"));
+    }
+    Ok(())
+}
+
+/// The first of `names` that is set, so renamed variables keep their old spelling.
+pub fn first_env(names: &[&str], get: impl Fn(&str) -> Option<String>) -> Option<String> {
+    names.iter().find_map(|n| get(n).filter(|v| !v.is_empty()))
+}
+
+pub fn env_var(names: &[&str]) -> Option<String> {
+    first_env(names, |n| std::env::var(n).ok())
+}
+
+/// 127.0.0.1, unless the environment says otherwise (the Docker image binds all interfaces).
+fn default_host() -> String {
+    // CLIPROXYAPI_RUST_DEFAULT_HOST: the name before the rename to Fusebox, still honoured.
+    env_var(&["FUSEBOX_DEFAULT_HOST", "CLIPROXYAPI_RUST_DEFAULT_HOST"]).unwrap_or_else(|| "127.0.0.1".into())
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
+}
+
+/// `~/.fusebox`, unless only the pre-Fusebox `~/.cli-proxy-api` exists.
+pub fn default_auth_dir_in(home: Option<&Path>) -> &'static str {
+    match home {
+        Some(h) if !h.join(".fusebox").exists() && h.join(".cli-proxy-api").is_dir() => LEGACY_AUTH_DIR,
+        _ => DEFAULT_AUTH_DIR,
+    }
+}
+
+pub fn default_auth_dir() -> &'static str {
+    default_auth_dir_in(home_dir().as_deref())
+}
+
+/// The commented starter config, bound to the default host and auth directory.
+pub fn template() -> String {
+    let t = TEMPLATE.replacen("host: \"127.0.0.1\"", &format!("host: \"{}\"", default_host()), 1);
+    if default_auth_dir() == LEGACY_AUTH_DIR { t.replacen("\"~/.fusebox\"", "\"~/.cli-proxy-api\"", 1) } else { t }
+}
+
+pub fn expand_home(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/").or_else(|| (p == "~").then_some(""))
+        && let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+    {
+        return PathBuf::from(home).join(rest);
+    }
+    PathBuf::from(p)
+}
+
+impl Config {
+    pub fn load(path: &Path) -> Result<Self> {
+        let mut created = false;
+        if !path.exists() {
+            if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                std::fs::create_dir_all(dir).ok();
+            }
+            std::fs::write(path, template()).with_context(|| format!("writing {}", path.display()))?;
+            tracing::info!("created default config at {}", path.display());
+            created = true;
+        }
+        let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let mut cfg = Self::parse(&text)?;
+        // A new config written with the legacy directory still deserves the startup note.
+        cfg.legacy_auth_dir |= created && cfg.auth_dir == LEGACY_AUTH_DIR;
+        Ok(cfg)
+    }
+
+    pub fn parse(text: &str) -> Result<Self> {
+        let mut doc: Yaml = if text.trim().is_empty() {
+            Yaml::Object(Default::default())
+        } else {
+            crate::yaml::from_str(text).context("invalid config")?
+        };
+        let ignored = crate::compat::normalize(&mut doc);
+        let explicit = doc.get("auth-dir").is_some_and(|v| !v.is_null());
+        let mut cfg: Config = serde_json::from_value(doc).context("invalid config")?;
+        cfg.ignored = ignored;
+        cfg.prompt_cache.validate().map_err(anyhow::Error::msg)?;
+        cfg.stream_limits.validate().map_err(anyhow::Error::msg)?;
+        cfg.embeddings.validate().map_err(anyhow::Error::msg)?;
+        cfg.request_limits.validate().map_err(anyhow::Error::msg)?;
+        cfg.banked_reset_policy.validate().map_err(anyhow::Error::msg)?;
+        cfg.window_starter.validate()?;
+        anyhow::ensure!(
+            (1..=86_400).contains(&cfg.provider_session_idle_seconds),
+            "provider-session-idle-seconds must be between 1 and 86400"
+        );
+        for (provider, names) in &cfg.upstream_header_allowlist {
+            anyhow::ensure!(
+                matches!(provider.as_str(), "claude" | "codex"),
+                "upstream-header-allowlist supports claude and codex"
+            );
+            anyhow::ensure!(names.len() <= 128, "upstream-header-allowlist: too many header names");
+            for name in names {
+                validate_upstream_header(provider, name).map_err(anyhow::Error::msg)?;
+            }
+        }
+        for (client, version) in &cfg.client_identities {
+            crate::clients::validate(client, version).map_err(anyhow::Error::msg)?;
+        }
+        for (provider, entries) in [
+            (crate::accounts::Provider::Claude, &cfg.claude_api_key),
+            (crate::accounts::Provider::Codex, &cfg.codex_api_key),
+            (crate::accounts::Provider::Gemini, &cfg.gemini_api_key),
+            (crate::accounts::Provider::Vertex, &cfg.vertex_api_key),
+            (crate::accounts::Provider::Kimi, &cfg.kimi_api_key),
+            (crate::accounts::Provider::Xai, &cfg.xai_api_key),
+            (crate::accounts::Provider::Meta, &cfg.meta_api_key),
+        ] {
+            for entry in entries {
+                validate_custom_headers(provider, &entry.headers)?;
+            }
+        }
+        for entry in &cfg.openai_compatibility {
+            validate_custom_headers(crate::accounts::Provider::Compat, &entry.headers)?;
+        }
+        // An explicit auth-dir always wins; otherwise keep using an existing legacy directory.
+        if !explicit && default_auth_dir() == LEGACY_AUTH_DIR {
+            cfg.auth_dir = LEGACY_AUTH_DIR.into();
+            cfg.legacy_auth_dir = true;
+        }
+        if cfg.usage.queue_capacity == 0
+            || cfg.usage.queue_capacity > 65536
+            || cfg.usage.retention_days == 0
+            || cfg.usage.retention_days > 36500
+        {
+            anyhow::bail!("invalid usage queue capacity or retention");
+        }
+        anyhow::ensure!(
+            cfg.usage.totals_retention_days == 0
+                || (cfg.usage.retention_days..=36500).contains(&cfg.usage.totals_retention_days),
+            "usage.totals-retention-days must be 0 (keep totals for good) or from retention-days to 36500"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for client in &cfg.named_clients {
+            let id = &client.id;
+            anyhow::ensure!(!id.trim().is_empty(), "named-clients: every client needs an id");
+            anyhow::ensure!(!client.key.trim().is_empty(), "named-clients: {id} needs a key");
+            // fbxc_ keys belong to usage collectors, which may only send usage.
+            anyhow::ensure!(
+                !client.key.starts_with("fbxc_"),
+                "named-clients: {id} has a collector key (fbxc_); give it another key"
+            );
+            anyhow::ensure!(ids.insert(id), "named-clients: the id {id} is used twice");
+            crate::usage::types::valid_label(&client.id).map_err(anyhow::Error::msg)?;
+            crate::usage::types::valid_label(&client.label).map_err(anyhow::Error::msg)?;
+            anyhow::ensure!(
+                client.models.iter().chain(&client.user_agents).all(|p| !p.trim().is_empty()),
+                "named-clients: {id} has an empty model or user-agent pattern"
+            );
+            crate::policy::validate_model_map(client).map_err(|e| anyhow::anyhow!("named-clients: {id}: {e}"))?;
+            for address in &client.addresses {
+                anyhow::ensure!(
+                    crate::source::Cidr::parse(address).is_some(),
+                    "named-clients: {id}: \"{address}\" is not an address or range (10.10.0.7, 10.10.0.0/24)"
+                );
+            }
+            anyhow::ensure!(
+                client.requests_per_minute != Some(0) && client.tokens_per_day != Some(0),
+                "named-clients: {id}: a limit of 0 blocks every request; remove the limit or raise it"
+            );
+            anyhow::ensure!(
+                client.usd_per_month.is_none_or(|usd| usd.is_finite() && usd > 0.0),
+                "named-clients: {id}: usd-per-month must be more than 0"
+            );
+        }
+        let proxies = std::iter::once(("proxy-url", Some(cfg.proxy_url.as_str())))
+            .chain(
+                [
+                    &cfg.claude_api_key,
+                    &cfg.codex_api_key,
+                    &cfg.gemini_api_key,
+                    &cfg.vertex_api_key,
+                    &cfg.kimi_api_key,
+                    &cfg.xai_api_key,
+                    &cfg.meta_api_key,
+                ]
+                .into_iter()
+                .flatten()
+                .map(|k| ("an API key's proxy-url", k.proxy_url.as_deref())),
+            )
+            .chain(cfg.openai_compatibility.iter().map(|c| ("openai-compatibility proxy-url", c.proxy_url.as_deref())));
+        for (what, url) in proxies {
+            if let Some(url) = url {
+                check_proxy_url(url).map_err(|e| anyhow::anyhow!("{what}: {e}"))?;
+            }
+        }
+        for proxy in cfg.trusted_proxies.iter().flatten() {
+            anyhow::ensure!(
+                crate::source::Cidr::parse(proxy).is_some(),
+                "trusted-proxies: \"{proxy}\" is not an address or range (127.0.0.1, 10.0.0.0/8)"
+            );
+        }
+        anyhow::ensure!(
+            cfg.proxy_protocol_port == 0 || cfg.proxy_protocol_port != cfg.port,
+            "proxy-protocol-port must differ from port"
+        );
+        for hook in &cfg.notifications.webhooks {
+            check_webhook_url(hook).map_err(|e| anyhow::anyhow!("notifications.webhooks: {e}"))?;
+        }
+        if let Some(apns) = &cfg.apns {
+            let id = |s: &str| s.len() == 10 && s.chars().all(|c| c.is_ascii_alphanumeric());
+            anyhow::ensure!(id(&apns.team_id), "apns.team-id: use the 10-character team ID");
+            anyhow::ensure!(id(&apns.key_id), "apns.key-id: use the 10-character key ID");
+            anyhow::ensure!(!apns.key_file.trim().is_empty(), "apns.key-file: name the .p8 key file");
+            anyhow::ensure!(!apns.topic.trim().is_empty(), "apns.topic: name the app's bundle ID");
+        }
+        if !cfg.push_relay.is_empty() {
+            let url = url::Url::parse(&cfg.push_relay).map_err(|_| anyhow::anyhow!("push-relay: not a URL"))?;
+            anyhow::ensure!(url.scheme() == "https" || url.host_str() == Some("127.0.0.1"), "push-relay: use https");
+        }
+        for (name, caps) in &cfg.model_capabilities {
+            anyhow::ensure!(!name.trim().is_empty(), "model-capabilities: empty model name");
+            caps.validate()?;
+        }
+        for (name, group) in &cfg.model_groups {
+            anyhow::ensure!(
+                !name.trim().is_empty() && !name.contains(char::is_whitespace),
+                "model-groups: \"{name}\" can't be a model name"
+            );
+            anyhow::ensure!(!group.models.is_empty(), "model-groups: {name} lists no models");
+            // Members are always models, never other groups: a group named like a real
+            // model (to give it fallbacks) can still be listed by another group.
+            for model in &group.models {
+                anyhow::ensure!(!model.trim().is_empty(), "model-groups: {name} has an empty model");
+            }
+        }
+        if let Some(model) = &cfg.background_model {
+            anyhow::ensure!(!model.trim().is_empty(), "background-model is empty; remove it or name a model");
+        }
+        Ok(cfg)
+    }
+
+    pub fn auth_dir(&self) -> PathBuf {
+        expand_home(&self.auth_dir)
+    }
+
+    pub fn is_loopback(&self) -> bool {
+        matches!(self.host.as_str(), "127.0.0.1" | "localhost" | "::1")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_totals_are_kept_for_good_unless_bounded_past_the_records() {
+        assert_eq!(Config::parse("port: 8317\n").unwrap().usage.totals_retention_days, 0);
+        for (records, totals, ok) in
+            [(45, 0, true), (45, 45, true), (45, 3650, true), (45, 30, false), (45, 36501, false)]
+        {
+            let parsed =
+                Config::parse(&format!("usage:\n  retention-days: {records}\n  totals-retention-days: {totals}\n"));
+            assert_eq!(parsed.is_ok(), ok, "{records} days of records, {totals} of totals");
+        }
+    }
+
+    #[test]
+    fn configured_headers_preserve_gateway_credentials_and_reject_protected_names_and_invalid_values() {
+        let allowed = "openai-compatibility:\n  - name: gateway\n    base-url: https://gateway.example.invalid/v1\n    api-keys: [FAKE_KEY]\n    headers:\n      cf-access-client-secret: FAKE_OPERATOR_SECRET\n      x-portkey-api-key: FAKE_OPERATOR_GATEWAY\n";
+        assert!(Config::parse(allowed).is_ok());
+        for name in ["authorization", "user-agent", "session-id", "via", "x-fusebox-secret"] {
+            assert!(
+                Config::parse(&format!(
+                    "codex-api-key:\n  - api-key: FAKE_KEY\n    headers:\n      {name}: FAKE_VALUE\n"
+                ))
+                .is_err(),
+                "{name}"
+            );
+        }
+        let error = Config::parse(
+            "codex-api-key:\n  - api-key: FAKE_KEY\n    headers:\n      x-feature: \"FAKE_SECRET\\nINVALID\"\n",
+        )
+        .unwrap_err();
+        assert!(!error.to_string().contains("FAKE_SECRET"));
+    }
+
+    #[test]
+    fn provider_identity_settings_are_explicit_and_reject_private_header_extensions() {
+        let cfg = Config::parse("named-clients:\n  - id: laptop\n    label: Laptop\n    key: fake-client-key\n    trust-client-identity: true\nprovider-session-idle-seconds: 600\nupstream-header-allowlist:\n  claude: [x-provider-feature]\n").unwrap();
+        assert!(cfg.named_clients[0].trust_client_identity);
+        assert_eq!(cfg.provider_session_idle_seconds, 600);
+        assert_eq!(Config::default().provider_session_idle_seconds, 1800);
+        for name in [
+            "authorization",
+            "x-gateway-key",
+            "via",
+            "x-fusebox-session-id",
+            "chatgpt-account-id",
+            "x-auth-request-email",
+            "connection",
+        ] {
+            assert!(Config::parse(&format!("upstream-header-allowlist:\n  claude: [{name}]\n")).is_err(), "{name}");
+        }
+        for idle in [0, 86401] {
+            assert!(Config::parse(&format!("provider-session-idle-seconds: {idle}\n")).is_err());
+        }
+    }
+
+    #[test]
+    fn renamed_variables_fall_back_to_their_old_names() {
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |n: &str| vars.iter().find(|(k, _)| *k == n).map(|(_, v)| v.to_string())
+        };
+        let names = ["FUSEBOX_DEFAULT_HOST", "CLIPROXYAPI_RUST_DEFAULT_HOST"];
+        let both = env(&[("FUSEBOX_DEFAULT_HOST", "0.0.0.0"), ("CLIPROXYAPI_RUST_DEFAULT_HOST", "::")]);
+        assert_eq!(first_env(&names, both).as_deref(), Some("0.0.0.0"));
+        let old = env(&[("CLIPROXYAPI_RUST_DEFAULT_HOST", "::")]);
+        assert_eq!(first_env(&names, old).as_deref(), Some("::"));
+        let blank = env(&[("FUSEBOX_DEFAULT_HOST", ""), ("CLIPROXYAPI_RUST_DEFAULT_HOST", "::")]);
+        assert_eq!(first_env(&names, blank).as_deref(), Some("::"));
+        assert_eq!(first_env(&names, env(&[])), None);
+    }
+
+    #[test]
+    fn the_default_auth_dir_falls_back_to_an_existing_legacy_directory() {
+        let home = std::env::temp_dir().join(format!("fusebox-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        assert_eq!(default_auth_dir_in(Some(&home)), DEFAULT_AUTH_DIR);
+        std::fs::create_dir_all(home.join(".cli-proxy-api")).unwrap();
+        assert_eq!(default_auth_dir_in(Some(&home)), LEGACY_AUTH_DIR);
+        std::fs::create_dir_all(home.join(".fusebox")).unwrap();
+        assert_eq!(default_auth_dir_in(Some(&home)), DEFAULT_AUTH_DIR);
+        assert_eq!(default_auth_dir_in(None), DEFAULT_AUTH_DIR);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn an_explicit_auth_dir_always_wins() {
+        for (text, dir) in [
+            ("auth-dir: /data/auths\n", "/data/auths"),
+            ("auth-dir: \"~/.cli-proxy-api\"\n", LEGACY_AUTH_DIR),
+            ("auth-dir: \"~/.fusebox\"\n", DEFAULT_AUTH_DIR),
+            ("oauth:\n  auth-dir: /nested\n", "/nested"),
+        ] {
+            let cfg = Config::parse(text).unwrap();
+            assert_eq!(cfg.auth_dir, dir);
+            assert!(!cfg.legacy_auth_dir);
+        }
+        // Without one, the default applies (or the legacy directory, when only that exists).
+        let cfg = Config::parse("port: 8317\n").unwrap();
+        assert_eq!(cfg.auth_dir, default_auth_dir());
+        assert_eq!(cfg.legacy_auth_dir, default_auth_dir() == LEGACY_AUTH_DIR);
+    }
+
+    #[test]
+    fn the_template_names_fusebox() {
+        let t = TEMPLATE;
+        assert!(t.starts_with("# Fusebox configuration."));
+        assert!(t.contains("auth-dir: \"~/.fusebox\""));
+        assert!(t.contains("`fusebox login <provider>`"));
+        assert_eq!(Config::parse(t).unwrap().auth_dir, DEFAULT_AUTH_DIR);
+    }
+
+    #[test]
+    fn named_clients_need_unique_ids_and_real_keys() {
+        let client = |id: &str, key: &str| format!("  - id: \"{id}\"\n    label: Tool\n    key: \"{key}\"\n");
+        let parse = |clients: &[String]| Config::parse(&format!("named-clients:\n{}", clients.concat()));
+        let cfg = parse(&[client("laptop", "fbx_one"), client("whombat-cybex", "wbgw_two")]).unwrap();
+        assert_eq!(cfg.named_clients.len(), 2);
+        for (clients, problem) in [
+            (vec![client("", "fbx_one")], "needs an id"),
+            (vec![client("  ", "fbx_one")], "needs an id"),
+            (vec![client("laptop", "")], "laptop needs a key"),
+            (vec![client("laptop", "   ")], "laptop needs a key"),
+            (vec![client("laptop", "fbxc_collector")], "collector key"),
+            (vec![client("laptop", "fbx_one"), client("laptop", "fbx_two")], "laptop is used twice"),
+        ] {
+            let err = parse(&clients).unwrap_err().to_string();
+            assert!(err.contains(problem), "{err}");
+        }
+    }
+
+    #[test]
+    fn named_client_model_maps_parse_validate_and_round_trip() {
+        let text = "named-clients:\n  - id: agent\n    label: Agent\n    key: fbx_agent\n    model-map:\n      claude-opus-*: claude-sonnet-5-5\n      gpt-6-astra: \"gpt-6-astra-mini(low)\"\n";
+        let cfg = Config::parse(text).unwrap();
+        assert_eq!(cfg.named_clients[0].model_map.len(), 2);
+        assert_eq!(cfg.named_clients[0].model_map["gpt-6-astra"], "gpt-6-astra-mini(low)");
+        let written = crate::yaml::to_string(&cfg.named_clients[0]).unwrap();
+        assert!(written.contains("model-map:"), "{written}");
+        let back: NamedClient = serde_json::from_value(crate::yaml::from_str(&written).unwrap()).unwrap();
+        assert_eq!(back, cfg.named_clients[0]);
+        // No map, nothing written; a chaining map is refused at load.
+        assert!(!crate::yaml::to_string(&NamedClient::default()).unwrap().contains("model-map"));
+        let chained = text.replace("gpt-6-astra: \"gpt-6-astra-mini(low)\"", "gpt-6-astra: claude-opus-5-5");
+        assert!(format!("{:#}", Config::parse(&chained).unwrap_err()).contains("not mapped again"));
+    }
+
+    #[test]
+    fn apns_settings_are_checked() {
+        let cfg = Config::parse(
+            "apns:\n  team-id: ABCDE12345\n  key-id: KEY1234567\n  key-file: /etc/fusebox/AuthKey_KEY1234567.p8\n",
+        )
+        .unwrap();
+        let apns = cfg.apns.as_ref().unwrap();
+        assert_eq!((apns.team_id.as_str(), apns.topic.as_str()), ("ABCDE12345", "com.digitalpals.fusebox"));
+        assert!(Config::parse("").unwrap().apns.is_none());
+        assert!(!crate::yaml::to_string(&Config::default()).unwrap().contains("apns"), "unset, it isn't written");
+        for (text, problem) in [
+            ("apns: {team-id: ABC, key-id: KEY1234567, key-file: k.p8}", "team-id"),
+            ("apns: {team-id: ABCDE12345, key-id: KEY1234567, key-file: ''}", "key-file"),
+            ("apns: {team-id: ABCDE12345, key-id: KEY1234567, key-file: k.p8, topic: ' '}", "topic"),
+        ] {
+            assert!(format!("{:#}", Config::parse(text).unwrap_err()).contains(problem), "{text}");
+        }
+        assert!(Config::parse("apns: {team-id: ABCDE12345, key-id: KEY1234567, key-file: k.p8, key: x}").is_err());
+    }
+
+    #[test]
+    fn source_settings_are_checked() {
+        let cfg = Config::parse(
+            "trusted-proxies: [127.0.0.1, 10.0.0.0/8, \"::1\"]\nproxy-protocol-port: 8319\nnamed-clients:\n  - id: a\n    label: A\n    key: fbx_a\n    addresses: [10.10.0.0/24, 100.101.7.12]\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.trusted_proxies.as_ref().unwrap().len(), 3);
+        assert_eq!(cfg.proxy_protocol_port, 8319);
+        assert_eq!(cfg.named_clients[0].addresses.len(), 2);
+        let defaults = Config::parse("").unwrap();
+        assert_eq!((defaults.trusted_proxies.clone(), defaults.proxy_protocol_port), (None, 0));
+        assert!(defaults.notifications.client_new_address, "new-address notifications are on unless turned off");
+        // Settings saved before this event existed turn it on; it can be turned off.
+        let saved = Config::parse(r#"notifications: {"sign-in-expired":true,"account-errors":true}"#).unwrap();
+        assert!(defaults.notifications.banked_resets && saved.notifications.banked_resets);
+        assert!(!Config::parse("notifications:\n  banked-resets: false\n").unwrap().notifications.banked_resets);
+        assert!(defaults.notifications.renewals && saved.notifications.renewals);
+        assert!(!Config::parse("notifications:\n  renewals: false\n").unwrap().notifications.renewals);
+        assert!(!defaults.notifications.renewals_day_before && !saved.notifications.renewals_day_before);
+        assert!(
+            Config::parse("notifications:\n  renewals-day-before: true\n").unwrap().notifications.renewals_day_before
+        );
+        for (text, problem) in [
+            ("trusted-proxies: [example.com]\n", "trusted-proxies"),
+            ("trusted-proxies: [10.0.0.0/40]\n", "trusted-proxies"),
+            ("port: 8317\nproxy-protocol-port: 8317\n", "must differ from port"),
+            (
+                "named-clients:\n  - id: a\n    label: A\n    key: fbx_a\n    addresses: [\"10.0.0\"]\n",
+                "not an address or range",
+            ),
+        ] {
+            let err = Config::parse(text).unwrap_err().to_string();
+            assert!(err.contains(problem), "{text}: {err}");
+        }
+        // Unset, they stay out of the settings the dashboard reads.
+        let values = serde_json::to_value(&defaults).unwrap();
+        assert!(values.get("trusted-proxies").is_none() && values.get("proxy-protocol-port").is_none());
+    }
+}

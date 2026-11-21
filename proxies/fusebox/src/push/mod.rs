@@ -1,0 +1,951 @@
+//! Push notifications for faults. Devices subscribe from the dashboard (Config,
+//! Notifications) or the iPhone app; a background check works out the faults every 30
+//! seconds and sends each new one, end-to-end encrypted through the browser's push
+//! service, or through Apple's push service to the app.
+//!
+//! State lives in `<auth-dir>/.web-push.state` (0600): the VAPID key, the subscriptions,
+//! the faults already sent, so a restart does not send them again, and the faults dismissed
+//! from the dashboard's and the app's lists.
+
+mod apns;
+mod crypto;
+mod faults;
+pub mod relay;
+mod renewals;
+mod webhooks;
+
+pub(crate) use faults::signin_error;
+pub use webhooks::webhook_name;
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, anyhow, ensure};
+use axum::extract::{Path as UrlPath, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, post};
+use axum::{Json, Router};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use chrono::{DateTime, Utc};
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use crate::accounts::{Credential, Provider};
+use crate::config::Notifications;
+use crate::state::App;
+use faults::{AccountView, Event, Fault};
+
+const CHECK_EVERY: Duration = Duration::from_secs(30);
+/// Checks in a row a fault must be seen (or gone) before it counts, so flapping
+/// states don't notify.
+const CONFIRM: u32 = 2;
+const MAX_SUBSCRIPTIONS: usize = 32;
+/// Undelivered notifications are dropped after this long (a device that is off).
+const TTL_SECONDS: u32 = 12 * 3600;
+/// Push services may contact whoever runs the sender; this identifies the software.
+const SUBJECT: &str = "https://github.com/DigitalPals/Fusebox";
+const STATE_FILE: &str = ".web-push.state";
+/// A dismissed fault that has been gone this long has cleared: if it trips again, it shows.
+/// Shorter absences are a flapping fault, which stays dismissed.
+const CLEARED_AFTER: Duration = Duration::from_secs(60);
+
+#[derive(Default, Serialize, Deserialize)]
+struct Stored {
+    /// PKCS#8, base64url. Created the first time the dashboard asks for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vapid: Option<String>,
+    #[serde(default)]
+    subscriptions: Vec<Subscription>,
+    /// Faults that were sent (or seen when notifications were turned on).
+    #[serde(default)]
+    notified: BTreeSet<String>,
+    /// Whether some device or webhook was listening at the last check. When the first
+    /// one appears, faults already present count as sent, so it doesn't get a burst.
+    #[serde(default)]
+    active: bool,
+    /// Faults dismissed from the lists, by key, with the level each had then. Each stays
+    /// hidden until it clears, or until a warning turns into an error.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    dismissed: BTreeMap<String, String>,
+    /// Renewal reminders sent, by key, with the date each was for; kept until a day after.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    renewals: BTreeMap<String, DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Subscription {
+    pub id: String,
+    pub endpoint: String,
+    pub p256dh: String,
+    pub auth: String,
+    /// The dashboard's address as the device saw it (behind Tailscale or nginx the
+    /// server can't know it), for links in notifications.
+    pub origin: String,
+    pub label: String,
+    pub created_at: DateTime<Utc>,
+    /// The iPhone app, reached through Apple's push service; Web Push otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apns: Option<apns::Device>,
+    /// The iPhone app, reached through the push relay with notifications sealed for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<relay::Relayed>,
+}
+
+#[derive(Default)]
+struct Tracker {
+    /// Checks in a row each fault has been present.
+    seen: HashMap<String, u32>,
+    /// Checks in a row each sent fault has been absent.
+    gone: HashMap<String, u32>,
+}
+
+pub struct Push {
+    path: PathBuf,
+    stored: Mutex<Stored>,
+    vapid: Mutex<Option<Arc<crypto::Vapid>>>,
+    apns: apns::Tokens,
+    tracker: Mutex<Tracker>,
+    /// Since when each dismissed fault has been missing from the faults.
+    absent: Mutex<HashMap<String, Instant>>,
+}
+
+impl Push {
+    pub fn load(auth_dir: &Path) -> Self {
+        let path = auth_dir.join(STATE_FILE);
+        let stored = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+                tracing::warn!("{} is unreadable ({e}); push notifications start over", path.display());
+                Stored::default()
+            }),
+            Err(_) => Stored::default(),
+        };
+        Self {
+            path,
+            stored: Mutex::new(stored),
+            vapid: Mutex::new(None),
+            apns: apns::Tokens::default(),
+            tracker: Mutex::default(),
+            absent: Mutex::default(),
+        }
+    }
+
+    fn save(&self, stored: &Stored) {
+        let result = serde_json::to_vec(stored)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| crate::files::write_private(&self.path, &b));
+        if let Err(e) = result {
+            tracing::warn!("could not save {}: {e}", self.path.display());
+        }
+    }
+
+    fn vapid(&self) -> Result<Arc<crypto::Vapid>> {
+        let mut cached = self.vapid.lock();
+        if let Some(v) = cached.as_ref() {
+            return Ok(v.clone());
+        }
+        let mut stored = self.stored.lock();
+        let pkcs8 = match stored.vapid.as_deref().map(crypto::decode) {
+            Some(Ok(key)) => key,
+            _ => {
+                let key = crypto::Vapid::generate()?;
+                stored.vapid = Some(URL_SAFE_NO_PAD.encode(&key));
+                self.save(&stored);
+                key
+            }
+        };
+        let vapid = Arc::new(crypto::Vapid::from_pkcs8(&pkcs8)?);
+        *cached = Some(vapid.clone());
+        Ok(vapid)
+    }
+
+    pub fn subscriptions(&self) -> Vec<Subscription> {
+        self.stored.lock().subscriptions.clone()
+    }
+
+    /// Adds or refreshes a device (by endpoint). Returns its id and whether it is the first.
+    fn subscribe(&self, mut sub: Subscription) -> Result<(String, bool)> {
+        let mut stored = self.stored.lock();
+        let first = stored.subscriptions.is_empty();
+        if let Some(existing) = stored.subscriptions.iter_mut().find(|s| s.endpoint == sub.endpoint) {
+            sub.id = existing.id.clone();
+            sub.created_at = existing.created_at;
+            *existing = sub.clone();
+        } else {
+            ensure!(stored.subscriptions.len() < MAX_SUBSCRIPTIONS, "Too many devices; remove one first");
+            stored.subscriptions.push(sub.clone());
+        }
+        self.save(&stored);
+        Ok((sub.id, first))
+    }
+
+    fn remove(&self, matches: impl Fn(&Subscription) -> bool) -> bool {
+        let mut stored = self.stored.lock();
+        let before = stored.subscriptions.len();
+        stored.subscriptions.retain(|s| !matches(s));
+        let removed = stored.subscriptions.len() != before;
+        if removed {
+            self.save(&stored);
+        }
+        removed
+    }
+
+    /// Faults already present when the first device subscribes count as sent, so
+    /// turning notifications on doesn't set off a burst.
+    fn seed(&self, current: &[Fault]) {
+        let mut stored = self.stored.lock();
+        stored.notified = current.iter().filter(|f| f.event != Event::Quiet).map(|f| f.key.clone()).collect();
+        stored.active = true;
+        self.save(&stored);
+        *self.tracker.lock() = Tracker::default();
+    }
+
+    /// Nothing listens any more: forget the counting, so the next listener starts fresh.
+    fn deactivate(&self) {
+        *self.tracker.lock() = Tracker::default();
+        let mut stored = self.stored.lock();
+        if stored.active {
+            stored.active = false;
+            self.save(&stored);
+        }
+    }
+
+    fn active(&self) -> bool {
+        self.stored.lock().active
+    }
+
+    /// Takes one check's faults and returns what to send: faults seen twice in a row
+    /// that were not sent yet, and providers that are back after running out.
+    fn track(&self, current: &[Fault], accounts: &[AccountView], settings: &Notifications) -> Vec<Fault> {
+        let mut tracker = self.tracker.lock();
+        let mut stored = self.stored.lock();
+        let present: HashSet<&str> =
+            current.iter().filter(|f| f.event != Event::Quiet).map(|f| f.key.as_str()).collect();
+        tracker.seen.retain(|k, _| present.contains(k.as_str()));
+        for key in &present {
+            *tracker.seen.entry((*key).to_string()).or_default() += 1;
+            tracker.gone.remove(*key);
+        }
+
+        let mut changed = false;
+        let mut send = Vec::new();
+        let new: Vec<&Fault> = current
+            .iter()
+            .filter(|f| f.event != Event::Quiet && !stored.notified.contains(&f.key))
+            .filter(|f| tracker.seen.get(&f.key).is_some_and(|n| *n >= CONFIRM))
+            .collect();
+        // A provider running out says it for each of its accounts.
+        let out: HashSet<&str> =
+            new.iter().filter(|f| f.event == Event::ProviderExhausted).map(|f| f.provider.as_str()).collect();
+        for f in new {
+            stored.notified.insert(f.key.clone());
+            changed = true;
+            let covered = f.event == Event::AccountUsedUp && out.contains(f.provider.as_str());
+            if enabled(settings, f.event) && !covered {
+                send.push(f.clone());
+            }
+        }
+
+        let absent: Vec<String> = stored.notified.iter().filter(|k| !present.contains(k.as_str())).cloned().collect();
+        for key in absent {
+            let n = tracker.gone.entry(key.clone()).or_default();
+            *n += 1;
+            if *n < CONFIRM {
+                continue;
+            }
+            tracker.gone.remove(&key);
+            stored.notified.remove(&key);
+            changed = true;
+            if let Some(provider) = key.strip_prefix("provider:")
+                && settings.provider_exhausted
+                && let Some(back) = faults::recovered(accounts, provider)
+            {
+                send.push(back);
+            }
+        }
+        tracker.gone.retain(|k, _| stored.notified.contains(k));
+        if changed {
+            self.save(&stored);
+        }
+        send
+    }
+}
+
+impl Push {
+    /// Hides a fault from the lists until it clears (or turns from a warning into an error).
+    fn dismiss(&self, fault: &Fault) {
+        let mut stored = self.stored.lock();
+        stored.dismissed.insert(fault.key.clone(), fault.level.to_string());
+        self.save(&stored);
+        self.absent.lock().remove(&fault.key);
+    }
+
+    /// Shows a dismissed fault again, or every one without a key. False when none was dismissed.
+    fn restore(&self, key: Option<&str>) -> bool {
+        let mut stored = self.stored.lock();
+        let before = stored.dismissed.len();
+        match key {
+            Some(key) => {
+                stored.dismissed.remove(key);
+            }
+            None => stored.dismissed.clear(),
+        }
+        let changed = stored.dismissed.len() != before;
+        if changed {
+            self.save(&stored);
+        }
+        changed
+    }
+
+    fn has_dismissed(&self) -> bool {
+        !self.stored.lock().dismissed.is_empty()
+    }
+
+    /// Splits the current faults into those the lists show and those dismissed, first
+    /// forgetting dismissals of faults that cleared (gone for `CLEARED_AFTER`) or that are
+    /// an error now after being dismissed as a warning.
+    fn split(&self, faults: Vec<Fault>, now: Instant) -> (Vec<Fault>, Vec<Fault>) {
+        let mut stored = self.stored.lock();
+        if stored.dismissed.is_empty() {
+            return (faults, Vec::new());
+        }
+        let mut absent = self.absent.lock();
+        let present: HashMap<&str, &str> = faults.iter().map(|f| (f.key.as_str(), f.level)).collect();
+        let before = stored.dismissed.len();
+        stored.dismissed.retain(|key, level| match present.get(key.as_str()) {
+            Some(current) => {
+                absent.remove(key);
+                !(*current == "err" && level.as_str() != "err")
+            }
+            None => now.saturating_duration_since(*absent.entry(key.clone()).or_insert(now)) < CLEARED_AFTER,
+        });
+        absent.retain(|k, _| stored.dismissed.contains_key(k));
+        if stored.dismissed.len() != before {
+            self.save(&stored);
+        }
+        faults.into_iter().partition(|f| !stored.dismissed.contains_key(&f.key))
+    }
+}
+
+fn enabled(settings: &Notifications, event: Event) -> bool {
+    match event {
+        Event::SignIn => settings.sign_in_expired,
+        Event::ProviderExhausted => settings.provider_exhausted,
+        Event::AccountUsedUp => settings.account_used_up,
+        Event::AccountErrors => settings.account_errors,
+        Event::ClientAddress => settings.client_new_address,
+        Event::BankedReset => settings.banked_resets,
+        Event::Renewal => settings.renewals || settings.renewals_day_before,
+        Event::Quiet => false,
+    }
+}
+
+// ----------------------------------------------------------------------- check
+
+pub async fn watcher(app: Arc<App>) {
+    let mut tick = tokio::time::interval(CHECK_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+        check(&app).await;
+    }
+}
+
+async fn check(app: &App) {
+    let cfg = app.cfg();
+    let hooks = &cfg.notifications.webhooks;
+    let listening = !app.push.subscriptions().is_empty() || !hooks.is_empty();
+    if !listening {
+        app.push.deactivate();
+        // Dismissed faults are still checked for clearing while no dashboard is open.
+        if !app.push.has_dismissed() {
+            return;
+        }
+    }
+    let accounts = views(app);
+    let current = all_faults(app, &accounts);
+    let (shown, _) = app.push.split(current.clone(), Instant::now());
+    if !listening {
+        return;
+    }
+    if !app.push.active() {
+        app.push.seed(&current);
+        return;
+    }
+    let mut send = app.push.track(&current, &accounts, &cfg.notifications);
+    if enabled(&cfg.notifications, Event::Renewal) {
+        let n = &cfg.notifications;
+        let leads: Vec<i64> =
+            [(1, n.renewals_day_before), (2, n.renewals)].into_iter().filter(|l| l.1).map(|l| l.0).collect();
+        send.extend(app.push.renewals(&accounts, Utc::now(), &leads));
+    }
+    for fault in send {
+        notify(app, &fault, faults::badge(&shown)).await;
+        webhooks::deliver_all(app, hooks, &fault).await;
+    }
+}
+
+/// Tells devices and webhooks that a named client's key turned up at a new address, or
+/// was refused at one its address list doesn't allow (`refused`). Each client and address
+/// once while Fusebox runs, ten in an hour at most; sent in the background.
+pub fn client_address(
+    app: &Arc<App>,
+    client: &crate::config::NamedClient,
+    source: &crate::source::Source,
+    refused: bool,
+) {
+    let cfg = app.cfg();
+    if !enabled(&cfg.notifications, Event::ClientAddress)
+        || (app.push.subscriptions().is_empty() && cfg.notifications.webhooks.is_empty())
+        || !app.addresses.may_alert(&client.id, source.ip, refused)
+    {
+        return;
+    }
+    let name = if client.label.trim().is_empty() { client.id.clone() } else { client.label.clone() };
+    let at = match &source.login {
+        Some(login) => format!("{} (Tailscale user {login})", source.ip),
+        None => source.ip.to_string(),
+    };
+    let (title, body) = if refused {
+        (
+            format!("{name}'s key refused"),
+            format!(
+                "A request with {name}'s key came from {at}, which its address list doesn't allow. If that wasn't you, replace the key under Config, Clients."
+            ),
+        )
+    } else {
+        (
+            format!("{name} used from a new address"),
+            format!(
+                "{name}'s key was used from {at} for the first time. If that isn't one of your machines, replace the key under Config, Clients."
+            ),
+        )
+    };
+    let fault = Fault {
+        key: format!("address:{}:{}", client.id, source.ip),
+        event: Event::ClientAddress,
+        title,
+        body,
+        path: "#/config/clients".into(),
+        kind: "client_address",
+        level: if refused { "err" } else { "warn" },
+        ..Default::default()
+    };
+    let app = app.clone();
+    tokio::spawn(async move {
+        let badge = badge(&app);
+        notify(&app, &fault, badge).await;
+        let hooks = app.cfg().notifications.webhooks.clone();
+        webhooks::deliver_all(&app, &hooks, &fault).await;
+    });
+}
+
+/// Tells devices and webhooks what happened to one of `acct`'s banked resets, in the
+/// background. `key` names the event, and the caller sends each one once.
+pub fn banked_reset(
+    app: &Arc<App>,
+    acct: &crate::accounts::Account,
+    key: String,
+    level: &'static str,
+    title: String,
+    body: String,
+) {
+    let cfg = app.cfg();
+    if !enabled(&cfg.notifications, Event::BankedReset)
+        || (app.push.subscriptions().is_empty() && cfg.notifications.webhooks.is_empty())
+    {
+        return;
+    }
+    let fault = Fault {
+        key,
+        event: Event::BankedReset,
+        provider: acct.provider.as_str().into(),
+        provider_name: crate::banked_resets::provider_name(acct.provider).into(),
+        summary: title.clone(),
+        title,
+        detail: Some(body.clone()),
+        body,
+        path: format!("#/accounts/{}", url::form_urlencoded::byte_serialize(acct.id.as_bytes()).collect::<String>()),
+        kind: "banked_reset",
+        level,
+        account: Some(acct.id.clone()),
+        label: Some(acct.label.clone()),
+        ..Default::default()
+    };
+    let app = app.clone();
+    tokio::spawn(async move {
+        let badge = badge(&app);
+        notify(&app, &fault, badge).await;
+        let hooks = app.cfg().notifications.webhooks.clone();
+        webhooks::deliver_all(&app, &hooks, &fault).await;
+    });
+}
+
+/// The faults the lists show, in the management API's form, errors first, as the faults
+/// menu lists them. Dismissed faults are left out.
+pub fn current_faults(app: &App) -> Value {
+    listed_faults(app).0
+}
+
+/// The faults the lists show and those dismissed, each in the management API's form,
+/// errors first.
+pub fn listed_faults(app: &App) -> (Value, Value) {
+    let (shown, dismissed) = app.push.split(sorted_faults(app), Instant::now());
+    let json = |list: Vec<Fault>| Value::Array(list.iter().map(Fault::json).collect());
+    (json(shown), json(dismissed))
+}
+
+/// Every current fault, dismissed or not, in the management API's form (for metrics).
+pub fn every_fault(app: &App) -> Value {
+    Value::Array(sorted_faults(app).iter().map(Fault::json).collect())
+}
+
+fn sorted_faults(app: &App) -> Vec<Fault> {
+    let mut current = all_faults(app, &views(app));
+    current.sort_by_key(|f| f.level != "err");
+    current
+}
+
+/// The app icon's count: the faults the lists show that ask for something to be done.
+fn badge(app: &App) -> usize {
+    faults::badge(&app.push.split(all_faults(app, &views(app)), Instant::now()).0)
+}
+
+/// Account faults and the usage database's storage fault.
+fn all_faults(app: &App, accounts: &[AccountView]) -> Vec<Fault> {
+    let mut current = faults::faults(accounts, Utc::now());
+    let stats = app.usage.as_ref().and_then(|s| s.database_stats());
+    current.extend(faults::storage(stats.as_ref(), app.cfg().usage.warn_database_mb));
+    current
+}
+
+/// Each provider's subscriptions taken together, per window: the overview's combined
+/// limits, worked out as the pace faults work them out.
+pub fn current_pools(app: &App) -> Value {
+    Value::Array(faults::pools(&views(app), Utc::now()).iter().map(crate::pools::Pool::json).collect())
+}
+
+/// The rules' view of every account.
+fn views(app: &App) -> Vec<AccountView> {
+    let now = Utc::now();
+    let cfg = app.cfg();
+    // Client names, worked out once for the keys several accounts share.
+    let mut names = HashMap::<String, String>::new();
+    app.pool
+        .all()
+        .iter()
+        .map(|a| {
+            let (api_key, sign_in) = match &*a.cred.read() {
+                Credential::ApiKey { .. } => (true, false),
+                Credential::OAuth(o) => (false, !o.raw.contains_key("service_account")),
+            };
+            let compat = a.group.clone().filter(|g| !g.is_empty()).unwrap_or_else(|| "Compatible".into());
+            let group_name = match a.provider {
+                Provider::Claude => "Claude",
+                Provider::Codex => "Codex",
+                Provider::Gemini => "Gemini",
+                Provider::Vertex => "Vertex AI",
+                Provider::Antigravity => "Antigravity",
+                Provider::Kimi => "Kimi",
+                Provider::Xai => "Grok",
+                Provider::Meta => "Meta",
+                Provider::Devin => "Devin",
+                Provider::Compat => compat.as_str(),
+            }
+            .to_string();
+            let provider_name = match a.provider {
+                Provider::Xai if api_key => "xAI".to_string(),
+                Provider::Codex if api_key => "OpenAI".to_string(),
+                _ => group_name.clone(),
+            };
+            let provider = match a.provider {
+                Provider::Compat => format!("openai-compat:{compat}"),
+                p => p.as_str().to_string(),
+            };
+            let failures = app.stats.account_failures(&a.id);
+            let st = a.state.lock();
+            AccountView {
+                id: a.id.clone(),
+                provider,
+                provider_name,
+                group_name,
+                label: a.label.clone(),
+                api_key,
+                subscription: sign_in && matches!(a.provider, Provider::Claude | Provider::Codex | Provider::Meta),
+                plan: st.quota.plan.clone(),
+                no_five_hour: st.quota.no_five_hour_limit,
+                disabled: st.disabled,
+                pauses: st.pauses(now),
+                last_error: st.last_error(now).map(String::from),
+                windows: st.quota.windows.clone(),
+                history: st.attribution.history.clone(),
+                failures,
+                clients: st
+                    .attribution
+                    .current
+                    .iter()
+                    .map(|s| {
+                        let mut points = std::collections::BTreeMap::<String, f64>::new();
+                        for (client, p) in &s.clients {
+                            let name = names
+                                .entry(client.clone())
+                                .or_insert_with(|| crate::mgmt::client_label(&cfg, client))
+                                .clone();
+                            *points.entry(name).or_default() += *p;
+                        }
+                        (s.name.clone(), s.model.clone(), points)
+                    })
+                    .collect(),
+                renewal: a.renewal(&st.quota).and_then(|r| r.next(now)),
+                usage_refused: st.quota.refusal_fault(now),
+            }
+        })
+        .collect()
+}
+
+/// Sends one fault to every subscribed device.
+async fn notify(app: &App, fault: &Fault, badge: usize) {
+    let urgency = if matches!(fault.event, Event::SignIn | Event::ProviderExhausted) { "high" } else { "normal" };
+    for sub in app.push.subscriptions() {
+        match deliver(app, &sub, fault, badge, urgency).await {
+            Ok(status) if status.is_success() => tracing::info!(fault = %fault.key, device = %sub.label, "push sent"),
+            Ok(StatusCode::NOT_FOUND | StatusCode::GONE) => {
+                tracing::info!(device = %sub.label, "push subscription expired; removed");
+                app.push.remove(|s| s.endpoint == sub.endpoint);
+            }
+            Ok(status) => tracing::warn!(device = %sub.label, %status, "push service refused a notification"),
+            Err(e) => tracing::warn!(device = %sub.label, "push failed: {e:#}"),
+        }
+    }
+}
+
+/// One push to one device: through Apple's push service to the iPhone app, or
+/// encrypted through the browser's push service. The Web Push payload uses the
+/// Declarative Web Push shape, which Safari can show by itself; the dashboard's service
+/// worker reads the same fields elsewhere.
+async fn deliver(app: &App, sub: &Subscription, fault: &Fault, badge: usize, urgency: &str) -> Result<StatusCode> {
+    if let Some(device) = &sub.relay {
+        let client = app.http.control(None);
+        let relay_url = app.cfg().push_relay.clone();
+        return relay::send(&client, &relay_url, device, fault, badge, urgency == "high", TTL_SECONDS).await;
+    }
+    if let Some(device) = &sub.apns {
+        let cfg = app.cfg();
+        let client = app.http.control(None);
+        let (base, high) = (device.environment.base(), urgency == "high");
+        return apns::send(&client, base, &app.push.apns, cfg.apns.as_ref(), device, fault, badge, high, TTL_SECONDS)
+            .await;
+    }
+    let payload = json!({
+        "web_push": 8030,
+        "notification": {
+            "title": fault.title,
+            "body": fault.body,
+            "navigate": format!("{}/{}", sub.origin, fault.path),
+            "tag": fault.key,
+            "lang": "en",
+            "app_badge": badge.to_string(),
+        },
+    });
+    let body =
+        crypto::encrypt(&crypto::decode(&sub.p256dh)?, &crypto::decode(&sub.auth)?, payload.to_string().as_bytes())?;
+    let authorization = app.push.vapid()?.authorization(&sub.endpoint, SUBJECT, Utc::now().timestamp())?;
+    let resp = app
+        .http
+        .control(None)
+        .post(&sub.endpoint)
+        .header("TTL", TTL_SECONDS.to_string())
+        .header("Urgency", urgency)
+        .header("Content-Type", "application/octet-stream")
+        .header("Content-Encoding", "aes128gcm")
+        .header("Authorization", authorization)
+        .body(body)
+        .send()
+        .await
+        .context("push service unreachable")?;
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        tracing::debug!(%status, "push service said: {}", text.chars().take(300).collect::<String>());
+    }
+    Ok(status)
+}
+
+// ---------------------------------------------------------------------- routes
+
+pub fn router() -> Router<Arc<App>> {
+    Router::new()
+        .route("/push", get(status))
+        .route("/push/subscriptions", post(subscribe))
+        .route("/push/apns", post(subscribe_apns))
+        .route("/push/subscriptions/{id}", delete(unsubscribe))
+        .route("/push/test", post(test))
+        .route("/push/webhooks/test", post(test_webhook))
+        .route("/faults/dismissed", get(dismissed))
+        .route("/faults/dismiss", post(dismiss))
+        .route("/faults/restore", post(restore))
+}
+
+#[derive(Deserialize)]
+struct FaultKey {
+    #[serde(default)]
+    key: Option<String>,
+}
+
+/// The dismissed faults that are still current.
+async fn dismissed(State(app): State<Arc<App>>) -> Json<Value> {
+    Json(listed_faults(&app).1)
+}
+
+/// Hides a current fault from the faults lists, everywhere, until it clears.
+async fn dismiss(State(app): State<Arc<App>>, Json(req): Json<FaultKey>) -> Response {
+    let Some(key) = req.key.filter(|k| !k.is_empty()) else {
+        return error(StatusCode::BAD_REQUEST, "Which fault? Send its key");
+    };
+    let current = all_faults(&app, &views(&app));
+    let Some(fault) = current.iter().find(|f| f.key == key) else {
+        return error(StatusCode::NOT_FOUND, "That fault has already cleared");
+    };
+    app.push.dismiss(fault);
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// Shows a dismissed fault again, or all of them when no key is sent.
+async fn restore(State(app): State<Arc<App>>, body: Option<Json<FaultKey>>) -> Response {
+    let key = body.and_then(|Json(b)| b.key).filter(|k| !k.is_empty());
+    let restored = app.push.restore(key.as_deref());
+    Json(json!({ "ok": true, "restored": restored })).into_response()
+}
+
+#[derive(Deserialize)]
+struct WebhookTest {
+    url: String,
+}
+
+/// Sends a test message to a webhook, saved or not yet, and says how it went.
+async fn test_webhook(State(app): State<Arc<App>>, Json(req): Json<WebhookTest>) -> Response {
+    if let Err(e) = crate::config::check_webhook_url(&req.url) {
+        return error(StatusCode::BAD_REQUEST, e);
+    }
+    let fault = Fault {
+        key: "test".into(),
+        title: "Fusebox notifications are on".into(),
+        body: "This channel will hear when a sign-in expires or a provider runs out.".into(),
+        ..Default::default()
+    };
+    let msg = webhooks::Message { fault: &fault, recovered: false, test: true };
+    match webhooks::send(&app, &req.url, &msg).await {
+        Ok(()) => Json(json!({ "ok": true, "name": webhooks::webhook_name(&req.url) })).into_response(),
+        Err(e) => error(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+fn error(status: StatusCode, message: impl Into<String>) -> Response {
+    (status, Json(json!({ "error": message.into() }))).into_response()
+}
+
+async fn status(State(app): State<Arc<App>>) -> Response {
+    let vapid = match app.push.vapid() {
+        Ok(v) => v,
+        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
+    };
+    let devices: Vec<Value> = app
+        .push
+        .subscriptions()
+        .iter()
+        .map(|s| {
+            json!({
+                "id": s.id,
+                "label": s.label,
+                "origin": s.origin,
+                "endpoint": s.endpoint,
+                "created_at": s.created_at,
+                "kind": if s.apns.is_some() || s.relay.is_some() { "apns" } else { "web" },
+                "via": if s.relay.is_some() { Some("relay") } else if s.apns.is_some() { Some("direct") } else { None },
+            })
+        })
+        .collect();
+    let cfg = app.cfg();
+    let relay = (!cfg.push_relay.is_empty()).then(|| cfg.push_relay.clone());
+    Json(
+        json!({ "public_key": vapid.public_key, "subscriptions": devices, "apns": cfg.apns.is_some(), "relay": relay }),
+    )
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct NewSubscription {
+    endpoint: String,
+    keys: Keys,
+    origin: String,
+    #[serde(default)]
+    label: String,
+}
+
+#[derive(Deserialize)]
+struct Keys {
+    p256dh: String,
+    auth: String,
+}
+
+/// A device label as people typed or the device named itself.
+fn clean_label(label: &str, fallback: &str) -> String {
+    let label: String = label.trim().chars().filter(|c| !c.is_control()).take(80).collect();
+    if label.is_empty() { fallback.into() } else { label }
+}
+
+fn validate(new: NewSubscription) -> Result<Subscription> {
+    let endpoint = url::Url::parse(&new.endpoint).context("The push endpoint is not a URL")?;
+    ensure!(
+        endpoint.scheme() == "https" || (cfg!(test) && endpoint.scheme() == "http"),
+        "The push endpoint must use HTTPS"
+    );
+    ensure!(new.endpoint.len() <= 2048, "The push endpoint is too long");
+    let p256dh = crypto::decode(&new.keys.p256dh).map_err(|_| anyhow!("Invalid p256dh key"))?;
+    ensure!(p256dh.len() == 65 && p256dh[0] == 4, "Invalid p256dh key");
+    ensure!(crypto::decode(&new.keys.auth).is_ok_and(|a| a.len() == 16), "Invalid auth secret");
+    let origin = url::Url::parse(&new.origin).context("Invalid dashboard origin")?;
+    ensure!(matches!(origin.scheme(), "https" | "http"), "Invalid dashboard origin");
+    Ok(Subscription {
+        id: uuid::Uuid::new_v4().simple().to_string(),
+        endpoint: new.endpoint,
+        p256dh: new.keys.p256dh,
+        auth: new.keys.auth,
+        origin: origin.origin().ascii_serialization(),
+        label: clean_label(&new.label, "Browser"),
+        created_at: Utc::now(),
+        apns: None,
+        relay: None,
+    })
+}
+
+async fn subscribe(State(app): State<Arc<App>>, Json(new): Json<NewSubscription>) -> Response {
+    match validate(new) {
+        Ok(sub) => add(&app, sub),
+        Err(e) => error(StatusCode::BAD_REQUEST, e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct NewApnsDevice {
+    /// Direct: the device token, for a Fusebox holding the app's APNs key.
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    environment: Option<apns::Environment>,
+    /// Through the push relay: the handle the relay gave the device, and its key.
+    #[serde(default)]
+    relay: Option<NewRelayed>,
+    #[serde(default)]
+    label: String,
+}
+
+#[derive(Deserialize)]
+struct NewRelayed {
+    handle: String,
+    key: String,
+}
+
+/// The iPhone app registers here, with its device token when this Fusebox holds the
+/// app's APNs key, or with its relay handle and key otherwise. Registering the same
+/// token or handle again updates the device.
+async fn subscribe_apns(State(app): State<Arc<App>>, Json(new): Json<NewApnsDevice>) -> Response {
+    let cfg = app.cfg();
+    let (endpoint, apns, relay) = match (new.relay, new.token, new.environment) {
+        (Some(r), _, _) => {
+            if cfg.push_relay.is_empty() {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "The push relay is turned off on this Fusebox (push-relay in config.yaml)",
+                );
+            }
+            match relay::Relayed::new(&r.handle, &r.key) {
+                Ok(d) => (d.endpoint(), None, Some(d)),
+                Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+            }
+        }
+        (None, Some(token), Some(environment)) => {
+            if cfg.apns.is_none() {
+                return error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "This Fusebox can't send to the iPhone app directly: register through the push relay, or set apns in config.yaml with the app's push key",
+                );
+            }
+            match apns::Device::new(&token, environment) {
+                Ok(d) => (d.endpoint(), Some(d), None),
+                Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+            }
+        }
+        _ => return error(StatusCode::BAD_REQUEST, "Send token and environment, or relay with handle and key"),
+    };
+    let sub = Subscription {
+        id: uuid::Uuid::new_v4().simple().to_string(),
+        endpoint,
+        p256dh: String::new(),
+        auth: String::new(),
+        origin: String::new(),
+        label: clean_label(&new.label, "iPhone"),
+        created_at: Utc::now(),
+        apns,
+        relay,
+    };
+    add(&app, sub)
+}
+
+fn add(app: &App, sub: Subscription) -> Response {
+    match app.push.subscribe(sub) {
+        Ok((id, first)) => {
+            if first {
+                app.push.seed(&faults::faults(&views(app), Utc::now()));
+            }
+            Json(json!({ "id": id })).into_response()
+        }
+        Err(e) => error(StatusCode::CONFLICT, e.to_string()),
+    }
+}
+
+async fn unsubscribe(State(app): State<Arc<App>>, UrlPath(id): UrlPath<String>) -> Response {
+    if app.push.remove(|s| s.id == id) {
+        Json(json!({ "ok": true })).into_response()
+    } else {
+        error(StatusCode::NOT_FOUND, "No such device")
+    }
+}
+
+#[derive(Deserialize)]
+struct TestRequest {
+    id: String,
+}
+
+async fn test(State(app): State<Arc<App>>, Json(req): Json<TestRequest>) -> Response {
+    let Some(sub) = app.push.subscriptions().into_iter().find(|s| s.id == req.id) else {
+        return error(StatusCode::NOT_FOUND, "This device is not subscribed; turn notifications on again");
+    };
+    let fault = Fault {
+        key: "test".into(),
+        event: Event::Quiet,
+        provider: String::new(),
+        title: "Notifications are on".into(),
+        body: format!("Fusebox will tell {} when something trips.", sub.label),
+        path: "#/config/notifications".into(),
+        ..Default::default()
+    };
+    let badge = badge(&app);
+    match deliver(&app, &sub, &fault, badge, "normal").await {
+        Ok(status) if status.is_success() => Json(json!({ "ok": true })).into_response(),
+        Ok(StatusCode::NOT_FOUND | StatusCode::GONE) => {
+            app.push.remove(|s| s.id == sub.id);
+            error(StatusCode::GONE, "The push service no longer knows this device; turn notifications on again")
+        }
+        Ok(status) => error(StatusCode::BAD_GATEWAY, format!("The push service answered {status}")),
+        Err(e) => error(StatusCode::BAD_GATEWAY, format!("{e:#}")),
+    }
+}
+
+#[cfg(test)]
+mod tests;

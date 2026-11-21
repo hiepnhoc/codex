@@ -1,0 +1,820 @@
+//! Allowlisted native usage tap. Never retains a body, prompt, tool or transcript.
+use super::{
+    store::Store,
+    types::{Observation, Tokens, anthropic_service_tier},
+};
+use crate::{accounts::Account, ir::Usage};
+use parking_lot::Mutex;
+use serde_json::Value;
+use std::sync::Arc;
+
+pub const REQUEST_HEADER: &str = "x-fusebox-usage-request";
+pub const CLIENT_HEADER: &str = "x-fusebox-usage-client";
+
+/// The client key's usage id that `client_auth` stamped. Ids may be any UTF-8 text, which
+/// `HeaderValue::to_str` (visible ASCII only) would turn away.
+pub fn client_id(h: &axum::http::HeaderMap) -> Option<&str> {
+    h.get(CLIENT_HEADER).and_then(|v| std::str::from_utf8(v.as_bytes()).ok())
+}
+/// The entrypoint Claude Code names in its User-Agent, the second field in
+/// `claude-cli/2.1.304 (external, sdk-ts, agent-sdk/0.3.276)`: `cli` in a terminal,
+/// `sdk-ts` or `sdk-cli` through the Agent SDK or `claude -p`, or whatever
+/// `CLAUDE_CODE_ENTRYPOINT` says. Anything that doesn't look like one is ignored.
+pub fn claude_code_entrypoint(h: &axum::http::HeaderMap) -> Option<String> {
+    let agent = h.get(axum::http::header::USER_AGENT)?.to_str().ok()?;
+    let (_, details) = agent.strip_prefix("claude-cli/")?.split_once(" (")?;
+    let entrypoint = details.split([',', ')']).nth(1)?.trim();
+    (!entrypoint.is_empty()
+        && entrypoint.len() <= 64
+        && entrypoint.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')))
+    .then(|| entrypoint.to_ascii_lowercase())
+}
+struct Captured {
+    observation: Observation,
+    failure: Option<crate::diagnostics::Failure>,
+}
+#[derive(Clone)]
+pub struct Capture(Arc<Mutex<Captured>>);
+impl Capture {
+    pub fn logical_result(&self, success: bool) {
+        self.0.lock().observation.logical_success = Some(success);
+    }
+    pub fn metadata(&self, key: &'static str, value: u64) {
+        self.0.lock().observation.numeric_metadata.insert(key.into(), value);
+    }
+    pub fn failure(&self, failure: crate::diagnostics::Failure) {
+        self.0.lock().failure = Some(failure);
+    }
+    pub fn failure_detail(&self) -> Option<crate::diagnostics::Failure> {
+        self.0.lock().failure.clone()
+    }
+    pub fn snapshot(&self, status: Option<u16>, fallback: Option<&Usage>, logical_final: bool) -> Observation {
+        finalized(self.0.lock().observation.clone(), status, fallback, logical_final)
+    }
+    pub fn wire(&self, value: &Value) {
+        observe(&mut self.0.lock().observation, value);
+    }
+    pub fn text(&self, text: &str) {
+        if let Ok(v) = serde_json::from_str(text) {
+            self.wire(&v);
+        }
+    }
+    pub fn headers(&self, headers: &axum::http::HeaderMap, status: u16) {
+        let mut captured = self.0.lock();
+        let o = &mut captured.observation;
+        o.status = Some(status);
+        for key in ["request-id", "x-request-id"] {
+            if let Some(v) = headers.get(key).and_then(|v| v.to_str().ok()).and_then(safe) {
+                o.provider_request_id = Some(v);
+                break;
+            }
+        }
+    }
+    pub fn model(&self, model: &str) {
+        self.0.lock().observation.actual_model = safe(model);
+    }
+    /// Embeddings have no output or cache token categories. Estimates stay labelled.
+    pub fn embedding(&self, tokens: Option<u64>, estimated: bool) {
+        let mut captured = self.0.lock();
+        let o = &mut captured.observation;
+        o.tokens =
+            Tokens { input: tokens, cache_read: Some(0), cache_write: Some(0), output: Some(0), ..Default::default() };
+        o.completeness = if tokens.is_some() && !estimated { "complete" } else { "partial" }.into();
+        if estimated && let Some(n) = tokens {
+            o.numeric_metadata.insert("estimated_input_tokens".into(), n);
+        }
+    }
+}
+
+pub struct RequestUsage {
+    store: Option<Store>,
+    logical_id: String,
+    requested_model: Option<String>,
+    requested_speed: Option<u64>,
+    client: Option<String>,
+    /// The Claude Code entrypoint from the User-Agent, for Claude attempts.
+    entrypoint: Option<String>,
+    session: Option<String>,
+    current: Option<Capture>,
+    clients: Option<crate::policy::Clients>,
+    /// The account and its identity epoch when the attempt began.
+    account: Option<(Arc<Account>, u64)>,
+    /// The client program, for a request without a key.
+    program: Option<&'static str>,
+}
+impl RequestUsage {
+    /// Independent per-chunk capture with the same logical request and tenant.
+    pub fn fork(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+            logical_id: self.logical_id.clone(),
+            requested_model: self.requested_model.clone(),
+            requested_speed: self.requested_speed,
+            client: self.client.clone(),
+            entrypoint: self.entrypoint.clone(),
+            session: self.session.clone(),
+            current: None,
+            clients: self.clients.clone(),
+            account: None,
+            program: self.program,
+        }
+    }
+    pub fn new(store: Option<Store>, model: &str) -> Self {
+        Self {
+            store,
+            logical_id: uuid::Uuid::new_v4().to_string(),
+            requested_model: safe(model),
+            requested_speed: None,
+            client: None,
+            entrypoint: None,
+            session: None,
+            current: None,
+            clients: None,
+            account: None,
+            program: None,
+        }
+    }
+    pub fn program(&mut self, name: Option<&'static str>) {
+        self.program = name;
+    }
+    /// Capture before request translation or control downgrades. Never overwrite
+    /// the provider-returned tier when pricing the requested T3 speed.
+    pub fn requested_speed(&mut self, body: &Value) {
+        let tier = body["service_tier"].as_str().or_else(|| body["speed"].as_str());
+        self.requested_speed = Some(super::types::Speed::from_tier(tier) as u64);
+    }
+    pub fn client(&mut self, h: &axum::http::HeaderMap) {
+        self.client = client_id(h).and_then(safe);
+        self.entrypoint = claude_code_entrypoint(h);
+        if let Some(id) = h.get(REQUEST_HEADER).and_then(|v| v.to_str().ok()).and_then(safe) {
+            self.logical_id = id;
+        }
+    }
+    pub fn track_limits(&mut self, clients: crate::policy::Clients) {
+        self.clients = Some(clients);
+    }
+    pub fn session(&mut self, id: Option<&str>) {
+        self.session = id.and_then(safe);
+    }
+    pub fn attempt(&mut self, acct: &Arc<Account>) {
+        let _ = self.finish(None, None, false);
+        self.account = Some((acct.clone(), acct.state.lock().identity_epoch));
+        let id = uuid::Uuid::new_v4().to_string();
+        let provider = match acct.provider {
+            crate::accounts::Provider::Claude => "anthropic",
+            crate::accounts::Provider::Codex => "openai",
+            p => p.as_str(),
+        };
+        let mut o = Observation::new("proxy", id.clone(), provider, chrono::Utc::now().timestamp_millis());
+        o.parser_version = "proxy-native-v1".into();
+        o.requested_model = self.requested_model.clone();
+        if let Some(speed) = self.requested_speed {
+            o.numeric_metadata.insert("requested_speed".into(), speed);
+        }
+        o.logical_request_id = Some(self.logical_id.clone());
+        o.attempt_id = Some(id);
+        o.client_id = self.client.clone();
+        if provider == "anthropic" {
+            o.entrypoint = self.entrypoint.clone();
+        }
+        o.session_id = self.session.clone();
+        o.account_id = Some(acct.id.clone());
+        o.auth_type = Some(if acct.is_oauth() { "subscription" } else { "api_key" }.into());
+        self.current = Some(Capture(Arc::new(Mutex::new(Captured { observation: o, failure: None }))));
+    }
+    pub fn tap(&self) -> Option<Capture> {
+        self.current.clone()
+    }
+    pub fn finish(
+        &mut self,
+        status: Option<u16>,
+        fallback: Option<&Usage>,
+        logical_final: bool,
+    ) -> Option<Finished<'_>> {
+        let c = self.current.take()?;
+        // The last holder of the capture takes its observation; while a stream still
+        // holds it, this takes a copy, as it always did.
+        let observation = match Arc::try_unwrap(c.0) {
+            Ok(captured) => captured.into_inner().observation,
+            Err(shared) => shared.lock().observation.clone(),
+        };
+        let o = finalized(observation, status, fallback, logical_final);
+        // Register before enqueueing: reconciliation must never see a database row
+        // whose in-memory completion has not been registered yet.
+        if let Some(clients) = &self.clients {
+            clients.record(&o, self.store.as_ref());
+        }
+        // Subscription windows are what run out; remember the attempt so the next
+        // quota reading can say who used them.
+        if let Some((acct, epoch)) = self.account.as_ref().filter(|(a, _)| a.is_oauth()) {
+            let cost = match &self.store {
+                Some(store) => store.price(&o).cost_nanos,
+                None => super::pricing::Catalogue::bundled_catalogue().and_then(|c| c.price(&o).cost_nanos),
+            };
+            if let Some(used) = crate::attribution::Use::from_observation(&o, cost, self.program) {
+                let mut state = acct.state.lock();
+                if state.identity_epoch == *epoch {
+                    state.attribution.record(used);
+                }
+            }
+        }
+        // Queued once the caller has read it, still after the registration above.
+        Some(Finished { observation: Some(o), store: self.store.as_ref() })
+    }
+}
+
+/// A finished attempt's observation, for the caller to read. It goes onto the store's
+/// queue when dropped, so it is never copied.
+pub struct Finished<'a> {
+    observation: Option<Observation>,
+    store: Option<&'a Store>,
+}
+
+impl std::ops::Deref for Finished<'_> {
+    type Target = Observation;
+
+    fn deref(&self) -> &Observation {
+        self.observation.as_ref().expect("taken only when dropped")
+    }
+}
+
+impl Drop for Finished<'_> {
+    fn drop(&mut self) {
+        if let (Some(store), Some(observation)) = (self.store, self.observation.take()) {
+            store.enqueue(observation);
+        }
+    }
+}
+
+fn finalized(mut o: Observation, status: Option<u16>, fallback: Option<&Usage>, logical_final: bool) -> Observation {
+    if let Some(s) = status {
+        o.status = Some(s);
+    }
+    if logical_final {
+        o.logical_success = Some(status.is_some_and(|s| s < 400));
+    }
+    // IR fallback cannot prove absent fields zero; native tap is preferred.
+    if o.completeness == "missing"
+        && let Some(u) = fallback.filter(|u| u.input > 0 || u.output > 0 || u.cache_read > 0 || u.cache_write > 0)
+    {
+        o.tokens.input = (u.input > 0).then_some(u.input);
+        o.tokens.output = (u.output > 0).then_some(u.output);
+        o.tokens.cache_read = (u.cache_read > 0).then_some(u.cache_read);
+        o.tokens.cache_write = (u.cache_write > 0).then_some(u.cache_write);
+        o.tokens.write_30m = u.write_30m;
+        o.tokens.write_12h = u.write_12h;
+        o.tokens.reasoning = (u.reasoning > 0).then_some(u.reasoning);
+        o.completeness = "partial".into();
+    }
+    if o.status.is_none_or(|s| s >= 400) && o.completeness == "complete" {
+        o.completeness = "partial".into();
+    }
+    o
+}
+fn safe(s: &str) -> Option<String> {
+    (!s.is_empty() && super::types::valid_label(s).is_ok()).then(|| s.to_string())
+}
+fn number(v: &Value) -> Option<u64> {
+    v.as_u64().filter(|n| *n <= super::types::MAX_TOKENS)
+}
+fn assign(dst: &mut Option<u64>, src: Option<u64>) {
+    if src.is_some() {
+        *dst = src;
+    }
+}
+
+/// Server-tool calls (web search and fetch, code execution) are billed per
+/// call or by time, never in tokens, so their counts ride in numeric
+/// metadata. Claude reports them in `usage.server_tool_use`; Responses has
+/// no count, so `web_search_call` output items are counted: a whole
+/// response's `output` array is authoritative, and while streaming each
+/// item's `output_item.done` stands in until the final response replaces it.
+fn observe_server_tools(o: &mut Observation, v: &Value) {
+    // Usage rides at the top (a Claude delta), in `message` (Claude's
+    // message_start) or in `response` (a whole Responses answer).
+    let stu = [&v["usage"], &v["message"]["usage"], &v["response"]["usage"]]
+        .into_iter()
+        .map(|usage| &usage["server_tool_use"])
+        .find(|stu| stu.is_object())
+        .unwrap_or(&Value::Null);
+    if stu.is_object() {
+        for (field, key) in [
+            ("web_search_requests", "web_search_requests"),
+            ("web_fetch_requests", "web_fetch_requests"),
+            ("code_execution_requests", "code_execution_requests"),
+        ] {
+            if let Some(n) = stu.get(field).and_then(number) {
+                o.numeric_metadata.insert(key.into(), n);
+            }
+        }
+    }
+    let response = if v["response"].is_object() { &v["response"] } else { v };
+    if let Some(output) = response["output"].as_array() {
+        let searches = output.iter().filter(|item| item["type"].as_str() == Some("web_search_call")).count();
+        if searches > 0 || v["type"].as_str() == Some("response.completed") {
+            o.numeric_metadata.insert("web_search_requests".into(), searches as u64);
+        }
+    } else if v["type"].as_str() == Some("response.output_item.done")
+        && v["item"]["type"].as_str() == Some("web_search_call")
+    {
+        let n = o.numeric_metadata.entry("web_search_requests".into()).or_insert(0);
+        *n = n.saturating_add(1);
+    }
+}
+
+/// Usage snapshots replace reported fields; repeated final snapshots never add.
+pub fn observe(o: &mut Observation, v: &Value) {
+    observe_server_tools(o, v);
+    let mut v = v;
+    if v["response"].is_object() {
+        v = &v["response"];
+    }
+    if v["message"].is_object() {
+        v = &v["message"];
+    }
+    if let Some(s) = v["model"].as_str().or_else(|| v["modelVersion"].as_str()).and_then(safe) {
+        o.actual_model = Some(s);
+    }
+    if let Some(s) = v["id"].as_str().or_else(|| v["responseId"].as_str()).and_then(safe) {
+        o.response_id = Some(s);
+    }
+    let prior_tier = o.service_tier.clone();
+    if let Some(s) = v["service_tier"].as_str().and_then(safe) {
+        o.service_tier = Some(s);
+    }
+    let u = &v["usage"];
+    if let Some(s) = u["service_tier"].as_str().and_then(safe) {
+        o.service_tier = Some(s);
+    }
+    if let Some(s) = u["inference_geo"].as_str().or_else(|| v["inference_geo"].as_str()).and_then(safe) {
+        o.inference_geo = Some(s);
+    }
+    let mut invalid = false;
+    if u.is_object() {
+        for (paths, field) in [
+            (&["/input_tokens", "/prompt_tokens"][..], "input"),
+            (&["/output_tokens", "/completion_tokens"][..], "output"),
+            (
+                &[
+                    "/cache_read_input_tokens",
+                    "/input_tokens_details/cached_tokens",
+                    "/prompt_tokens_details/cached_tokens",
+                ][..],
+                "read",
+            ),
+            (
+                &[
+                    "/cache_creation_input_tokens",
+                    "/input_tokens_details/cache_creation_tokens",
+                    "/input_tokens_details/cache_write_tokens",
+                    "/prompt_tokens_details/cache_creation_tokens",
+                    "/prompt_tokens_details/cache_write_tokens",
+                ][..],
+                "write",
+            ),
+            (&["/cache_creation/ephemeral_5m_input_tokens"][..], "5m"),
+            (&["/cache_creation/ephemeral_1h_input_tokens"][..], "1h"),
+            (
+                &[
+                    "/input_tokens_details/cache_write_tokens_details/ttl_30m_tokens",
+                    "/prompt_tokens_details/cache_write_tokens_details/ttl_30m_tokens",
+                ][..],
+                "30m",
+            ),
+            (
+                &[
+                    "/input_tokens_details/cache_write_tokens_details/ttl_12h_tokens",
+                    "/prompt_tokens_details/cache_write_tokens_details/ttl_12h_tokens",
+                ][..],
+                "12h",
+            ),
+            (
+                &[
+                    "/output_tokens_details/reasoning_tokens",
+                    "/output_tokens_details/thinking_tokens",
+                    "/completion_tokens_details/reasoning_tokens",
+                ][..],
+                "reasoning",
+            ),
+        ] {
+            if paths.iter().any(|p| u.pointer(p).is_some_and(|v| number(v).is_none())) {
+                invalid = true;
+                match field {
+                    "input" => o.tokens.input = None,
+                    "output" => o.tokens.output = None,
+                    "read" => {
+                        o.tokens.cache_read = None;
+                        o.tokens.input = None
+                    }
+                    "write" => {
+                        o.tokens.cache_write = None;
+                        o.tokens.input = None
+                    }
+                    "5m" => o.tokens.write_5m = None,
+                    "1h" => o.tokens.write_1h = None,
+                    "30m" => o.tokens.write_30m = None,
+                    "12h" => o.tokens.write_12h = None,
+                    _ => o.tokens.reasoning = None,
+                }
+            }
+        }
+    }
+    let mut t = Tokens::default();
+    if u.is_object() {
+        let inclusive = u.get("prompt_tokens").is_some()
+            || u.get("input_tokens_details").is_some()
+            || u.get("prompt_tokens_details").is_some();
+        if !inclusive
+            && (o.provider == "anthropic"
+                || u.get("cache_creation_input_tokens").is_some()
+                || u.get("cache_read_input_tokens").is_some())
+        {
+            let tier = if u.get("speed").is_none()
+                && prior_tier.as_deref() == Some("fast")
+                && matches!(o.service_tier.as_deref(), Some("standard" | "default" | "auto"))
+            {
+                // A delta can repeat the ordinary tier while omitting speed;
+                // the fast mode already reported for this response still applies.
+                prior_tier
+            } else {
+                o.service_tier.take()
+            };
+            o.service_tier = anthropic_service_tier(tier, u["speed"].as_str());
+            t.input = number(&u["input_tokens"]);
+            t.output = number(&u["output_tokens"]);
+            // Anthropic optional caching fields default to zero when input is reported.
+            t.cache_read = u.get("cache_read_input_tokens").map(number).unwrap_or_else(|| t.input.map(|_| 0));
+            t.cache_write = u.get("cache_creation_input_tokens").map(number).unwrap_or_else(|| t.input.map(|_| 0));
+            t.write_5m = number(&u["cache_creation"]["ephemeral_5m_input_tokens"]);
+            t.write_1h = number(&u["cache_creation"]["ephemeral_1h_input_tokens"]);
+            t.reasoning = number(&u["output_tokens_details"]["thinking_tokens"])
+                .or_else(|| number(&u["output_tokens_details"]["reasoning_tokens"]));
+            if t.cache_write == Some(0) {
+                if u["cache_creation"].get("ephemeral_5m_input_tokens").is_none() {
+                    t.write_5m = Some(0);
+                }
+                if u["cache_creation"].get("ephemeral_1h_input_tokens").is_none() {
+                    t.write_1h = Some(0);
+                }
+            }
+        } else {
+            let input = number(&u["input_tokens"]).or_else(|| number(&u["prompt_tokens"]));
+            let d = if u["input_tokens_details"].is_object() {
+                &u["input_tokens_details"]
+            } else {
+                &u["prompt_tokens_details"]
+            };
+            t.cache_read = number(&d["cached_tokens"]);
+            let write = d
+                .get("cache_write_tokens")
+                .or_else(|| d.get("cache_creation_tokens"))
+                .or_else(|| u.get("cache_creation_input_tokens"));
+            // OpenAI omits writes when none were reported (including older
+            // models). Meta never reports writes and prices none (its rate card
+            // has cache reads only), so its omission is zero too. An explicitly
+            // null/invalid value remains unknown, as do omitted categories from
+            // an arbitrary compatible provider.
+            if let (Some(canonical), Some(alias)) = (d.get("cache_write_tokens"), d.get("cache_creation_tokens")) {
+                invalid |= number(canonical) != number(alias);
+            }
+            let lifetime_details = d.get("cache_write_tokens_details");
+            t.cache_write = write.map(number).unwrap_or_else(|| {
+                (matches!(o.provider.as_str(), "openai" | "meta") && lifetime_details.is_none())
+                    .then_some(0)
+                    .filter(|_| input.is_some())
+            });
+            // Lifetime metadata is evidence of writes, not evidence that their
+            // missing aggregate is zero. Preserve the subsets, with unknown input.
+            if write.is_none() && lifetime_details.is_some() && input.is_some() {
+                o.tokens.cache_write = None;
+            }
+            t.write_30m = number(&d["cache_write_tokens_details"]["ttl_30m_tokens"]);
+            t.write_12h = number(&d["cache_write_tokens_details"]["ttl_12h_tokens"]);
+            // A supplied breakdown replaces the previous breakdown atomically;
+            // an omitted bucket is unknown even when the total is unchanged.
+            if lifetime_details.is_some() {
+                o.tokens.write_30m = None;
+                o.tokens.write_12h = None;
+            }
+            if lifetime_details.is_some_and(|v| !v.is_object()) {
+                invalid = true;
+            }
+            // A new total cannot inherit lifetime counts from an older snapshot.
+            if t.cache_write.is_some() && t.cache_write != o.tokens.cache_write {
+                o.tokens.write_30m = None;
+                o.tokens.write_12h = None;
+            }
+            t.input = input.and_then(|n| n.checked_sub(t.cache_read?).and_then(|n| n.checked_sub(t.cache_write?)));
+            if input.is_some() && t.input.is_none() {
+                o.tokens.input = None;
+            }
+            t.output = number(&u["output_tokens"]).or_else(|| number(&u["completion_tokens"]));
+            t.reasoning = number(&u["output_tokens_details"]["reasoning_tokens"])
+                .or_else(|| number(&u["completion_tokens_details"]["reasoning_tokens"]));
+            if let Some(n) = input {
+                o.numeric_metadata.insert("input_total".into(), n);
+            }
+            for (key, path) in [
+                ("audio_input_tokens", d.get("audio_tokens")),
+                ("audio_output_tokens", u.get("output_tokens_details").and_then(|d| d.get("audio_tokens"))),
+            ] {
+                if let Some(n) = path.and_then(number) {
+                    o.numeric_metadata.insert(key.into(), n);
+                }
+            }
+        }
+        if let Some(n) = number(&u["total_tokens"]) {
+            o.numeric_metadata.insert("total_tokens".into(), n);
+        }
+    } else if v["usageMetadata"].is_object() {
+        let u = &v["usageMetadata"];
+        let input = number(&u["promptTokenCount"]);
+        for (key, field) in [
+            ("promptTokenCount", "input"),
+            ("cachedContentTokenCount", "read"),
+            ("candidatesTokenCount", "output"),
+            ("thoughtsTokenCount", "reasoning"),
+        ] {
+            if u.get(key).is_some_and(|v| number(v).is_none()) {
+                invalid = true;
+                match field {
+                    "input" => o.tokens.input = None,
+                    "read" => {
+                        o.tokens.cache_read = None;
+                        o.tokens.input = None
+                    }
+                    "output" => o.tokens.output = None,
+                    _ => {
+                        o.tokens.reasoning = None;
+                        o.tokens.output = None
+                    }
+                }
+            }
+        }
+        t.cache_read = u.get("cachedContentTokenCount").map(number).unwrap_or_else(|| input.map(|_| 0));
+        t.cache_write = input.map(|_| 0);
+        t.input = input.and_then(|n| n.checked_sub(t.cache_read?));
+        t.reasoning = number(&u["thoughtsTokenCount"]);
+        // Gemini candidates exclude thoughts, unlike OpenAI output.
+        t.output = number(&u["candidatesTokenCount"])
+            .and_then(|n| n.checked_add(if u.get("thoughtsTokenCount").is_some() { t.reasoning? } else { 0 }));
+        if let Some(n) = number(&u["totalTokenCount"]) {
+            o.numeric_metadata.insert("total_tokens".into(), n);
+        }
+    } else {
+        return;
+    }
+    assign(&mut o.tokens.input, t.input);
+    assign(&mut o.tokens.output, t.output);
+    assign(&mut o.tokens.cache_read, t.cache_read);
+    assign(&mut o.tokens.cache_write, t.cache_write);
+    assign(&mut o.tokens.write_5m, t.write_5m);
+    assign(&mut o.tokens.write_1h, t.write_1h);
+    assign(&mut o.tokens.write_30m, t.write_30m);
+    assign(&mut o.tokens.write_12h, t.write_12h);
+    assign(&mut o.tokens.reasoning, t.reasoning);
+    if o.tokens.reasoning.zip(o.tokens.output).is_some_and(|(r, out)| r > out) {
+        o.tokens.reasoning = None;
+        invalid = true;
+    }
+    if o.tokens.cache_write.is_some_and(|w| {
+        [o.tokens.write_5m, o.tokens.write_1h, o.tokens.write_30m, o.tokens.write_12h]
+            .into_iter()
+            .flatten()
+            .fold(0_u64, u64::saturating_add)
+            > w
+    }) {
+        o.tokens.write_5m = None;
+        o.tokens.write_1h = None;
+        o.tokens.write_30m = None;
+        o.tokens.write_12h = None;
+        invalid = true;
+    }
+    if let (Some(total), Some(short), Some(long)) = (o.tokens.cache_write, o.tokens.write_30m, o.tokens.write_12h) {
+        invalid |= short.checked_add(long) != Some(total);
+    }
+    o.completeness = if !invalid && o.tokens.total().is_some() && o.tokens.validate().is_ok() {
+        "complete"
+    } else if invalid
+        || !o.numeric_metadata.is_empty()
+        || [
+            o.tokens.input,
+            o.tokens.output,
+            o.tokens.cache_read,
+            o.tokens.cache_write,
+            o.tokens.reasoning,
+            o.tokens.write_5m,
+            o.tokens.write_1h,
+            o.tokens.write_30m,
+            o.tokens.write_12h,
+        ]
+        .iter()
+        .any(Option::is_some)
+    {
+        "partial"
+    } else {
+        "missing"
+    }
+    .into();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn snapshots_and_subsets() {
+        let mut o = Observation::new("proxy", "id".into(), "openai", chrono::Utc::now().timestamp_millis());
+        let v = json!({"response":{"id":"resp_1","model":"actual","usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":20,"cache_creation_tokens":10},"output_tokens":40,"output_tokens_details":{"reasoning_tokens":30}}}});
+        observe(&mut o, &v);
+        observe(&mut o, &v);
+        assert_eq!(o.tokens.total(), Some(140));
+        assert_eq!(o.tokens.input, Some(70));
+        assert_eq!(o.tokens.reasoning, Some(30));
+        assert_eq!(o.actual_model.as_deref(), Some("actual"));
+    }
+    #[test]
+    fn server_tool_calls_are_counted_from_claude_usage_and_responses_items() {
+        // Claude: counts ride in usage.server_tool_use (message, then a delta
+        // snapshot replaces rather than adds).
+        let mut o = Observation::new("proxy", "id".into(), "anthropic", chrono::Utc::now().timestamp_millis());
+        observe(
+            &mut o,
+            &json!({"message":{"usage":{"input_tokens":100,"output_tokens":1,"server_tool_use":{"web_search_requests":1}}}}),
+        );
+        assert_eq!(o.numeric_metadata["web_search_requests"], 1, "message_start's own count is kept");
+        observe(
+            &mut o,
+            &json!({"usage":{"output_tokens":50,"server_tool_use":{"web_search_requests":3,"web_fetch_requests":2,"code_execution_requests":1}}}),
+        );
+        assert_eq!(o.numeric_metadata["web_search_requests"], 3);
+        assert_eq!(o.numeric_metadata["web_fetch_requests"], 2);
+        assert_eq!(o.numeric_metadata["code_execution_requests"], 1);
+        assert!(o.validate().is_ok());
+
+        // Responses streaming: each search item's done counts once, and the
+        // completed response's output array is the authoritative total.
+        let mut o = Observation::new("proxy", "id".into(), "openai", chrono::Utc::now().timestamp_millis());
+        observe(&mut o, &json!({"type":"response.output_item.added","item":{"type":"web_search_call","id":"ws_1"}}));
+        assert!(!o.numeric_metadata.contains_key("web_search_requests"), "added alone never counts");
+        observe(&mut o, &json!({"type":"response.output_item.done","item":{"type":"web_search_call","id":"ws_1"}}));
+        observe(&mut o, &json!({"type":"response.output_item.done","item":{"type":"message","id":"m_1"}}));
+        assert_eq!(o.numeric_metadata["web_search_requests"], 1);
+        observe(
+            &mut o,
+            &json!({"type":"response.completed","response":{"output":[{"type":"web_search_call","id":"ws_1"},{"type":"web_search_call","id":"ws_2"}]}}),
+        );
+        assert_eq!(o.numeric_metadata["web_search_requests"], 2);
+        assert!(o.validate().is_ok());
+
+        // A non-streamed response counts its output items directly.
+        let mut o = Observation::new("proxy", "id".into(), "openai", chrono::Utc::now().timestamp_millis());
+        observe(&mut o, &json!({"output":[{"type":"web_search_call"}]}));
+        assert_eq!(o.numeric_metadata["web_search_requests"], 1);
+    }
+
+    #[test]
+    fn claude_delta_does_not_erase_input() {
+        let mut o = Observation::new("proxy", "id".into(), "anthropic", chrono::Utc::now().timestamp_millis());
+        observe(
+            &mut o,
+            &json!({"message":{"id":"msg_1","usage":{"input_tokens":100,"output_tokens":0,"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"cache_creation":{"ephemeral_5m_input_tokens":5,"ephemeral_1h_input_tokens":15}}}}),
+        );
+        observe(&mut o, &json!({"usage":{"output_tokens":50,"service_tier":"standard"}}));
+        assert_eq!(o.tokens.total(), Some(200));
+        assert_eq!(o.tokens.write_1h, Some(15));
+    }
+    #[test]
+    fn absent_cache_details_are_not_zero() {
+        let mut o = Observation::new("proxy", "id".into(), "openai-compat", chrono::Utc::now().timestamp_millis());
+        observe(&mut o, &json!({"usage":{"input_tokens":100,"output_tokens":20}}));
+        assert_eq!(o.tokens.cache_read, None);
+        assert_eq!(o.tokens.cache_write, None);
+        assert_eq!(o.tokens.input, None);
+        assert_eq!(o.numeric_metadata["input_total"], 100);
+        assert_eq!(o.completeness, "partial");
+    }
+    #[test]
+    fn ordinary_openai_usage_without_cache_writes_is_priceable() {
+        for usage in [
+            json!({"input_tokens":100,"input_tokens_details":{"cached_tokens":20},"output_tokens":40}),
+            json!({"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":20},"completion_tokens":40}),
+        ] {
+            let mut o = Observation::new("proxy", "id".into(), "openai", chrono::Utc::now().timestamp_millis());
+            observe(&mut o, &json!({"model":"gpt-5.4-mini","usage":usage}));
+            assert_eq!((o.tokens.input, o.tokens.cache_read, o.tokens.cache_write), (Some(80), Some(20), Some(0)));
+            assert_eq!(o.tokens.total(), Some(140));
+            assert_eq!(o.completeness, "complete");
+            assert_eq!(super::super::pricing::Catalogue::load(None).unwrap().price(&o).cost_nanos, Some(241_500));
+        }
+    }
+    #[test]
+    fn openai_invalid_writes_and_missing_reads_stay_unknown() {
+        for details in [
+            json!({"cached_tokens":20,"cache_write_tokens":null}),
+            json!({"cached_tokens":20,"cache_write_tokens":-1}),
+            json!({}),
+        ] {
+            let mut o = Observation::new("proxy", "id".into(), "openai", chrono::Utc::now().timestamp_millis());
+            observe(&mut o, &json!({"usage":{"input_tokens":100,"input_tokens_details":details,"output_tokens":40}}));
+            assert_eq!(o.tokens.input, None);
+            assert_eq!(o.completeness, "partial");
+        }
+    }
+    #[test]
+    fn meta_usage_without_cache_writes_is_complete() {
+        // A Muse Code response's usage as Meta reports it: cached reads, no writes.
+        let mut o = Observation::new("proxy", "id".into(), "meta", chrono::Utc::now().timestamp_millis());
+        observe(
+            &mut o,
+            &json!({"usage":{"input_tokens":18453,"input_tokens_details":{"cached_tokens":15217},"output_tokens":350,
+                "output_tokens_details":{"reasoning_tokens":174},"total_tokens":18803}}),
+        );
+        assert_eq!((o.tokens.input, o.tokens.cache_read, o.tokens.cache_write), (Some(3236), Some(15217), Some(0)));
+        assert_eq!((o.tokens.output, o.tokens.reasoning), (Some(350), Some(174)));
+        assert_eq!(o.completeness, "complete");
+        // Only a provider known to omit zero writes gets them; others stay unknown.
+        let mut o = Observation::new("proxy", "id".into(), "xai", chrono::Utc::now().timestamp_millis());
+        observe(
+            &mut o,
+            &json!({"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":20},"output_tokens":40}}),
+        );
+        assert_eq!((o.tokens.input, o.tokens.cache_write, o.completeness.as_str()), (None, None, "partial"));
+    }
+    #[test]
+    fn inclusive_top_level_cache_writes_and_partial_snapshots_keep_categories() {
+        let mut o = Observation::new("proxy", "id".into(), "openai", chrono::Utc::now().timestamp_millis());
+        observe(
+            &mut o,
+            &json!({"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":20},"cache_creation_input_tokens":10,"output_tokens":40}}),
+        );
+        assert_eq!((o.tokens.input, o.tokens.cache_read, o.tokens.cache_write), (Some(70), Some(20), Some(10)));
+        observe(&mut o, &json!({"usage":{"output_tokens":50}}));
+        assert_eq!(o.tokens.total(), Some(150));
+        assert_eq!(o.tokens.cache_write, Some(10));
+    }
+    #[test]
+    fn claude_fast_speed_and_thinking_are_metadata_subsets() {
+        let mut o = Observation::new("proxy", "id".into(), "anthropic", chrono::Utc::now().timestamp_millis());
+        observe(
+            &mut o,
+            &json!({"message":{"model":"claude-opus-5-5","usage":{"input_tokens":100,"output_tokens":40,"speed":"fast","service_tier":"standard","output_tokens_details":{"thinking_tokens":30}}}}),
+        );
+        assert_eq!(o.service_tier.as_deref(), Some("fast"));
+        assert_eq!(o.tokens.reasoning, Some(30));
+        assert_eq!(o.tokens.total(), Some(140));
+        observe(&mut o, &json!({"usage":{"output_tokens":50,"service_tier":"standard"}}));
+        assert_eq!(o.service_tier.as_deref(), Some("fast"));
+        assert_eq!(o.tokens.total(), Some(150));
+        observe(&mut o, &json!({"usage":{"output_tokens_details":{"thinking_tokens":51}}}));
+        assert_eq!(o.tokens.reasoning, None);
+        assert_eq!(o.completeness, "partial");
+    }
+    #[test]
+    fn malformed_snapshot_never_becomes_zero_or_a_stale_complete_value() {
+        let mut o = Observation::new("proxy", "id".into(), "anthropic", chrono::Utc::now().timestamp_millis());
+        observe(&mut o, &json!({"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":-1}}));
+        assert_eq!(o.tokens.cache_read, None);
+        assert_eq!(o.completeness, "partial");
+        observe(&mut o, &json!({"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":0}}));
+        assert_eq!(o.completeness, "complete");
+        observe(&mut o, &json!({"usage":{"output_tokens":-1}}));
+        assert_eq!(o.tokens.output, None);
+        assert_eq!(o.tokens.input, Some(100));
+        assert_eq!(o.completeness, "partial");
+    }
+    #[test]
+    fn gemini_invalid_details_stay_unknown() {
+        let mut o = Observation::new("proxy", "id".into(), "gemini", chrono::Utc::now().timestamp_millis());
+        observe(
+            &mut o,
+            &json!({"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"cachedContentTokenCount":-1}}),
+        );
+        assert_eq!(o.tokens.cache_read, None);
+        assert_eq!(o.completeness, "partial");
+        observe(
+            &mut o,
+            &json!({"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"cachedContentTokenCount":0}}),
+        );
+        observe(&mut o, &json!({"usageMetadata":{"candidatesTokenCount":-1}}));
+        assert_eq!(o.tokens.output, None);
+        assert_eq!(o.completeness, "partial");
+    }
+    #[test]
+    fn contradictory_cache_ttl_is_partial() {
+        let mut o = Observation::new("proxy", "id".into(), "anthropic", chrono::Utc::now().timestamp_millis());
+        observe(
+            &mut o,
+            &json!({"usage":{"input_tokens":100,"output_tokens":20,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":5}}}),
+        );
+        assert_eq!(o.completeness, "partial");
+        assert_eq!(o.tokens.write_5m, None);
+    }
+    #[test]
+    fn absent_usage_is_unknown() {
+        let mut o = Observation::new("proxy", "id".into(), "openai", chrono::Utc::now().timestamp_millis());
+        observe(&mut o, &json!({"id":"resp_1","output":[{"text":"PRIVATE_MARKER"}]}));
+        assert_eq!(o.tokens.total(), None);
+        assert!(!serde_json::to_string(&o).unwrap().contains("PRIVATE_MARKER"));
+    }
+}

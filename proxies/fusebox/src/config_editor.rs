@@ -1,0 +1,1312 @@
+//! Structured edits to the original config, retaining compatibility fields and comments.
+
+use std::collections::{BTreeMap, HashSet};
+use std::str::FromStr;
+
+use anyhow::{Context, Result, ensure};
+use serde_json::{Map, Value, Value as Yaml, json};
+use sha2::{Digest, Sha256};
+use yaml_edit::{Document, Mapping as EditMapping, YamlFile, YamlNode};
+
+use crate::accounts::Provider;
+use crate::config::Config;
+
+type Mapping = Map<String, Yaml>;
+
+const PROVIDERS: &[(&str, &str)] = &[
+    ("claude-api-key", "claude"),
+    ("codex-api-key", "codex"),
+    ("gemini-api-key", "gemini"),
+    ("vertex-api-key", "vertex"),
+    ("kimi-api-key", "kimi"),
+    ("xai-api-key", "xai"),
+    ("meta-api-key", "meta"),
+    ("openai-compatibility", "openai-compatibility"),
+];
+
+pub fn revision(text: &str) -> String {
+    hex::encode(Sha256::digest(text.as_bytes()))
+}
+
+fn yaml(text: &str) -> Result<Yaml> {
+    let doc: Yaml = crate::yaml::from_str(text).context("The config file is not valid YAML")?;
+    if doc.is_null() {
+        return Ok(Yaml::Object(Mapping::new()));
+    }
+    ensure!(doc.is_object(), "The config must be a mapping of settings");
+    Ok(doc)
+}
+
+fn at<'a>(doc: &'a Yaml, path: &[Value]) -> Option<&'a Yaml> {
+    path.iter().try_fold(doc, |v, part| match part {
+        Value::String(k) => v.as_object()?.get(k.as_str()),
+        Value::Number(i) => v.as_array()?.get(i.as_u64()? as usize),
+        _ => None,
+    })
+}
+
+fn at_mut<'a>(doc: &'a mut Yaml, path: &[Value]) -> Option<&'a mut Yaml> {
+    path.iter().try_fold(doc, |v, part| match part {
+        Value::String(k) => v.as_object_mut()?.get_mut(k.as_str()),
+        Value::Number(i) => v.as_array_mut()?.get_mut(i.as_u64()? as usize),
+        _ => None,
+    })
+}
+
+fn p(path: &[&str]) -> Vec<Value> {
+    path.iter().map(|s| json!(s)).collect()
+}
+
+fn v8(doc: &Yaml) -> bool {
+    doc["config-version"].as_i64().is_some_and(|v| v >= 8) || doc["api-keys"].is_object()
+}
+
+fn provider_sources(doc: &Yaml, field: &str, group: &str) -> Vec<Vec<Value>> {
+    if let Some(groups) = doc["api-keys"][group].as_array() {
+        if group == "openai-compatibility" {
+            return groups
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| g.is_object())
+                .map(|(i, _)| vec![json!("api-keys"), json!(group), json!(i)])
+                .collect();
+        }
+        return groups
+            .iter()
+            .enumerate()
+            .flat_map(|(i, g)| {
+                g["keys"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                    .filter(|(_, key)| key.is_object())
+                    .map(move |(j, _)| vec![json!("api-keys"), json!(group), json!(i), json!("keys"), json!(j)])
+            })
+            .collect();
+    }
+    let field = if field == "gemini-api-key" && doc[field].is_null() && doc["generative-language-api-key"].is_array() {
+        "generative-language-api-key"
+    } else {
+        field
+    };
+    (0..doc[field].as_array().map_or(0, Vec::len)).map(|i| vec![json!(field), json!(i)]).collect()
+}
+
+pub fn values(text: &str) -> Result<Value> {
+    let doc = yaml(text)?;
+    let cfg = Config::parse(text)?;
+    let mut values = serde_json::to_value(&cfg)?;
+    let obj = values.as_object_mut().unwrap();
+    obj.insert("tls".into(), serde_json::to_value(&cfg.tls)?);
+    let mut notifications = serde_json::to_value(&cfg.notifications)?;
+    notifications["webhooks"] = json!(cfg.notifications.webhooks);
+    obj.insert("notifications".into(), notifications);
+    obj.insert("model-groups".into(), json!(cfg.model_groups));
+    obj.insert("model-capabilities".into(), json!(cfg.model_capabilities));
+    obj.insert("background-model".into(), json!(cfg.background_model));
+    obj.insert("management-allow-remote".into(), json!(cfg.management_allow_remote));
+    obj.insert("force-model-prefix".into(), json!(cfg.force_model_prefix));
+    obj.insert("oauth-model-alias".into(), json!(cfg.oauth_model_alias));
+    obj.insert("oauth-excluded-models".into(), json!(cfg.oauth_excluded_models));
+    obj.insert("extra-models".into(), json!(cfg.extra_models));
+    for (field, group) in PROVIDERS {
+        let sources = provider_sources(&doc, field, group);
+        for (entry, source) in obj.get_mut(*field).and_then(Value::as_array_mut).into_iter().flatten().zip(sources) {
+            entry.as_object_mut().unwrap().insert("_id".into(), json!(source));
+        }
+        for entry in obj.get_mut(*field).and_then(Value::as_array_mut).into_iter().flatten() {
+            if let Some(models) = entry.get_mut("models") {
+                mark_rows(models);
+            }
+        }
+    }
+    for aliases in obj["oauth-model-alias"].as_object_mut().unwrap().values_mut() {
+        mark_rows(aliases);
+    }
+    Ok(values)
+}
+
+fn mark_rows(value: &mut Value) {
+    for (i, row) in value.as_array_mut().into_iter().flatten().enumerate() {
+        if let Some(row) = row.as_object_mut() {
+            row.insert("_row".into(), json!(i));
+        }
+    }
+}
+
+fn without_metadata(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(k, v)| !(k.as_str() == "_id" && v.is_array() || k.as_str() == "_row" && v.is_number()))
+                .map(|(k, v)| (k.clone(), without_metadata(v)))
+                .collect(),
+        ),
+        Value::Array(list) => Value::Array(list.iter().map(without_metadata).collect()),
+        _ => value.clone(),
+    }
+}
+
+fn setting_path(doc: &Yaml, field: &str) -> (Vec<Value>, bool) {
+    let nested: &[&str] = match field {
+        "host" => &["server", "host"],
+        "port" => &["server", "port"],
+        "tls" => &["server", "tls"],
+        "api-keys" => &["access", "api-keys"],
+        "auth-dir" => &["oauth", "auth-dir"],
+        "management-key" => &["management", "secret-key"],
+        "management-allow-remote" => &["management", "allow-remote"],
+        "request-retry" => &["routing", "retry", "request-retry"],
+        "force-model-prefix" => &["routing", "force-model-prefix"],
+        "session-affinity" => &["routing", "session-affinity"],
+        "banked-reset-policy" => &["routing", "banked-reset-policy"],
+        "window-starter" => &["routing", "window-starter"],
+        "five-hour-reserve-percent" => &["routing", "five-hour-reserve-percent"],
+        "proxy-url" => &["requests", "proxy-url"],
+        "oauth-model-alias" => &["oauth", "model-alias"],
+        "oauth-excluded-models" => &["oauth", "excluded-models"],
+        "debug" => &["observability", "logs", "debug"],
+        _ => &[],
+    };
+    if field == "routing" {
+        return (if doc["routing"].is_object() { p(&["routing", "strategy"]) } else { p(&["routing"]) }, false);
+    }
+    if !nested.is_empty() && at(doc, &p(nested)).is_some_and(|v| !v.is_null()) {
+        return (p(nested), false);
+    }
+    if field.starts_with("management-") {
+        let old = p(&["remote-management", if field == "management-key" { "secret-key" } else { "allow-remote" }]);
+        if doc[field].is_null() && at(doc, &old).is_some_and(|v| !v.is_null()) {
+            return (old, false);
+        }
+    }
+    if field == "claude-cloak" && doc[field].is_null() {
+        let nested = p(&["oauth", "providers", "claude", "disable-claude-cloak-mode"]);
+        if at(doc, &nested).is_some() || v8(doc) {
+            return (nested, true);
+        }
+        if !doc["disable-claude-cloak-mode"].is_null() {
+            return (p(&["disable-claude-cloak-mode"]), true);
+        }
+    }
+    (if v8(doc) && !nested.is_empty() { p(nested) } else { p(&[field]) }, false)
+}
+
+fn set_path(doc: &mut Yaml, path: &[Value], value: Yaml) -> Result<()> {
+    let (last, parents) = path.split_last().context("Empty setting path")?;
+    let mut current = doc;
+    for part in parents {
+        let k = part.as_str().context("Invalid setting path")?;
+        if !current[k].is_object() {
+            let old_strategy = (k == "routing").then(|| current[k].as_str().map(str::to_owned)).flatten();
+            current
+                .as_object_mut()
+                .context("Invalid config section")?
+                .insert(k.to_string(), Yaml::Object(Mapping::new()));
+            if let Some(strategy) = old_strategy {
+                current[k].as_object_mut().unwrap().insert("strategy".into(), Yaml::String(strategy));
+            }
+        }
+        current = current.as_object_mut().unwrap().get_mut(k).unwrap();
+    }
+    current
+        .as_object_mut()
+        .context("Invalid config section")?
+        .insert(last.as_str().context("Invalid setting name")?.into(), value);
+    Ok(())
+}
+
+/// Merge just the visible delta, so unknown properties on entries also survive.
+fn delta(raw: &mut Yaml, before: &Value, after: &Value) -> Result<()> {
+    if before == after {
+        return Ok(());
+    }
+    if let (Some(old), Some(new), Some(target)) = (before.as_object(), after.as_object(), raw.as_object_mut()) {
+        for (k, val) in new {
+            if k == "_row" && val.is_number() {
+                continue;
+            }
+            let old = old.get(k).unwrap_or(&Value::Null);
+            if old == val {
+                continue;
+            }
+            let target = target.entry(k.clone()).or_insert(Yaml::Null);
+            delta(target, old, val)?;
+        }
+        for k in old.keys().filter(|k| k.as_str() != "_row" && !new.contains_key(*k)) {
+            target.remove(k);
+        }
+    } else if let (Some(old), Some(new), Some(target)) = (before.as_array(), after.as_array(), raw.as_array_mut()) {
+        let original = target.clone();
+        let mut used = HashSet::new();
+        let mut result = Vec::new();
+        for (i, val) in new.iter().enumerate() {
+            let source = if let Some(id) = val.get("_row") {
+                old.iter().enumerate().find(|(j, v)| !used.contains(j) && v.get("_row") == Some(id)).map(|(j, _)| j)
+            } else if old.iter().any(|v| v.get("_row").is_some()) {
+                None
+            } else {
+                old.iter()
+                    .enumerate()
+                    .find(|(j, v)| !used.contains(j) && *v == val)
+                    .map(|(j, _)| j)
+                    .or_else(|| (i < old.len() && !used.contains(&i)).then_some(i))
+            };
+            if let Some(j) = source {
+                used.insert(j);
+                let mut raw = original.get(j).cloned().unwrap_or(Yaml::Null);
+                delta(&mut raw, &old[j], val)?;
+                result.push(raw);
+            } else {
+                result.push(serde_json::to_value(without_metadata(val))?);
+            }
+        }
+        *target = result;
+    } else {
+        *raw = serde_json::to_value(without_metadata(after))?;
+    }
+    Ok(())
+}
+
+fn append_provider(doc: &mut Yaml, field: &str, group: &str, entry: &Value) -> Result<()> {
+    let mut entry = without_metadata(entry);
+    entry.as_object_mut().context("Invalid provider entry")?.remove("_id");
+    let mut entry = serde_json::to_value(entry)?;
+    let nested = v8(doc) && group != "kimi";
+    if nested {
+        if group == "openai-compatibility" {
+            let keys = entry.as_object_mut().unwrap().remove("api-keys").unwrap_or(Yaml::Array(vec![]));
+            entry.as_object_mut().unwrap().insert(
+                "keys".into(),
+                Yaml::Array(
+                    keys.as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|k| Yaml::Object(Mapping::from_iter([("api-key".to_string(), k.clone())])))
+                        .collect(),
+                ),
+            );
+        } else {
+            entry = Yaml::Object(Mapping::from_iter([("keys".to_string(), Yaml::Array(vec![entry]))]));
+        }
+        if !doc["api-keys"].is_object() {
+            set_path(doc, &p(&["api-keys"]), Yaml::Object(Mapping::new()))?;
+        }
+        if !doc["api-keys"][group].is_array() {
+            set_path(doc, &p(&["api-keys", group]), Yaml::Array(vec![]))?;
+        }
+        doc["api-keys"][group].as_array_mut().unwrap().push(entry);
+    } else {
+        if !doc[field].is_array() {
+            set_path(doc, &p(&[field]), Yaml::Array(vec![]))?;
+        }
+        doc[field].as_array_mut().unwrap().push(entry);
+    }
+    Ok(())
+}
+
+fn compat_keys(raw: &mut Yaml, before: &Value, after: &Value) -> Result<()> {
+    let field = if raw["keys"].is_array() {
+        "keys"
+    } else if raw["api-key-entries"].is_array() {
+        "api-key-entries"
+    } else {
+        "api-keys"
+    };
+    if field == "api-keys" {
+        return delta(&mut raw[field], before, after);
+    }
+    let original = raw[field].as_array().cloned().unwrap_or_default();
+    let old = before.as_array().context("Invalid API keys")?;
+    let new = after.as_array().context("Invalid API keys")?;
+    let mut used = HashSet::new();
+    let mut keys = Vec::new();
+    for (i, key) in new.iter().enumerate() {
+        let j = old
+            .iter()
+            .enumerate()
+            .find(|(j, v)| !used.contains(j) && *v == key)
+            .map(|(j, _)| j)
+            .or_else(|| (i < original.len() && !used.contains(&i)).then_some(i));
+        let mut item = j
+            .and_then(|j| {
+                used.insert(j);
+                original.get(j).cloned()
+            })
+            .unwrap_or_else(|| Yaml::Object(Mapping::new()));
+        if !item.is_object() {
+            item = Yaml::Object(Mapping::new());
+        }
+        item.as_object_mut().unwrap().insert("api-key".into(), serde_json::to_value(key)?);
+        keys.push(item);
+    }
+    raw.as_object_mut().context("Invalid provider")?.insert(field.into(), Yaml::Array(keys));
+    Ok(())
+}
+
+fn edit_providers(doc: &mut Yaml, field: &str, group: &str, before: &Value, after: &Value) -> Result<()> {
+    let old = before.as_array().context("Invalid provider list")?;
+    let new = after.as_array().context("Invalid provider list")?;
+    // Migrate the ancient scalar-only Gemini layout when provider options are
+    // edited. A complete list is retained under its modern legacy spelling.
+    if field == "gemini-api-key" && doc[field].is_null() && doc["generative-language-api-key"].is_array() {
+        for entry in new {
+            if let Some(id) = entry.get("_id").filter(|id| !id.is_null()) {
+                ensure!(old.iter().any(|previous| previous.get("_id") == Some(id)), "Invalid Gemini key identifier");
+            }
+        }
+        let mut entries = new.clone();
+        for entry in &mut entries {
+            entry.as_object_mut().context("Invalid Gemini entry")?.remove("_id");
+        }
+        set_path(doc, &p(&[field]), serde_json::to_value(without_metadata(&json!(entries)))?)?;
+        doc.as_object_mut().unwrap().remove("generative-language-api-key");
+        return Ok(());
+    }
+    let mut seen = HashSet::new();
+    for entry in new {
+        ensure!(entry.is_object(), "Invalid provider entry");
+        let Some(id) = entry.get("_id").filter(|id| !id.is_null()) else { continue };
+        ensure!(seen.insert(id.to_string()), "Duplicate provider entry");
+        let previous = old
+            .iter()
+            .find(|e| e.get("_id") == Some(id))
+            .context("This provider entry no longer exists; reload the config")?;
+        let source = id.as_array().context("Invalid provider identifier")?;
+        let inherited = if source.len() == 5 { at(doc, &source[..3]).cloned() } else { None };
+        let raw = at_mut(doc, source).context("Provider not found")?;
+        for (k, val) in entry.as_object().unwrap() {
+            if k.starts_with('_') || previous.get(k) == Some(val) {
+                continue;
+            }
+            if group == "openai-compatibility" && k == "api-keys" {
+                compat_keys(raw, &previous[k], val)?;
+            } else {
+                let inherited_value = inherited.as_ref().map(|g| g[k.as_str()].clone()).unwrap_or(Yaml::Null);
+                let target =
+                    raw.as_object_mut().context("Invalid provider entry")?.entry(k.clone()).or_insert(inherited_value);
+                // An explicit empty string overrides a group's inherited URL
+                // or prefix; null means inherit in CLIProxyAPI's v8 layout.
+                let val = if val.is_null()
+                    && previous.get(k).is_some_and(Value::is_string)
+                    && matches!(k.as_str(), "base-url" | "proxy-url" | "prefix" | "label")
+                {
+                    json!("")
+                } else {
+                    val.clone()
+                };
+                delta(target, previous.get(k).unwrap_or(&Value::Null), &val)?;
+            }
+        }
+        // A field the edit left out goes, so the entry falls back to its default.
+        let kept = entry.as_object().unwrap();
+        if let (Some(old_fields), Some(mapping)) = (previous.as_object(), raw.as_object_mut()) {
+            for k in old_fields.keys().filter(|k| !k.starts_with('_') && !kept.contains_key(*k)) {
+                mapping.remove(k);
+            }
+        }
+    }
+    let mut removed: Vec<_> =
+        old.iter().filter_map(|e| e.get("_id")).filter(|id| !seen.contains(&id.to_string())).collect();
+    removed.sort_by_key(|id| id.to_string());
+    // Indices must be removed from the end, including multi-digit indices.
+    removed.sort_by(|a, b| {
+        let a = a.as_array().unwrap();
+        let b = b.as_array().unwrap();
+        a[..a.len() - 1]
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .cmp(&b[..b.len() - 1].iter().map(Value::to_string).collect::<Vec<_>>())
+            .then(a.last().unwrap().as_u64().cmp(&b.last().unwrap().as_u64()))
+    });
+    for id in removed.into_iter().rev() {
+        let path = id.as_array().unwrap();
+        let (index, parent) = path.split_last().unwrap();
+        at_mut(doc, parent)
+            .and_then(Yaml::as_array_mut)
+            .context("Invalid provider list")?
+            .remove(index.as_u64().unwrap() as usize);
+    }
+    for entry in new.iter().filter(|e| e.get("_id").is_none_or(Value::is_null)) {
+        append_provider(doc, field, group, entry)?;
+    }
+    Ok(())
+}
+
+fn check_url(value: &str, label: &str) -> Result<()> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    let url = url::Url::parse(value).with_context(|| format!("{label}: enter a complete URL"))?;
+    ensure!(url.host_str().is_some() && matches!(url.scheme(), "http" | "https"), "{label}: use an HTTP or HTTPS URL");
+    Ok(())
+}
+
+/// Settings left out of `values` while unset, so the settings a dashboard reads don't
+/// change for those who never use them, but that can still be set.
+const OPTIONAL: &[&str] = &["trusted-proxies", "proxy-protocol-port", "upstream-header-allowlist"];
+
+fn validate(values: &Value, changes: &Map<String, Value>) -> Result<()> {
+    for (field, value) in changes {
+        ensure!(values.get(field).is_some() || OPTIONAL.contains(&field.as_str()), "Unknown setting: {field}");
+        match field.as_str() {
+            "port" => {
+                ensure!(value.as_u64().is_some_and(|p| (1..=65535).contains(&p)), "Port must be between 1 and 65535")
+            }
+            "request-retry" => ensure!(
+                value.as_u64().is_some_and(|n| n <= u32::MAX as u64),
+                "Account attempts must be a nonnegative whole number"
+            ),
+            "routing" => ensure!(
+                matches!(
+                    value.as_str(),
+                    Some("least-used" | "smart-quota" | "soonest-reset" | "round-robin" | "fill-first")
+                ),
+                "Choose a valid routing strategy"
+            ),
+            "five-hour-reserve-percent" => ensure!(
+                value.as_u64().is_some_and(|n| n <= 100),
+                "5-hour reserve must be a whole percentage between 0 and 100"
+            ),
+            "host" => ensure!(
+                value.as_str().is_some_and(|h| h.is_empty() || h.parse::<std::net::IpAddr>().is_ok()),
+                "Bind address must be an IPv4 or IPv6 address"
+            ),
+            "auth-dir" => {
+                ensure!(value.as_str().is_some_and(|s| !s.trim().is_empty()), "Credentials directory cannot be empty")
+            }
+            "management-allow-remote" => {
+                ensure!(value.is_null() || value.is_boolean(), "Remote access must be enabled or disabled")
+            }
+            "trusted-proxies" => ensure!(
+                value.is_null() || value.as_array().is_some_and(|a| a.iter().all(Value::is_string)),
+                "Trusted proxies must be a list of addresses or ranges"
+            ),
+            "proxy-protocol-port" => ensure!(
+                value.as_u64().is_some_and(|p| p <= 65535),
+                "PROXY protocol port must be between 0 (off) and 65535"
+            ),
+            "session-affinity-idle-seconds" => {
+                ensure!(value.as_u64().is_some_and(|n| n >= 60), "Forget idle sessions after at least 60 seconds")
+            }
+            "provider-session-idle-seconds" => {
+                ensure!(
+                    value.as_u64().is_some_and(|n| (1..=86400).contains(&n)),
+                    "Provider session inactivity must be between 1 and 86400 seconds"
+                )
+            }
+            "prompt-cache" => {
+                let config: crate::cache::Config = serde_json::from_value(value.clone())
+                    .context("Prompt cache: choose valid scope and incompatible-hint handling")?;
+                config.validate().map_err(anyhow::Error::msg)?;
+            }
+            "stream-limits" => {
+                let limits: crate::stream_limits::Limits =
+                    serde_json::from_value(value.clone()).context("Invalid stream-limits")?;
+                limits.validate().map_err(anyhow::Error::msg)?;
+            }
+            "embeddings" => {
+                let config: crate::embeddings::Config =
+                    serde_json::from_value(value.clone()).context("Invalid embeddings")?;
+                config.validate().map_err(anyhow::Error::msg)?;
+            }
+            "translation" => {
+                let _: crate::formats::TranslationConfig =
+                    serde_json::from_value(value.clone()).context("Invalid translation")?;
+            }
+            "request-limits" => {
+                let limits: crate::admission::Config =
+                    serde_json::from_value(value.clone()).context("Invalid request-limits")?;
+                limits.validate().map_err(anyhow::Error::msg)?;
+            }
+            "banked-reset-policy" => {
+                let policy: crate::banked_resets::Policy =
+                    serde_json::from_value(value.clone()).context("Invalid banked-reset-policy")?;
+                policy.validate().map_err(anyhow::Error::msg)?;
+            }
+            "window-starter" => {
+                let policy: crate::window_starter::Config =
+                    serde_json::from_value(value.clone()).context("Invalid window-starter")?;
+                policy.validate()?;
+            }
+            "codex-websockets"
+            | "claude-cloak"
+            | "claude-subscription-fast-mode"
+            | "banked-resets"
+            | "session-affinity"
+            | "force-model-prefix"
+            | "debug"
+            | "latency-routing" => {
+                ensure!(value.is_boolean(), "{field}: use a boolean")
+            }
+            "notifications" => ensure!(
+                value.as_object().is_some_and(|o| o.iter().all(|(k, v)| if k == "webhooks" {
+                    v.as_array().is_some_and(|hooks| hooks.iter().all(Value::is_string))
+                } else {
+                    v.is_boolean()
+                })),
+                "Notifications: use on or off for each event, and a list of webhook URLs"
+            ),
+            "first-token-timeout-seconds" => ensure!(
+                value.as_u64().is_some_and(|n| n <= 3600),
+                "First-token timeout must be between 0 (off) and 3600 seconds"
+            ),
+            "log-format" => {
+                ensure!(matches!(value.as_str(), Some("text" | "json")), "Log format must be text or json")
+            }
+            "background-model" => ensure!(
+                value.is_null() || value.as_str().is_some_and(|s| !s.trim().is_empty()),
+                "Background model: name a model, or leave it empty"
+            ),
+            "model-groups" => ensure!(value.is_object(), "Model groups: a name for each list of models"),
+            "model-capabilities" => {
+                let caps: BTreeMap<String, crate::model_catalog::Capabilities> = serde_json::from_value(value.clone())?;
+                for cap in caps.values() {
+                    cap.validate()?;
+                }
+            }
+            _ => {}
+        }
+    }
+    // Check types before Config's deliberately lenient YAML deserializers run.
+    let mut merged = values.clone();
+    for (k, v) in changes {
+        merged[k] = v.clone();
+    }
+    let cfg = Config::parse(&crate::yaml::to_string(&merged)?)?;
+    if changes.contains_key("proxy-url") {
+        crate::config::check_proxy_url(&cfg.proxy_url).map_err(|e| anyhow::anyhow!("Upstream proxy: {e}"))?;
+    }
+    if changes.contains_key("tls") && cfg.tls.enable {
+        ensure!(!cfg.tls.cert.trim().is_empty(), "HTTPS: certificate path is required");
+        ensure!(!cfg.tls.key.trim().is_empty(), "HTTPS: private key path is required");
+    }
+    for (field, _) in PROVIDERS.iter().filter(|(f, _)| changes.contains_key(*f)) {
+        for entry in merged[*field].as_array().context("Invalid provider list")? {
+            if *field == "openai-compatibility" {
+                ensure!(
+                    entry["name"].as_str().is_some_and(|s| !s.trim().is_empty()),
+                    "Compatible provider: name is required"
+                );
+                ensure!(
+                    entry["base-url"].as_str().is_some_and(|s| !s.is_empty()),
+                    "Compatible provider: base URL is required"
+                );
+            } else {
+                ensure!(
+                    entry["api-key"].as_str().is_some_and(|s| !s.trim().is_empty()),
+                    "Provider API key cannot be empty"
+                );
+            }
+            if let Some(prefix) = entry["prefix"].as_str().filter(|p| !p.trim().is_empty()) {
+                ensure!(
+                    Provider::parse(prefix).is_none(),
+                    "Model prefix \"{prefix}\" is a provider name; {prefix}/<model> already picks that provider, so choose another prefix"
+                );
+            }
+            if let Some(url) = entry["base-url"].as_str() {
+                check_url(url, "Provider base URL")?;
+            }
+            // `direct` and `none` mean no proxy at all, as in CLIProxyAPI.
+            if let Some(url) = entry["proxy-url"].as_str() {
+                crate::config::check_proxy_url(url).map_err(|e| anyhow::anyhow!("Provider proxy: {e}"))?;
+            }
+            for model in entry["models"].as_array().into_iter().flatten() {
+                ensure!(model["name"].as_str().is_some_and(|s| !s.trim().is_empty()), "Model name cannot be empty");
+            }
+            for (name, value) in entry["headers"].as_object().into_iter().flatten() {
+                ensure!(
+                    axum::http::HeaderName::from_bytes(name.as_bytes()).is_ok(),
+                    "Invalid HTTP header name: {name}"
+                );
+                ensure!(
+                    value.as_str().is_some_and(|s| axum::http::HeaderValue::from_str(s).is_ok()),
+                    "Invalid HTTP header value: {name}"
+                );
+            }
+        }
+    }
+    if changes.contains_key("extra-models") {
+        for (provider, models) in &cfg.extra_models {
+            ensure!(
+                Provider::parse(provider).is_some_and(|p| p != Provider::Compat),
+                "Added models: {provider} is not a provider (compatible providers list their models themselves)"
+            );
+            for model in models {
+                ensure!(crate::discovery::valid_model_id(model), "Added models: \"{model}\" is not a model id");
+            }
+        }
+    }
+    if changes.contains_key("oauth-model-alias") {
+        for aliases in cfg.oauth_model_alias.values() {
+            for alias in aliases {
+                ensure!(
+                    !alias.name.trim().is_empty() && !alias.alias.trim().is_empty(),
+                    "OAuth aliases need an upstream name and an alias"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Identity is used only for retaining comments when list entries move or disappear.
+fn identity(value: &Yaml) -> Option<String> {
+    if let Some(s) = value.as_str() {
+        return Some(format!("s:{s}"));
+    }
+    for field in ["api-key", "name"] {
+        if let Some(s) = value[field].as_str() {
+            return Some(format!("{field}:{s}"));
+        }
+    }
+    None
+}
+
+fn node(value: &Yaml) -> Result<YamlNode> {
+    // Flow collections can be inserted at any indentation. Existing block
+    // collections are edited recursively, retaining their original formatting.
+    let doc = Document::from_str(&serde_json::to_string(value)?).context("Could not format setting")?;
+    doc.as_mapping()
+        .map(YamlNode::Mapping)
+        .or_else(|| doc.as_sequence().map(YamlNode::Sequence))
+        .or_else(|| doc.as_scalar().map(YamlNode::Scalar))
+        .context("Could not format setting")
+}
+
+fn sync_mapping(mapping: &EditMapping, before: &Mapping, after: &Mapping) -> Result<()> {
+    for (key, value) in after {
+        let key = key.as_str();
+        let old = before.get(key);
+        if old == Some(value) {
+            continue;
+        }
+        if let (Some(existing), Some(old)) = (mapping.get(key), old)
+            && sync_node(&existing, old, value)?
+        {
+            continue;
+        }
+        mapping.set(key, node(value)?);
+    }
+    for key in before.keys().filter(|k| !after.contains_key(*k)) {
+        mapping.remove(key);
+    }
+    Ok(())
+}
+
+fn sync_node(existing: &YamlNode, before: &Yaml, after: &Yaml) -> Result<bool> {
+    if let (Some(mapping), Some(old), Some(new)) = (existing.as_mapping(), before.as_object(), after.as_object()) {
+        if new.is_empty() {
+            return Ok(false);
+        }
+        sync_mapping(mapping, old, new)?;
+        return Ok(true);
+    }
+    if let (Some(seq), Some(old), Some(new)) = (existing.as_sequence(), before.as_array(), after.as_array()) {
+        if new.is_empty() {
+            return Ok(false);
+        } // The lossless editor must emit [] rather than an empty block.
+        let mut current = old.clone();
+        for (i, value) in new.iter().enumerate() {
+            if current.get(i) == Some(value) {
+                continue;
+            }
+            let found = current
+                .iter()
+                .enumerate()
+                .skip(i)
+                .find(|(_, v)| *v == value || identity(v).is_some_and(|id| Some(id) == identity(value)))
+                .map(|(j, _)| j);
+            if let Some(j) = found {
+                for _ in i..j {
+                    seq.remove(i);
+                    current.remove(i);
+                }
+            } else if i < current.len()
+                && new[i + 1..]
+                    .iter()
+                    .any(|v| v == &current[i] || identity(v).is_some_and(|id| Some(id) == identity(&current[i])))
+            {
+                seq.insert(i, node(value)?);
+                current.insert(i, value.clone());
+                continue;
+            }
+            if let Some(old) = current.get(i) {
+                let item = seq.get(i).context("Could not edit list entry")?;
+                if !sync_node(&item, old, value)? {
+                    seq.set(i, node(value)?);
+                }
+                current[i] = value.clone();
+            } else {
+                seq.push(node(value)?);
+                current.push(value.clone());
+            }
+        }
+        while seq.len() > new.len() {
+            seq.pop();
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+pub fn preserve(text: &str, before: &Yaml, after: &Yaml) -> Result<String> {
+    if before == after {
+        return Ok(text.into());
+    }
+    let source = if text.trim().is_empty() { "{}\n" } else { text };
+    let file = YamlFile::from_str(source).context("Could not edit this YAML without losing formatting")?;
+    let doc = file.document().context("The config must contain one document")?;
+    let mapping = doc.as_mapping().context("The config must be a mapping")?;
+    sync_mapping(
+        &mapping,
+        before.as_object().context("Invalid config")?,
+        after.as_object().context("Invalid config")?,
+    )?;
+    let output = file.to_string();
+    // Never write malformed output or a lossless edit that changed unrelated values.
+    ensure!(yaml(&output)? == *after, "Could not preserve this config's formatting; the file was not changed");
+    Ok(output)
+}
+
+/// Lossless when the file's layout allows it; otherwise a plain rewrite that drops
+/// comments and layout (the second value is true). Some valid YAML, such as lists
+/// written without indentation, can't be edited in place.
+pub fn render(text: &str, before: &Yaml, after: &Yaml) -> Result<(String, bool)> {
+    match preserve(text, before, after) {
+        Ok(out) => Ok((out, false)),
+        Err(e) => {
+            tracing::warn!("rewriting config.yaml without its formatting: {e:#}");
+            let out = crate::yaml::to_string(after)?;
+            ensure!(yaml(&out)? == *after, "Could not write this config");
+            Ok((out, true))
+        }
+    }
+}
+
+pub fn apply(text: &str, changes: &Map<String, Value>) -> Result<(String, Config, bool)> {
+    let before_values = values(text)?;
+    validate(&before_values, changes)?;
+    let before = yaml(text)?;
+    let mut after = before.clone();
+    for (field, value) in changes {
+        // An optional setting left unset reads as null (or 0 for a port that is off).
+        let unset = before_values.get(field).is_none() && (value.is_null() || value.as_u64() == Some(0));
+        if before_values.get(field) == Some(value) || unset {
+            continue;
+        }
+        if let Some((_, group)) = PROVIDERS.iter().find(|(f, _)| *f == field) {
+            edit_providers(&mut after, field, group, &before_values[field], value)?;
+        } else {
+            let (path, inverse) = setting_path(&after, field);
+            let value = if inverse { json!(!value.as_bool().context("Invalid cloak setting")?) } else { value.clone() };
+            let mut raw = at(&after, &path).cloned().unwrap_or(Yaml::Null);
+            let old =
+                if inverse { json!(!before_values[field].as_bool().unwrap()) } else { before_values[field].clone() };
+            delta(&mut raw, &old, &value)?;
+            set_path(&mut after, &path, raw)?;
+        }
+    }
+    let (output, rewritten) = render(text, &before, &after)?;
+    let cfg = Config::parse(&output)?;
+    Ok((output, cfg, rewritten))
+}
+
+pub fn restart_fields(startup: &Config, current: &Config) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    if startup.host != current.host {
+        fields.push("bind address");
+    }
+    if startup.port != current.port {
+        fields.push("port");
+    }
+    if startup.proxy_protocol_port != current.proxy_protocol_port {
+        fields.push("PROXY protocol port");
+    }
+    if startup.tls.enable != current.tls.enable
+        || startup.tls.cert != current.tls.cert
+        || startup.tls.key != current.tls.key
+    {
+        fields.push("HTTPS");
+    }
+    // The size warning is read live; every other usage setting is the writer's.
+    let storage = |c: &Config| {
+        serde_json::to_value(crate::usage::types::UsageConfig { warn_database_mb: 0, ..c.usage.clone() }).ok()
+    };
+    if storage(startup) != storage(current) {
+        fields.push("usage storage");
+    }
+    if startup.debug != current.debug {
+        fields.push("debug logging");
+    }
+    if startup.log_format != current.log_format {
+        fields.push("log format");
+    }
+    fields
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn edit(text: &str, changes: Value) -> (String, Config) {
+        let (out, cfg, rewritten) = apply(text, changes.as_object().unwrap()).unwrap();
+        assert!(!rewritten, "expected a lossless edit");
+        (out, cfg)
+    }
+
+    #[test]
+    fn layouts_the_lossless_editor_cannot_follow_are_rewritten() {
+        for source in [
+            "# indentless list\nport: 8317\nclaude-api-key:\n- api-key: first\n",
+            "---\n# explicit document\nport: 8317\nclaude-api-key:\n  - api-key: first\n...\n",
+        ] {
+            let mut keys = values(source).unwrap()["claude-api-key"].clone();
+            keys.as_array_mut().unwrap().push(json!({"api-key": "second", "models": [], "headers": {}}));
+            let (out, cfg, rewritten) =
+                apply(source, json!({"claude-api-key": keys, "port": 9000}).as_object().unwrap()).unwrap();
+            assert!(rewritten);
+            assert_eq!(cfg.port, 9000);
+            assert_eq!(cfg.claude_api_key.len(), 2);
+            assert_eq!(Config::parse(&out).unwrap().claude_api_key[1].api_key, "second");
+        }
+    }
+
+    #[test]
+    fn smart_quota_round_trips_in_both_config_layouts() {
+        for source in
+            ["routing: least-used\n", "config-version: 8\nrouting:\n  strategy: least-used\n  session-affinity: true\n"]
+        {
+            let (out, cfg) = edit(source, json!({"routing": "smart-quota", "five-hour-reserve-percent": 40}));
+            assert_eq!(cfg.routing, crate::config::Routing::SmartQuota);
+            assert_eq!(cfg.five_hour_reserve_percent, 40);
+            assert_eq!(Config::parse(&out).unwrap().five_hour_reserve_percent, 40);
+            if source.contains("config-version") {
+                assert_eq!(yaml(&out).unwrap()["routing"]["five-hour-reserve-percent"].as_u64(), Some(40));
+            }
+            assert_eq!(Config::parse(&out).unwrap().routing, cfg.routing);
+            assert_eq!(values(&out).unwrap()["routing"], "smart-quota");
+            assert!(cfg.session_affinity);
+        }
+    }
+
+    #[test]
+    fn banked_reset_policy_round_trips_and_validates_both_layouts() {
+        for source in ["routing: smart-quota\n", "config-version: 8\nrouting:\n  strategy: smart-quota\n"] {
+            let change = json!({"banked-reset-policy":{"expiry-priority-hours":120,"auto-redeem":true}});
+            let (out, cfg) = edit(source, change.clone());
+            assert_eq!(cfg.banked_reset_policy.expiry_priority_hours, 120);
+            assert!(cfg.banked_reset_policy.auto_redeem);
+            assert_eq!(values(&out).unwrap()["banked-reset-policy"], change["banked-reset-policy"]);
+            assert_eq!(Config::parse(&out).unwrap().banked_reset_policy, cfg.banked_reset_policy);
+            if source.contains("config-version") {
+                assert_eq!(yaml(&out).unwrap()["routing"]["banked-reset-policy"]["auto-redeem"], Yaml::Bool(true));
+            }
+        }
+        for invalid in [
+            json!({"expiry-priority-hours":0,"auto-redeem":true}),
+            json!({"expiry-priority-hours":8761}),
+            json!({"expiry-priority-hours":-1}),
+            json!({"expiry-priority-hours":1.5}),
+            json!({"auto-redeem":"true"}),
+            json!({"unknown":true}),
+        ] {
+            assert!(apply("", json!({"banked-reset-policy":invalid}).as_object().unwrap()).is_err());
+        }
+        let cfg = Config::parse("").unwrap();
+        assert_eq!(cfg.banked_reset_policy.expiry_priority_hours, 168);
+        assert!(!cfg.banked_reset_policy.auto_redeem);
+    }
+
+    #[test]
+    fn smart_quota_alias_defaults_and_reserve_validation() {
+        assert_eq!(Config::default().five_hour_reserve_percent, 30);
+        for source in ["routing: soonest-reset\n", "routing:\n  strategy: soonest-reset\n"] {
+            let cfg = Config::parse(source).unwrap();
+            assert_eq!(cfg.routing, crate::config::Routing::SmartQuota);
+            assert_eq!(values(source).unwrap()["routing"], "smart-quota");
+        }
+        for invalid in [json!(-1), json!(101), json!(30.5), json!("30"), Value::Null] {
+            assert!(apply("", json!({"five-hour-reserve-percent": invalid}).as_object().unwrap()).is_err());
+            assert!(Config::parse(&format!("five-hour-reserve-percent: {invalid}\n")).is_err());
+            assert!(
+                Config::parse(&format!("routing:\n  strategy: smart-quota\n  five-hour-reserve-percent: {invalid}\n"))
+                    .is_err()
+            );
+        }
+        for value in [0, 30, 100] {
+            let (_, cfg) = edit("", json!({"five-hour-reserve-percent": value}));
+            assert_eq!(cfg.five_hour_reserve_percent, value);
+        }
+    }
+
+    #[test]
+    fn session_affinity_settings_land_where_each_layout_keeps_them() {
+        let (out, cfg) =
+            edit("port: 8317\n", json!({"session-affinity": false, "session-affinity-idle-seconds": 3600}));
+        assert!(!cfg.session_affinity);
+        assert_eq!(cfg.session_affinity_idle_seconds, 3600);
+        assert_eq!(yaml(&out).unwrap()["session-affinity"].as_bool(), Some(false));
+        let (out, cfg) =
+            edit("config-version: 8\nrouting:\n  strategy: fill-first\n", json!({"session-affinity": false}));
+        assert!(!cfg.session_affinity);
+        assert_eq!(yaml(&out).unwrap()["routing"]["session-affinity"].as_bool(), Some(false));
+        assert!(apply("", json!({"session-affinity-idle-seconds": 5}).as_object().unwrap()).is_err());
+    }
+
+    #[test]
+    fn cache_and_admission_settings_round_trip_and_reject_invalid_options() {
+        let changes = json!({
+            "prompt-cache": {"scope":"workspace", "namespace":"tools-v2", "on-incompatible":"reject"},
+            "latency-routing":true,"translation":{"allow-service-tier":true},
+            "embeddings":{"concurrency":3,"cache-seconds":60,"cache-bytes":1048576},
+            "stream-limits":{"event-bytes":1048576,"media-event-bytes":4194304,"bootstrap-bytes":65536,"pre-output-timeout-seconds":30},
+            "request-limits": {"text-body-bytes":1048576,"media-body-bytes":268435456,"max-in-flight":8,"max-in-flight-body-bytes":33554432}
+        });
+        for source in ["# keep this\nport: 8317\n", "config-version: 8\nrouting:\n  strategy: fill-first\n"] {
+            let (out, cfg) = edit(source, changes.clone());
+            assert_eq!(cfg.prompt_cache.scope, crate::cache::Scope::Workspace);
+            assert_eq!(cfg.prompt_cache.on_incompatible, crate::cache::Incompatible::Reject);
+            assert_eq!(cfg.request_limits.max_in_flight, 8);
+            assert!(cfg.latency_routing && cfg.translation.allow_service_tier);
+            assert_eq!(cfg.embeddings.concurrency, 3);
+            assert_eq!(cfg.stream_limits.pre_output_timeout_seconds, 30);
+            assert_eq!(values(&out).unwrap()["prompt-cache"], changes["prompt-cache"]);
+            assert!(cfg.ignored.is_empty());
+        }
+        for invalid in [
+            json!({"prompt-cache":{"scope":"public"}}),
+            json!({"prompt-cache":{"namespace":"x".repeat(257)}}),
+            json!({"prompt-cache":{"unknown":true}}),
+            json!({"stream-limits":{"event-bytes":0}}),
+            json!({"embeddings":{"concurrency":0}}),
+            json!({"translation":{"allow-service-tier":"yes"}}),
+            json!({"request-limits":{"text-body-bytes":0}}),
+            json!({"request-limits":{"media-body-bytes":268435457}}),
+            json!({"request-limits":{"max-in-flight":-1}}),
+        ] {
+            assert!(apply("", invalid.as_object().unwrap()).is_err());
+            assert!(Config::parse(&crate::yaml::to_string(&invalid).unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn edits_legacy_and_nested_layouts_without_dropping_comments() {
+        for source in [
+            "# heading\nport: 8317 # port note\nrouting: least-used\ncustom: { untouched: yes }\n",
+            "# heading\nconfig-version: 8\nserver:\n  port: 8317 # port note\nrouting:\n  strategy: least-used\n  session-affinity: true\ncustom: { untouched: yes }\n",
+        ] {
+            let (out, cfg) = edit(source, json!({"port": 9000, "routing": "fill-first", "request-retry": 5}));
+            assert_eq!(cfg.port, 9000);
+            assert_eq!(cfg.request_retry, 5);
+            assert!(out.contains("# heading"));
+            assert!(out.contains("# port note"));
+            assert!(out.contains("custom: { untouched: yes }"));
+            if source.contains("config-version") {
+                assert!(out.contains("session-affinity: true"));
+                assert_eq!(yaml(&out).unwrap()["server"]["port"].as_u64(), Some(9000));
+            }
+        }
+    }
+
+    #[test]
+    fn grouped_keys_retain_inheritance_and_unknown_settings() {
+        let source = "config-version: 8\napi-keys:\n  claude:\n    - name: shared\n      base-url: https://example.com\n      custom: keep\n      keys:\n        - api-key: first # first key\n          weight: 8\n        - api-key: second # second key\n          weight: 9\n";
+        let mut keys = values(source).unwrap()["claude-api-key"].clone();
+        keys[0]["api-key"] = json!("replacement");
+        keys[0]["prefix"] = json!("team");
+        let (out, cfg) = edit(source, json!({"claude-api-key": keys}));
+        assert_eq!(cfg.claude_api_key[0].api_key, "replacement");
+        assert_eq!(cfg.claude_api_key[0].base_url.as_deref(), Some("https://example.com"));
+        assert!(out.contains("weight: 8"));
+        assert!(out.contains("custom: keep"));
+        assert!(out.contains("# first key"));
+        let mut keys = values(&out).unwrap()["claude-api-key"].clone();
+        keys.as_array_mut().unwrap().remove(0);
+        let (out, cfg) = edit(&out, json!({"claude-api-key": keys}));
+        assert_eq!(cfg.claude_api_key.len(), 1);
+        assert_eq!(cfg.claude_api_key[0].api_key, "second");
+        assert!(out.contains("# second key"));
+        assert!(out.contains("weight: 9"));
+    }
+
+    #[test]
+    fn compatible_keys_keep_per_key_properties() {
+        let source = "openai-compatibility:\n  - name: local\n    base-url: https://example.com/v1\n    api-key-entries:\n      - api-key: first\n        proxy-url: socks5://localhost:1080\n        weight: 9\n      - api-key: second\n        weight: 3\n    models: []\n";
+        let mut entries = values(source).unwrap()["openai-compatibility"].clone();
+        entries[0]["api-keys"] = json!(["replacement", "second"]);
+        let (out, cfg) = edit(source, json!({"openai-compatibility": entries}));
+        assert_eq!(cfg.openai_compatibility[0].api_keys, ["replacement", "second"]);
+        assert!(out.contains("weight: 9"));
+        assert!(out.contains("proxy-url: socks5://localhost:1080"));
+    }
+
+    #[test]
+    fn adding_and_clearing_nested_settings_round_trips() {
+        let source = "# Empty v8 config\nconfig-version: 8\n";
+        let (out, cfg) = edit(
+            source,
+            json!({"api-keys": ["client"], "force-model-prefix": true, "claude-cloak": false,
+            "oauth-model-alias": {"claude": [{"name": "original", "alias": "friendly", "fork": true}]},
+            "claude-api-key": [{"api-key": "upstream", "models": [], "headers": {"X-Test": "true"}}],
+            "openai-compatibility": [{"name": "local", "base-url": "http://localhost:11434/v1", "api-keys": [], "models": []}]}),
+        );
+        assert_eq!(cfg.api_keys, ["client"]);
+        assert!(cfg.force_model_prefix);
+        assert!(!cfg.claude_cloak);
+        assert_eq!(cfg.claude_api_key[0].headers["X-Test"], "true");
+        assert_eq!(cfg.openai_compatibility.len(), 1);
+        let (out, cfg) = edit(&out, json!({"api-keys": [], "claude-api-key": [], "oauth-model-alias": {}}));
+        assert!(cfg.api_keys.is_empty());
+        assert!(cfg.claude_api_key.is_empty());
+        assert!(cfg.oauth_model_alias.is_empty());
+        assert!(out.contains("# Empty v8 config"));
+    }
+
+    #[test]
+    fn rejects_invalid_fields_and_forged_provider_ids() {
+        for change in [
+            json!({"port": 70000}),
+            json!({"request-retry": -1}),
+            json!({"routing": "unknown"}),
+            json!({"proxy-url": "file:///tmp/file"}),
+            json!({"tls": {"enable": true}}),
+            json!({"unknown": true}),
+            json!({"claude-api-key": [{"api-key": "x", "_id": ["management-key"]}]}),
+        ] {
+            assert!(apply("", change.as_object().unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn restart_status_compares_with_startup_even_after_repeated_saves() {
+        let startup = Config::default();
+        let mut current = startup.clone();
+        current.port = 9000;
+        current.tls.enable = true;
+        assert_eq!(restart_fields(&startup, &current), ["port", "HTTPS"]);
+        current.debug = true;
+        assert!(restart_fields(&startup, &current).contains(&"debug logging"));
+        assert!(restart_fields(&startup, &startup).is_empty());
+        current.proxy_protocol_port = 8319;
+        assert!(restart_fields(&startup, &current).contains(&"PROXY protocol port"));
+        // The size warning applies at once; how long usage is kept needs the writer restarted.
+        let mut usage = startup.clone();
+        usage.usage.warn_database_mb = 4096;
+        assert!(restart_fields(&startup, &usage).is_empty());
+        usage.usage.totals_retention_days = 3650;
+        assert_eq!(restart_fields(&startup, &usage), ["usage storage"]);
+    }
+
+    #[test]
+    fn source_settings_can_be_set_and_unset_through_the_settings_api() {
+        let source = "port: 8318\n";
+        assert!(values(source).unwrap().get("trusted-proxies").is_none(), "unset, they stay out");
+        // Setting nothing new is no change.
+        let (out, _) = edit(source, json!({"trusted-proxies": null, "proxy-protocol-port": 0}));
+        assert_eq!(out, source);
+        let (out, cfg) =
+            edit(source, json!({"trusted-proxies": ["127.0.0.1", "10.0.0.0/8"], "proxy-protocol-port": 8319}));
+        assert_eq!(cfg.trusted_proxies, Some(vec!["127.0.0.1".to_string(), "10.0.0.0/8".to_string()]));
+        assert_eq!(cfg.proxy_protocol_port, 8319);
+        assert_eq!(values(&out).unwrap()["proxy-protocol-port"], 8319);
+        let (out, cfg) = edit(&out, json!({"trusted-proxies": null, "proxy-protocol-port": 0}));
+        assert_eq!((cfg.trusted_proxies, cfg.proxy_protocol_port), (None, 0));
+        assert!(values(&out).unwrap().get("proxy-protocol-port").is_none());
+        for bad in [
+            json!({"proxy-protocol-port": 70000}),
+            json!({"proxy-protocol-port": 8318}),
+            json!({"trusted-proxies": ["example.com"]}),
+            json!({"trusted-proxies": "127.0.0.1"}),
+        ] {
+            assert!(apply(source, bad.as_object().unwrap()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn inherited_options_can_be_cleared_and_model_properties_survive() {
+        let source = "config-version: 8\napi-keys:\n  claude:\n    - base-url: https://example.com\n      prefix: team\n      models:\n        - name: upstream\n          alias: old\n          vendor-option: retained\n      keys:\n        - api-key: first\n        - api-key: second\n";
+        let mut keys = values(source).unwrap()["claude-api-key"].clone();
+        keys[0]["base-url"] = Value::Null;
+        keys[0]["prefix"] = Value::Null;
+        keys[0]["models"][0]["alias"] = json!("new");
+        let (out, cfg) = edit(source, json!({"claude-api-key": keys}));
+        assert_eq!(cfg.claude_api_key[0].base_url.as_deref(), Some(""));
+        assert_eq!(cfg.claude_api_key[0].prefix.as_deref(), Some(""));
+        assert_eq!(cfg.claude_api_key[0].models[0].alias.as_deref(), Some("new"));
+        assert_eq!(cfg.claude_api_key[1].models[0].alias.as_deref(), Some("old"));
+        let doc = yaml(&out).unwrap();
+        assert_eq!(doc["api-keys"]["claude"][0]["keys"][0]["models"][0]["vendor-option"].as_str(), Some("retained"));
+    }
+
+    #[test]
+    fn template_comments_survive_and_noop_does_not_add_defaults() {
+        let source = crate::config::template();
+        let (out, cfg) =
+            edit(&source, json!({"request-retry": 7, "tls": {"enable": false, "cert": "cert.pem", "key": "key.pem"}}));
+        assert_eq!(cfg.request_retry, 7);
+        assert!(out.contains("# API keys (optional)."));
+        assert!(out.contains("# Shared keys from before named clients"));
+        let (out, _) = edit("# Minimal\nport: 8317\n", json!({"request-retry": 3}));
+        assert_eq!(out, "# Minimal\nport: 8317\n");
+    }
+
+    #[test]
+    fn ancient_gemini_keys_can_be_edited_with_the_gui() {
+        let source = "# Legacy Gemini keys\ngenerative-language-api-key: [first, second]\n";
+        let mut keys = values(source).unwrap()["gemini-api-key"].clone();
+        keys[0]["prefix"] = json!("team");
+        keys[1]["api-key"] = json!("replacement");
+        let (out, cfg) = edit(source, json!({"gemini-api-key": keys}));
+        assert_eq!(cfg.gemini_api_key[0].prefix.as_deref(), Some("team"));
+        assert_eq!(cfg.gemini_api_key[1].api_key, "replacement");
+        assert!(out.contains("# Legacy Gemini keys"));
+        assert!(yaml(&out).unwrap()["generative-language-api-key"].is_null());
+    }
+
+    #[test]
+    fn added_models_are_written_validated_and_removed_with_their_section() {
+        let source = "# Keep me\nport: 8317\n";
+        let (out, cfg) = edit(source, json!({"extra-models": {"claude": ["claude-opus-6"]}}));
+        assert_eq!(cfg.extra_models["claude"], ["claude-opus-6"]);
+        assert!(out.contains("# Keep me"));
+        let (out, cfg) = edit(&out, json!({"extra-models": {}}));
+        assert!(cfg.extra_models.is_empty());
+        assert!(out.contains("# Keep me"));
+        for bad in
+            [json!({"nope": ["x"]}), json!({"openai-compatibility": ["x"]}), json!({"claude": ["team/claude-x"]})]
+        {
+            assert!(apply(source, json!({"extra-models": bad}).as_object().unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn model_metadata_overrides_round_trip_in_both_config_layouts() {
+        for source in ["# preserve\nport: 8317\n", "config-version: 8\nserver:\n  port: 8317\n"] {
+            let (out, cfg) = edit(
+                source,
+                json!({"model-capabilities":{"team/coding":{"context_window":128000,"max_output_tokens":16000,"input_modalities":["text","image"],"tool_calling":true}}}),
+            );
+            assert_eq!(cfg.model_capabilities["team/coding"].context_window, Some(128000));
+            assert_eq!(values(&out).unwrap()["model-capabilities"]["team/coding"]["tool_calling"], true);
+            let (_, cfg) = edit(&out, json!({"model-capabilities":{}}));
+            assert!(cfg.model_capabilities.is_empty());
+        }
+        for bad in [
+            json!({"context_window":0}),
+            json!({"context_window":1.5}),
+            json!({"input_modalities":[""]}),
+            json!({"made_up":true}),
+        ] {
+            assert!(apply("", json!({"model-capabilities":{"test":bad}}).as_object().unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn prefixes_that_name_a_provider_are_rejected() {
+        let source = "claude-api-key:\n  - api-key: upstream\n";
+        let mut keys = values(source).unwrap()["claude-api-key"].clone();
+        for prefix in ["claude", "Codex", "anthropic"] {
+            keys[0]["prefix"] = json!(prefix);
+            let err = apply(source, json!({"claude-api-key": keys}).as_object().unwrap()).unwrap_err();
+            assert!(err.to_string().contains("is a provider name"), "{err}");
+        }
+        keys[0]["prefix"] = json!("team");
+        assert_eq!(edit(source, json!({"claude-api-key": keys})).1.claude_api_key[0].prefix.as_deref(), Some("team"));
+    }
+
+    #[test]
+    fn last_header_and_model_can_be_removed_from_block_collections() {
+        let source = "claude-api-key:\n  - api-key: upstream\n    headers: # keep header note\n      X-Test: example\n    models:\n      - name: original\n";
+        let mut keys = values(source).unwrap()["claude-api-key"].clone();
+        keys[0]["headers"] = json!({});
+        keys[0]["models"] = json!([]);
+        let (out, cfg) = edit(source, json!({"claude-api-key": keys}));
+        assert!(cfg.claude_api_key[0].headers.is_empty());
+        assert!(cfg.claude_api_key[0].models.is_empty());
+        assert!(out.contains("# keep header note"));
+    }
+
+    #[test]
+    fn named_clients_round_trip_in_both_layouts() {
+        let whombat = json!({"id": "whombat-cybex", "label": "Whombat · Cybex BV", "key": "wbgw_secret",
+            "model-map": {"claude-opus-*": "claude-sonnet-5-5"}});
+        let laptop = json!({"id": "laptop", "label": "Laptop", "key": "fbx_laptop"});
+        for source in [
+            crate::config::template(),
+            "# flat\nport: 8317\napi-keys: [\"fbx_shared\"]\n".to_string(),
+            "# v8\nconfig-version: 8\naccess:\n  api-keys: [\"fbx_shared\"]\napi-keys:\n  claude:\n    - keys:\n        - api-key: sk-ant # upstream key\n".to_string(),
+        ] {
+            let before = Config::parse(&source).unwrap();
+            let first_line = source.lines().next().unwrap();
+            let (out, cfg) = edit(&source, json!({"named-clients": [whombat]}));
+            assert_eq!(cfg.named_clients.len(), 1);
+            assert_eq!(cfg.named_clients[0].label, "Whombat · Cybex BV");
+            assert_eq!(cfg.named_clients[0].model_map["claude-opus-*"], "claude-sonnet-5-5");
+            assert_eq!(values(&out).unwrap()["named-clients"], json!([whombat]));
+            assert!(yaml(&out).unwrap()["named-clients"].is_array(), "named-clients stays at the top level");
+            let (out, cfg) = edit(&out, json!({"named-clients": [whombat, laptop]}));
+            assert_eq!(cfg.named_clients.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["whombat-cybex", "laptop"]);
+            let (out, cfg) = edit(&out, json!({"named-clients": [laptop]}));
+            assert_eq!(cfg.named_clients.len(), 1);
+            assert_eq!(cfg.named_clients[0].key, "fbx_laptop");
+            let (out, cfg) = edit(&out, json!({"named-clients": []}));
+            assert!(cfg.named_clients.is_empty());
+            // Nothing else moved, and the file kept its comments.
+            assert_eq!(cfg.api_keys, before.api_keys);
+            assert_eq!(cfg.claude_api_key.len(), before.claude_api_key.len());
+            assert!(out.starts_with(first_line));
+            if source.contains("config-version") {
+                assert_eq!(cfg.claude_api_key[0].api_key, "sk-ant");
+                assert!(out.contains("# upstream key"));
+                assert!(yaml(&out).unwrap()["api-keys"].is_object());
+            }
+        }
+    }
+
+    #[test]
+    fn removing_a_named_client_keeps_the_others_and_their_comments() {
+        let source = "named-clients:\n  - id: laptop # my laptop\n    label: Laptop\n    key: fbx_one\n  - id: whombat-cybex # added by Whombat\n    label: Whombat · Cybex BV\n    key: wbgw_two\n";
+        let mut list = values(source).unwrap()["named-clients"].clone();
+        list.as_array_mut().unwrap().remove(0);
+        let (out, cfg) = edit(source, json!({"named-clients": list}));
+        assert_eq!(cfg.named_clients.len(), 1);
+        assert_eq!(cfg.named_clients[0].id, "whombat-cybex");
+        assert_eq!(cfg.named_clients[0].key, "wbgw_two");
+        assert!(out.contains("# added by Whombat"));
+        assert!(!out.contains("# my laptop"));
+    }
+
+    #[test]
+    fn invalid_named_clients_are_rejected() {
+        let source = "named-clients:\n  - id: laptop\n    label: Laptop\n    key: fbx_one\n";
+        let laptop = json!({"id": "laptop", "label": "Laptop", "key": "fbx_one"});
+        for bad in [
+            json!([laptop, {"id": "laptop", "label": "Again", "key": "fbx_two"}]),
+            json!([{"id": "tool", "label": "Tool", "key": ""}]),
+            json!([{"id": "", "label": "Tool", "key": "fbx_two"}]),
+            json!([{"id": "tool", "label": "Tool", "key": "fbxc_collector"}]),
+            json!([{"id": "tool", "label": "Tool", "key": "fbx_two", "extra": true}]),
+            json!("laptop"),
+        ] {
+            assert!(apply(source, json!({"named-clients": bad}).as_object().unwrap()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn model_rows_keep_their_hidden_properties_when_other_rows_are_removed() {
+        let source = "claude-api-key:\n  - api-key: upstream\n    models:\n      - name: first\n        vendor-option: one\n      - name: second\n        vendor-option: two\n";
+        let mut keys = values(source).unwrap()["claude-api-key"].clone();
+        keys[0]["models"].as_array_mut().unwrap().remove(0);
+        keys[0]["models"][0]["name"] = json!("renamed");
+        keys[0]["models"].as_array_mut().unwrap().push(json!({"name": "new"}));
+        let (out, cfg) = edit(source, json!({"claude-api-key": keys}));
+        assert_eq!(cfg.claude_api_key[0].models[0].name, "renamed");
+        let doc = yaml(&out).unwrap();
+        assert_eq!(doc["claude-api-key"][0]["models"][0]["vendor-option"].as_str(), Some("two"));
+        assert!(doc["claude-api-key"][0]["models"][1]["vendor-option"].is_null());
+        assert!(!out.contains("_row"));
+    }
+}

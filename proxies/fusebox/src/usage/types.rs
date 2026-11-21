@@ -1,0 +1,345 @@
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+pub const SCHEMA_VERSION: u32 = 1;
+pub const MAX_TOKENS: u64 = 1_000_000_000_000;
+
+/// Disjoint input categories; TTL write categories and reasoning are subsets.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Tokens {
+    pub input: Option<u64>,
+    pub cache_read: Option<u64>,
+    pub cache_write: Option<u64>,
+    pub write_5m: Option<u64>,
+    pub write_1h: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_30m: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_12h: Option<u64>,
+    pub output: Option<u64>,
+    pub reasoning: Option<u64>,
+}
+impl Tokens {
+    pub fn input_total(&self) -> Option<u64> {
+        self.input?.checked_add(self.cache_read?)?.checked_add(self.cache_write?)
+    }
+    pub fn total(&self) -> Option<u64> {
+        self.input_total()?.checked_add(self.output?)
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        for v in [
+            self.input,
+            self.cache_read,
+            self.cache_write,
+            self.write_5m,
+            self.write_1h,
+            self.write_30m,
+            self.write_12h,
+            self.output,
+            self.reasoning,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if v > MAX_TOKENS {
+                return Err("token bound exceeded".into());
+            }
+        }
+        if let (Some(r), Some(o)) = (self.reasoning, self.output)
+            && r > o
+        {
+            return Err("reasoning exceeds output".into());
+        }
+        if let Some(w) = self.cache_write
+            && [self.write_5m, self.write_1h, self.write_30m, self.write_12h]
+                .into_iter()
+                .flatten()
+                .fold(0_u64, u64::saturating_add)
+                > w
+        {
+            return Err("cache TTL subsets exceed writes".into());
+        }
+        Ok(())
+    }
+}
+
+/// Only this metadata crosses collector boundaries or enters persistent analytics.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Observation {
+    pub schema_version: u32,
+    pub source: String,
+    pub source_event_id: String,
+    pub origin_id: String,
+    pub parser_version: String,
+    pub event_at_ms: i64,
+    pub ingested_at_ms: i64,
+    pub provider: String,
+    pub requested_model: Option<String>,
+    pub actual_model: Option<String>,
+    pub account_id: Option<String>,
+    pub auth_type: Option<String>,
+    pub client_id: Option<String>,
+    pub logical_request_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub provider_request_id: Option<String>,
+    pub response_id: Option<String>,
+    pub session_id: Option<String>,
+    pub service_tier: Option<String>,
+    #[serde(default)]
+    pub inference_geo: Option<String>,
+    pub tokens: Tokens,
+    pub completeness: String,
+    pub status: Option<u16>,
+    pub logical_success: Option<bool>,
+    #[serde(default)]
+    pub numeric_metadata: BTreeMap<String, u64>,
+    /// The entrypoint a Claude Code client named in its User-Agent (`cli`, `sdk-ts`, …),
+    /// for proxy observations only. Kept beside the record in `usage_entrypoints`, never
+    /// in the stored document or the collector wire format, so older releases and
+    /// collectors read every record unchanged.
+    #[serde(skip)]
+    pub entrypoint: Option<String>,
+}
+impl Observation {
+    pub fn new(source: &str, id: String, provider: &str, event_at_ms: i64) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            source: source.into(),
+            source_event_id: id,
+            origin_id: "local".into(),
+            parser_version: "1".into(),
+            event_at_ms,
+            ingested_at_ms: chrono::Utc::now().timestamp_millis(),
+            provider: provider.into(),
+            requested_model: None,
+            actual_model: None,
+            account_id: None,
+            auth_type: None,
+            client_id: None,
+            logical_request_id: None,
+            attempt_id: None,
+            provider_request_id: None,
+            response_id: None,
+            session_id: None,
+            service_tier: None,
+            inference_geo: None,
+            tokens: Tokens::default(),
+            completeness: "missing".into(),
+            status: None,
+            logical_success: None,
+            numeric_metadata: BTreeMap::new(),
+            entrypoint: None,
+        }
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != SCHEMA_VERSION {
+            return Err("unsupported schema version".into());
+        }
+        if !matches!(self.source.as_str(), "proxy" | "claude_code" | "codex") {
+            return Err("unsupported source".into());
+        }
+        if !matches!(self.completeness.as_str(), "complete" | "partial" | "missing") {
+            return Err("invalid completeness".into());
+        }
+        if self.event_at_ms < 1_577_836_800_000 || self.event_at_ms > chrono::Utc::now().timestamp_millis() + 86_400_000
+        {
+            return Err("event timestamp out of bounds".into());
+        }
+        for s in [&self.source_event_id, &self.origin_id, &self.parser_version, &self.provider] {
+            valid_label(s)?;
+            if s.is_empty() {
+                return Err("missing identity".into());
+            }
+        }
+        for s in [
+            &self.requested_model,
+            &self.actual_model,
+            &self.account_id,
+            &self.auth_type,
+            &self.client_id,
+            &self.logical_request_id,
+            &self.attempt_id,
+            &self.provider_request_id,
+            &self.response_id,
+            &self.session_id,
+            &self.service_tier,
+            &self.inference_geo,
+            &self.entrypoint,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            valid_label(s)?;
+        }
+        if self.numeric_metadata.len() > 24
+            || self.numeric_metadata.iter().any(|(k, v)| {
+                !matches!(
+                    k.as_str(),
+                    "total_tokens"
+                        | "input_total"
+                        | "cached_tokens"
+                        | "context_window"
+                        | "audio_input_tokens"
+                        | "audio_output_tokens"
+                        | "image_tokens"
+                        | "tool_tokens"
+                        | "per_request_usage"
+                        | "estimated_input_tokens"
+                        | "request_latency_ms"
+                        | "request_ttft_ms"
+                        | "prepare_ms"
+                        | "headers_ms"
+                        | "transport_ws"
+                        | "attempt_number"
+                        | "cache_requested"
+                        | "cache_applied"
+                        | "cache_downgraded"
+                        | "embedding_chunk"
+                        | "control_downgrade_count"
+                        | "requested_speed"
+                        | "reported_cost_nanos"
+                        | "web_search_requests"
+                        | "web_fetch_requests"
+                        | "code_execution_requests"
+                ) || *v > if k == "reported_cost_nanos" { i64::MAX as u64 } else { MAX_TOKENS }
+            })
+        {
+            return Err("unsupported numeric metadata".into());
+        }
+        if self.numeric_metadata.get("requested_speed").is_some_and(|n| !(1..=3).contains(n)) {
+            return Err("invalid requested speed".into());
+        }
+        if self.numeric_metadata.contains_key("reported_cost_nanos")
+            && (self.source != "claude_code" || self.provider != "anthropic")
+        {
+            return Err("invalid provider cost evidence".into());
+        }
+        if let Some(n) = self.numeric_metadata.get("per_request_usage")
+            && (*n != 1
+                || self.source != "codex"
+                || !self.source_event_id.starts_with("counter:")
+                || self.numeric_metadata.get("input_total").copied() != self.tokens.input_total())
+        {
+            return Err("invalid per-request usage evidence".into());
+        }
+        self.tokens.validate()
+    }
+
+    pub fn requested_speed(&self) -> Option<Speed> {
+        match self.numeric_metadata.get("requested_speed") {
+            Some(1) => Some(Speed::Standard),
+            Some(2) => Some(Speed::Fast),
+            Some(3) => Some(Speed::Ultrafast),
+            _ => None,
+        }
+    }
+
+    /// The speed a call is priced and timed at. Codex follows the requested tier:
+    /// its Fast calls can come back reporting `service_tier: default`.
+    pub fn speed(&self) -> Speed {
+        if self.provider == "anthropic" {
+            // Claude reports speed separately. Its contracted/ordinary service
+            // tier does not imply the Codex priority or ultrafast speeds.
+            if self.service_tier.as_deref().is_some_and(|t| t == "fast" || t.ends_with("+fast")) {
+                Speed::Fast
+            } else {
+                Speed::Standard
+            }
+        } else if self.provider == "meta" {
+            // Muse has one speed; T3 records its usage as standard.
+            Speed::Standard
+        } else {
+            self.requested_speed().unwrap_or_else(|| Speed::from_tier(self.service_tier.as_deref()))
+        }
+    }
+
+    pub fn set_requested_speed(&mut self, tier: Option<&str>) {
+        self.numeric_metadata.insert("requested_speed".into(), Speed::from_tier(tier) as u64);
+    }
+}
+
+/// Shorter streams are one or two network reads, not a measurable rate.
+pub const MIN_STREAM_MS: u64 = 50;
+/// Output tokens a second above which a call arrived buffered, not generated live.
+pub const MAX_STREAM_RATE: u64 = 10_000;
+
+/// How long a call streamed after generation started, when that measures its output
+/// speed: it reported output, streamed for at least [`MIN_STREAM_MS`], and no faster
+/// than [`MAX_STREAM_RATE`]. The usage database applies the same rule in SQL.
+pub fn stream_ms(output: u64, ttft_ms: Option<u64>, total_ms: u64) -> Option<u64> {
+    let stream = total_ms.checked_sub(ttft_ms?)?;
+    (output > 0 && stream >= MIN_STREAM_MS && output.saturating_mul(1000) <= MAX_STREAM_RATE.saturating_mul(stream))
+        .then_some(stream)
+}
+
+/// Numeric metadata keeps the observation wire format compatible. These values
+/// are stable on disk and across collectors: 1 standard, 2 fast, 3 ultrafast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u64)]
+pub enum Speed {
+    Standard = 1,
+    Fast = 2,
+    Ultrafast = 3,
+}
+impl Speed {
+    pub fn from_tier(tier: Option<&str>) -> Self {
+        match tier {
+            Some("priority" | "fast") => Self::Fast,
+            Some("ultrafast") => Self::Ultrafast,
+            _ => Self::Standard,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Fast => "fast",
+            Self::Ultrafast => "ultrafast",
+        }
+    }
+}
+
+/// Claude fast mode is reported separately from its ordinary service tier.
+/// Preserve incompatible combinations as unpriceable rather than dropping a tier.
+pub fn anthropic_service_tier(tier: Option<String>, speed: Option<&str>) -> Option<String> {
+    match speed {
+        None | Some("standard") => tier,
+        Some("fast") => Some(match tier.as_deref() {
+            None | Some("default" | "standard" | "auto" | "fast") => "fast".into(),
+            Some(other) => format!("{other}+fast"),
+        }),
+        Some(_) => Some("unsupported_speed".into()),
+    }
+}
+pub fn valid_label(s: &str) -> Result<(), String> {
+    if s.len() > 256 || s.chars().any(char::is_control) { Err("invalid metadata text".into()) } else { Ok(()) }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct UsageConfig {
+    pub enabled: bool,
+    pub database: Option<String>,
+    /// How long each request's record is kept.
+    pub retention_days: u32,
+    /// How long the 15-minute totals of deleted records are kept; 0 keeps them for good.
+    pub totals_retention_days: u32,
+    pub queue_capacity: usize,
+    pub pricing_overrides: Option<String>,
+    /// A fault says so when the database grows past this many MiB; 0 turns it off.
+    pub warn_database_mb: u64,
+}
+impl Default for UsageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            database: None,
+            retention_days: 90,
+            totals_retention_days: 0,
+            queue_capacity: 1024,
+            pricing_overrides: None,
+            warn_database_mb: 2048,
+        }
+    }
+}
