@@ -8,7 +8,14 @@ import { SURFACE, type ColorScheme } from "../lib/theme";
 import type { ProcessOutputDeltaNotification } from "../protocol/v2/ProcessOutputDeltaNotification";
 import type { ProcessExitedNotification } from "../protocol/v2/ProcessExitedNotification";
 
-type Props = { cwd: string; scheme: ColorScheme };
+type Props = {
+  cwd: string;
+  scheme: ColorScheme;
+  /** Its tab is in front: when that happens, typing goes to the shell. */
+  active: boolean;
+  /** Take the keyboard as soon as the shell exists (a tab the user just opened, not one restored at launch). */
+  focusOnStart: boolean;
+};
 
 const xtermTheme = (scheme: ColorScheme) => {
   const { background, foreground, selection } = SURFACE[scheme];
@@ -22,11 +29,17 @@ function bytesToB64(bytes: Uint8Array) {
 }
 
 /** Interactive shell running on the app-server host via `process/spawn` (PTY). */
-export function Terminal({ cwd, scheme }: Props) {
+export function Terminal({ cwd, scheme, active, focusOnStart }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const schemeRef = useRef(scheme);
   schemeRef.current = scheme;
+  const activeRef = useRef(active);
+  activeRef.current = active;
+
+  useEffect(() => {
+    if (active) termRef.current?.focus();
+  }, [active]);
 
   // Follow the system theme without restarting the shell.
   useEffect(() => {
@@ -46,6 +59,7 @@ export function Terminal({ cwd, scheme }: Props) {
     term.open(ref.current);
     termRef.current = term;
     fit.fit();
+    if (activeRef.current && focusOnStart) term.focus();
 
     const handle = `ide-term-${Math.random().toString(36).slice(2)}`;
     const enc = new TextEncoder();
@@ -105,7 +119,13 @@ export function Terminal({ cwd, scheme }: Props) {
       if (alive) rpc.request("process/kill", { processHandle: handle }).catch(() => {});
       term.dispose();
     };
+    // `focusOnStart` is read once, when the shell starts.
   }, [cwd]);
 
-  return <div className="terminal" ref={ref} />;
+  // The fit add-on measures the mount's parent box, so the padding sits one level further out.
+  return (
+    <div className="term-view">
+      <div className="term-mount" ref={ref} />
+    </div>
+  );
 }

@@ -184,6 +184,47 @@ Chưa làm trong đợt 3: thanh tiêu đề liền cửa sổ kiểu macOS (`ti
 kéo cửa sổ và phải thử trên cửa sổ thật), tab Trajectory, tô màu cú pháp trong code block của
 câu trả lời, gộp nhiều dòng Thought/lệnh liên tiếp thành một dòng tóm tắt.
 
+**Đợt 4 (21/11/2026): cột phải làm lại theo kiểu "một dải tab + nút `+`".** User chưa ưng cột
+phải của đợt 3 (tab Files chia đôi một cột hẹp cho cây file và editor, hai tầng tab chồng nhau)
+và gửi ảnh cột phải của Claude desktop làm mẫu: nút `+` xổ danh sách pane, mở được nhiều terminal,
+có Browser. Đã làm:
+
+| Phần | Cách chạy |
+|---|---|
+| Dải tab (`RightPane.tsx`, `lib/panes.ts`) | Một dải duy nhất cho mọi thứ đang mở: Changes, Files, các terminal, các trang web, **và mỗi file đang mở là một tab**. Tab nào cũng đóng được (nút ×, hoặc bấm chuột giữa). Nhiều tab thì dải cuộn ngang, tab đang xem tự cuộn vào tầm nhìn |
+| Nút `+` | Xổ danh sách Changes (kèm `+N −M`) / Browser / Files / Terminal với phím tắt. Changes và Files chỉ có một tab (bấm lại là nhảy về tab đó); **mỗi lần chọn Terminal hoặc Browser là một tab mới** ("Terminal 2", …). Đóng hết tab thì cả cột hiện chính danh sách này ở giữa |
+| Phím tắt (`App.tsx`) | ⇧⌘D Changes, ⇧⌘B Browser, ⇧⌘F Files, ⌘J Terminal. Phím tắt dùng lại terminal/trang đang có, không mở thêm. Chỉ bắt ⌘, không bắt Ctrl (Ctrl+J, Ctrl+D là của shell) |
+| Files (`FileTree.tsx`) | Chỉ còn cây thư mục, trọn chiều rộng. Ô **Search files** tìm theo bất kỳ phần nào của đường dẫn (danh sách lấy bằng `git ls-files -co --exclude-standard`, không phải repo thì `find`), ↑↓ Enter. File chưa commit có chữ `A`/`M` và tên tô màu, thư mục chứa thay đổi có chấm |
+| File (`Editor.tsx`) | Mở file từ cây, từ ô tìm, từ thẻ file trong chat hay từ Changes đều thành tab riêng, editor được trọn cột. Thanh đường dẫn có trạng thái "Unsaved · ⌘S" và nút copy đường dẫn |
+| Browser (`Browser.tsx`, `lib/browser.ts`) | Ô địa chỉ + iframe. Gõ `3000` mở `http://localhost:3000`, host local dùng `http://`, còn lại `https://`. Trang chạy trong iframe `sandbox` **không có** `allow-top-navigation`, nên không đẩy được app sang trang khác. Site cấm nhúng (`X-Frame-Options`, `frame-ancestors`; GitHub, Google…) không hiện được trong iframe: app đọc header bằng `curl -sIL` qua `command/exec` rồi báo thẳng kèm nút mở bằng trình duyệt hệ thống, thay vì để khung trắng |
+| Terminal (`Terminal.tsx`) | Mỗi tab một shell riêng; shell khởi động lần đầu tab được xem và sống tiếp khi tab khác ở trước; đóng tab là kill shell. Tab vừa đưa lên trước thì nhận bàn phím luôn (trừ tab được khôi phục lúc mở app, để không cướp focus của ô chat) |
+| Nhớ bố cục | Danh sách tab (trừ tab file) và tab đang xem lưu ở `localStorage` khoá `hcodex.panes`. Mặc định: Changes, Files, Terminal |
+
+Sửa kèm, đều là lỗi có sẵn lộ ra khi làm:
+
+- **Diff sai khi workspace là thư mục con của repo** (ví dụ mở `codex/hcodex-app`): `git diff HEAD`
+  in đường dẫn tính từ gốc repo và gồm cả thay đổi ngoài workspace, nên nút mở file trỏ sai chỗ.
+  `lib/git.ts` giờ dùng `--relative`.
+- **Viền đen quanh terminal**: khung bọc dùng class `.terminal`, trùng class mà xterm tự gắn lên
+  phần tử của nó, nên padding bị áp hai lần và lộ nền đen mặc định của xterm. Đổi thành
+  `.term-view`/`.term-mount`; padding nằm ở lớp ngoài vì add-on fit đo hộp của phần tử cha, để
+  padding ngay trên đó thì dòng cuối bị cắt.
+- `fs/watch` trên workspace trước do cây file giữ, nên khi không mở tab Files thì Changes và file
+  đang mở không tự cập nhật. Giờ `RightPane` giữ watch suốt phiên Code.
+- Diff của turn không còn giật tab Changes lên khi user đang ở terminal hoặc Browser.
+
+Kiểm qua browser pane trên app-server thật (dark và light): menu `+`, mở Terminal 2 và gõ lệnh ở
+cả hai shell, ⌘J, Browser với một trang `localhost` (link `target=_top` trong trang bị sandbox
+chặn), `github.com` ra thông báo cấm nhúng, tìm file → Enter → tab file, Changes, đóng hết tab ra
+danh sách ở giữa, tải lại trang giữ nguyên bố cục. `pnpm build` và `harness-test.sh -k SC` qua.
+Chưa kiểm: cửa sổ Tauri thật (iframe `http://localhost` từ app đóng gói `tauri://`, các phím tắt
+trong WKWebView); trang ngoài như `example.com` không tải được trong browser pane của Claude nên
+đường "site cho nhúng" mới thử với localhost.
+
+Giới hạn đã biết của Browser: không có Back/Forward và ô địa chỉ không theo link bấm trong trang
+(iframe khác origin không cho đọc). Muốn trình duyệt thật (mở được GitHub, có lịch sử) phải dùng
+webview con của Tauri (feature `unstable`), chưa làm.
+
 Chưa làm: gói proxy vào app, đóng gói trong workflow `hcodex-release`.
 
 ## Proxy trong repo: `proxies/fusebox/` (gộp vào 21/11/2026)

@@ -3,14 +3,15 @@ import { rpc } from "./lib/rpc";
 import { transport } from "./lib/transport";
 import { join, readFile } from "./lib/fs";
 import { loadCatalog, type Catalog } from "./lib/models";
+import { PANE_KINDS, closeFilePanes, closePane, loadPanes, openFilePane, openPane, savePanes, type PaneKind } from "./lib/panes";
 import { resumeThread, useAgentRows, useDiff, useThread, wireStore, type ModelChoice, type SessionKind } from "./lib/store";
 import type { Thread } from "./protocol/v2/Thread";
-import type { Tab } from "./components/Editor";
+import type { OpenFile } from "./components/Editor";
 import { ChatPane } from "./components/ChatPane";
 import { Logo } from "./components/Icon";
 import { Pages } from "./components/Pages";
 import { Resizer, clamp, useStoredWidth } from "./components/Resizer";
-import { RightPane, type RightTab } from "./components/RightPane";
+import { RightPane } from "./components/RightPane";
 import { Sidebar, type Page } from "./components/Sidebar";
 import "./app.css";
 
@@ -43,9 +44,9 @@ export default function App() {
   const [viewId, setViewId] = useState<string | null>(null);
   const [page, setPage] = useState<Page | null>(null);
   const [rightOpen, setRightOpen] = useState(true);
-  const [rightTab, setRightTab] = useState<RightTab>("files");
-  const [files, setFiles] = useState<Tab[]>([]);
-  const [activeFile, setActiveFile] = useState<string | null>(null);
+  /** Tabs of the workspace pane. An open file is a tab too; its text lives in `files`. */
+  const [panes, setPanes] = useState(loadPanes);
+  const [files, setFiles] = useState<OpenFile[]>([]);
   const [sessionsKey, setSessionsKey] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
   const [sideWidth, setSideWidth] = useStoredWidth("hcodex.sideWidth", SIDE_DEFAULT);
@@ -106,17 +107,52 @@ export default function App() {
           return;
         }
       }
-      setActiveFile(path);
-      setRightTab("files");
+      setPanes((p) => openFilePane(p, path));
       setRightOpen(true);
     },
     [files],
   );
 
-  // Bring the diff forward as soon as a turn produces one.
+  useEffect(() => savePanes(panes), [panes]);
+
+  const showPane = useCallback((k: PaneKind, fresh: boolean) => {
+    setPanes((p) => openPane(p, k, fresh));
+    setRightOpen(true);
+  }, []);
+
+  const panesRef = useRef(panes);
+  panesRef.current = panes;
+  const closeTab = useCallback((id: string) => {
+    const tab = panesRef.current.tabs.find((t) => t.id === id);
+    if (tab?.kind === "file") setFiles((f) => f.filter((x) => x.path !== tab.path));
+    setPanes((p) => closePane(p, id));
+  }, []);
+
+  // ⇧⌘D / ⇧⌘B / ⇧⌘F / ⌘J bring a pane forward; a shortcut reuses the terminal or page already open.
+  useEffect(() => {
+    if (kind !== "code") return;
+    const onKey = (e: KeyboardEvent) => {
+      // ⌘ only: Ctrl+J and Ctrl+D mean something to the shell.
+      if (!e.metaKey || e.ctrlKey || e.altKey) return;
+      const hit = PANE_KINDS.find((p) => p.key === e.key.toLowerCase() && p.shift === e.shiftKey);
+      if (!hit) return;
+      e.preventDefault();
+      showPane(hit.kind, false);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [kind, showPane]);
+
+  // Bring the diff forward as soon as a turn produces one, unless a shell or a page is in
+  // front: that is something the user is in the middle of.
   const hadDiff = useRef(false);
   useEffect(() => {
-    if (turnDiff && !hadDiff.current) setRightTab("changes");
+    if (turnDiff && !hadDiff.current) {
+      setPanes((p) => {
+        const front = p.tabs.find((t) => t.id === p.active)?.kind;
+        return front === "terminal" || front === "browser" ? p : openPane(p, "changes");
+      });
+    }
     hadDiff.current = !!turnDiff;
   }, [turnDiff]);
 
@@ -148,7 +184,7 @@ export default function App() {
       if (!dir || dir === cwd) return;
       setCwd(dir);
       setFiles([]);
-      setActiveFile(null);
+      setPanes(closeFilePanes);
       setRoot("code", null);
     },
     [cwd, setRoot],
@@ -161,7 +197,7 @@ export default function App() {
         if (k === "code" && t.cwd !== cwd) {
           setCwd(t.cwd);
           setFiles([]);
-          setActiveFile(null);
+          setPanes(closeFilePanes);
         }
         const id = await resumeThread(t.id, k);
         setKind(k);
@@ -242,7 +278,7 @@ export default function App() {
         </div>
       </main>
 
-      {/* Always mounted, so the terminal and open files survive hiding the pane or switching mode. */}
+      {/* Always mounted, so shells, pages and open files survive hiding the pane or switching mode. */}
       <div className={showRight ? "right-host" : "hidden"}>
         <Resizer
           edge="left"
@@ -252,14 +288,14 @@ export default function App() {
         <RightPane
           kind={kind}
           cwd={cwd}
-          tab={rightTab}
-          onTab={setRightTab}
+          panes={panes}
+          setPanes={setPanes}
+          onOpenPane={(k) => showPane(k, true)}
+          onClosePane={closeTab}
           turnDiff={turnDiff}
           refreshKey={sessionsKey}
           files={files}
-          activeFile={activeFile}
-          onFilesChange={setFiles}
-          onActivateFile={setActiveFile}
+          setFiles={setFiles}
           onOpenFile={openFile}
           rootId={rootId}
           viewId={viewId}

@@ -1,54 +1,10 @@
 import { memo, useMemo, useState } from "react";
 import { basename } from "../lib/fs";
+import { diffStats, parseDiff, type FileDiff } from "../lib/diff";
 import { FileIcon, Icon } from "./Icon";
-
-type Line = { kind: "add" | "del" | "ctx" | "hunk"; text: string; oldNo: number | null; newNo: number | null };
-type FileDiff = { path: string; status: "added" | "deleted" | "modified"; added: number; removed: number; lines: Line[] };
 
 /** Lines of one file shown before "Show all": a huge generated file must not freeze the pane. */
 const PREVIEW_LINES = 400;
-
-function parse(diff: string): FileDiff[] {
-  const files: FileDiff[] = [];
-  let file: FileDiff | null = null;
-  let oldNo = 0;
-  let newNo = 0;
-  let inHunk = false;
-  for (const raw of diff.split("\n")) {
-    if (raw.startsWith("diff --git ")) {
-      const match = / b\/(.+)$/.exec(raw);
-      file = { path: match ? match[1] : raw.slice(11), status: "modified", added: 0, removed: 0, lines: [] };
-      files.push(file);
-      inHunk = false;
-      continue;
-    }
-    if (!file) continue;
-    if (!inHunk) {
-      if (raw.startsWith("new file mode")) file.status = "added";
-      else if (raw.startsWith("deleted file mode")) file.status = "deleted";
-      else if (raw.startsWith("+++ b/")) file.path = raw.slice(6);
-    }
-    if (raw.startsWith("@@")) {
-      const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(raw);
-      oldNo = match ? Number(match[1]) : 0;
-      newNo = match ? Number(match[2]) : 0;
-      inHunk = true;
-      file.lines.push({ kind: "hunk", text: match?.[3].trim() ?? "", oldNo: null, newNo: null });
-      continue;
-    }
-    if (!inHunk) continue;
-    if (raw.startsWith("+")) {
-      file.added++;
-      file.lines.push({ kind: "add", text: raw.slice(1), oldNo: null, newNo: newNo++ });
-    } else if (raw.startsWith("-")) {
-      file.removed++;
-      file.lines.push({ kind: "del", text: raw.slice(1), oldNo: oldNo++, newNo: null });
-    } else if (raw.startsWith(" ")) {
-      file.lines.push({ kind: "ctx", text: raw.slice(1), oldNo: oldNo++, newNo: newNo++ });
-    }
-  }
-  return files;
-}
 
 const STATUS_WORD = { added: "new", deleted: "deleted", modified: "" } as const;
 
@@ -117,10 +73,9 @@ function FileSection({ file, onOpen }: { file: FileDiff; onOpen?: (path: string)
 
 /** A unified diff as one collapsible section per file. `onOpen` gets the path relative to the diff's root. */
 export const DiffView = memo(function DiffView({ diff, onOpen }: { diff: string; onOpen?: (path: string) => void }) {
-  const files = useMemo(() => parse(diff), [diff]);
+  const files = useMemo(() => parseDiff(diff), [diff]);
   if (!files.length) return <pre className="diff-raw mono">{diff}</pre>;
-  const added = files.reduce((n, f) => n + f.added, 0);
-  const removed = files.reduce((n, f) => n + f.removed, 0);
+  const { added, removed } = diffStats(files);
   return (
     <div className="diff">
       <div className="diff-summary">

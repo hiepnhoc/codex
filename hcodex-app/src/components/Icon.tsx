@@ -28,6 +28,8 @@ const PATHS = {
   diff: "M5 2.5v6M2 5.5h6M9.5 12h4.5M3 13.5 13 2.5",
   list: "M5.5 4h8M5.5 8h8M5.5 12h8M2.5 4h.01M2.5 8h.01M2.5 12h.01",
   pulse: "M1.5 8.5h3l2-5 3 9.5 2-4.5h3",
+  globe: "M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM2 8h12M8 2c1.7 1.8 2.5 3.8 2.5 6S9.7 12.2 8 14c-1.7-1.8-2.5-3.8-2.5-6S6.3 3.8 8 2z",
+  external: "M9.5 2.5h4v4M13.5 2.5 8 8M12 9.5V13.5H2.5V4H6.5",
 } as const;
 
 export type IconName = keyof typeof PATHS;

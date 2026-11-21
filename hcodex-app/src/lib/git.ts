@@ -8,10 +8,12 @@ export type WorkspaceDiff =
   | { kind: "unavailable"; reason: string };
 
 // Tracked changes against HEAD, then every untracked file as an "added" diff.
+// `--relative`: only this folder, with paths relative to it, also when the workspace is a
+// subfolder of the repository (untracked files are listed that way already).
 // `git diff --no-index` exits 1 when files differ, so the script always ends with `true`.
 const SCRIPT = [
   "git rev-parse --is-inside-work-tree >/dev/null || exit 3",
-  "git diff HEAD --no-color 2>/dev/null || git diff --no-color",
+  "git diff HEAD --no-color --relative 2>/dev/null || git diff --no-color --relative",
   "git ls-files -z --others --exclude-standard | head -c 200000 | xargs -0 -n1 git diff --no-color --no-index /dev/null 2>/dev/null",
   "true",
 ].join("; ");
@@ -32,4 +34,21 @@ export async function workspaceDiff(cwd: string): Promise<WorkspaceDiff> {
   } catch (e) {
     return { kind: "unavailable", reason: String(e) };
   }
+}
+
+// Every file git would track, else (not a repository) every file outside the usual build folders.
+const LIST_SCRIPT =
+  "git ls-files -co --exclude-standard 2>/dev/null || " +
+  "find . -type f -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/target/*' | cut -c3-";
+
+/** Paths of the workspace's files, relative to it, for the explorer's search. */
+export async function listFiles(cwd: string): Promise<string[]> {
+  const r = await rpc.request<CommandExecResponse>("command/exec", {
+    command: ["/bin/sh", "-c", LIST_SCRIPT],
+    cwd,
+    timeoutMs: 15000,
+    outputBytesCap: 4_000_000,
+    env: { GIT_OPTIONAL_LOCKS: "0" },
+  });
+  return r.stdout.split("\n").filter(Boolean);
 }

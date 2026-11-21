@@ -1,67 +1,73 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import MonacoEditor from "@monaco-editor/react";
 import "../lib/monaco";
 import { rpc } from "../lib/rpc";
 import { readFile, writeFile, basename, languageFor } from "../lib/fs";
 import type { FsChangedNotification } from "../protocol/v2/FsChangedNotification";
 import { monacoTheme, useColorScheme } from "../lib/theme";
-import { FileIcon, Icon } from "./Icon";
+import { Icon } from "./Icon";
 
-export type Tab = { path: string; content: string; saved: string };
+export type OpenFile = { path: string; content: string; saved: string };
+type SetFiles = Dispatch<SetStateAction<OpenFile[]>>;
 
-type Props = {
-  /** Workspace folder; the path bar shows paths relative to it. */
-  root: string;
-  tabs: Tab[];
-  active: string | null;
-  onTabsChange: (tabs: Tab[]) => void;
-  onActivate: (path: string | null) => void;
-};
-
-/** Tabbed file editor; a tab reloads itself when the file changes on disk and it has no unsaved edits. */
-export function Editor({ root, tabs, active, onTabsChange, onActivate }: Props) {
-  const scheme = useColorScheme();
-  const tabsRef = useRef(tabs);
-  tabsRef.current = tabs;
-  const [status, setStatus] = useState("");
-
-  // Reload clean tabs when the agent (or anything else) changes the file on disk.
+/** Open files without unsaved edits follow the disk, so what the agent writes shows up at once. */
+export function useReloadOnChange(files: OpenFile[], setFiles: SetFiles) {
+  const filesRef = useRef(files);
+  filesRef.current = files;
   useEffect(() => {
     return rpc.onNotification("fs/changed", async (p) => {
       const { changedPaths } = p as FsChangedNotification;
-      const current = tabsRef.current;
-      const touched = current.filter((t) => changedPaths.includes(t.path) && t.content === t.saved);
+      const touched = filesRef.current.filter((f) => changedPaths.includes(f.path) && f.content === f.saved);
       if (!touched.length) return;
-      const reloaded = await Promise.all(
-        touched.map(async (t) => {
+      const fresh = new Map<string, string>();
+      await Promise.all(
+        touched.map(async (f) => {
           try {
-            const c = await readFile(t.path);
-            return { ...t, content: c, saved: c };
+            fresh.set(f.path, await readFile(f.path));
           } catch {
-            return t;
+            // Deleted or unreadable: keep what is shown.
           }
         }),
       );
-      onTabsChange(tabsRef.current.map((t) => reloaded.find((r) => r.path === t.path) ?? t));
+      // Skip a file the user started editing while it was being read.
+      setFiles((now) =>
+        now.map((f) => (fresh.has(f.path) && f.content === f.saved ? { ...f, content: fresh.get(f.path)!, saved: fresh.get(f.path)! } : f)),
+      );
     });
-  }, [onTabsChange]);
+  }, [setFiles]);
+}
+
+type Props = {
+  /** Workspace folder; the path bar shows the path relative to it. */
+  root: string;
+  file: OpenFile;
+  setFiles: SetFiles;
+};
+
+/** One open file: its path, then the editor. ⌘S saves. */
+export function Editor({ root, file, setFiles }: Props) {
+  const scheme = useColorScheme();
+  const fileRef = useRef(file);
+  fileRef.current = file;
+  const [status, setStatus] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const save = useCallback(async () => {
-    const t = tabsRef.current.find((x) => x.path === active);
-    if (!t || t.content === t.saved) return;
+    const { path, content, saved } = fileRef.current;
+    if (content === saved) return;
     try {
-      await writeFile(t.path, t.content);
-      onTabsChange(tabsRef.current.map((x) => (x.path === t.path ? { ...x, saved: x.content } : x)));
-      setStatus(`saved ${basename(t.path)}`);
+      await writeFile(path, content);
+      setFiles((now) => now.map((f) => (f.path === path ? { ...f, saved: content } : f)));
+      setStatus("Saved");
       setTimeout(() => setStatus(""), 1500);
     } catch (e) {
-      setStatus(`save failed: ${e}`);
+      setStatus(`Save failed: ${e}`);
     }
-  }, [active, onTabsChange]);
+  }, [setFiles]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === "s") {
         e.preventDefault();
         save();
       }
@@ -70,65 +76,48 @@ export function Editor({ root, tabs, active, onTabsChange, onActivate }: Props) 
     return () => window.removeEventListener("keydown", onKey);
   }, [save]);
 
-  const close = (path: string) => {
-    const next = tabs.filter((t) => t.path !== path);
-    onTabsChange(next);
-    if (active === path) onActivate(next.length ? next[next.length - 1].path : null);
-  };
+  const relative = file.path.startsWith(root + "/") ? file.path.slice(root.length + 1) : file.path;
+  const crumbs = relative.split("/").filter(Boolean);
+  const dirty = file.content !== file.saved;
 
-  const tab = tabs.find((t) => t.path === active);
-  const crumbs = tab ? (tab.path.startsWith(root + "/") ? tab.path.slice(root.length + 1) : tab.path).split("/").filter(Boolean) : [];
+  const copyPath = () => {
+    navigator.clipboard?.writeText(relative).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      },
+      () => {},
+    );
+  };
 
   return (
     <div className="editor">
-      <div className="tabs">
-        {tabs.map((t) => (
-          <div key={t.path} className={`tab ${t.path === active ? "active" : ""}`} onClick={() => onActivate(t.path)} title={t.path}>
-            <FileIcon name={t.path} size={14} />
-            {basename(t.path)}
-            {t.content !== t.saved && <span className="dirty" title="Unsaved changes" />}
-            <span
-              className="tab-close"
-              title="Close"
-              onClick={(e) => {
-                e.stopPropagation();
-                close(t.path);
-              }}
-            >
-              <Icon name="x" size={11} />
-            </span>
-          </div>
-        ))}
-        <span className="muted tiny" style={{ marginLeft: "auto", padding: "0 8px" }}>
-          {status}
-        </span>
-      </div>
-      {tab && (
-        <div className="crumbs">
-          {crumbs.map((part, i) => (
-            <span key={i} className={i === crumbs.length - 1 ? "last" : ""}>
-              {i > 0 && "/ "}
-              {part}
-            </span>
-          ))}
+      <div className="crumbs">
+        {/* Too long for the bar: the folders at the start are cut, the file name stays. */}
+        <div className="crumbs-path" title={file.path}>
+          <bdi>
+            {crumbs.map((part, i) => (
+              <span key={i} className={i === crumbs.length - 1 ? "last" : ""}>
+                {i > 0 && <span className="sep">/</span>}
+                {part}
+              </span>
+            ))}
+          </bdi>
         </div>
-      )}
+        <span className="tiny muted">{status || (dirty ? "Unsaved · ⌘S" : "")}</span>
+        <button className="icon-btn" onClick={copyPath} title="Copy the path" aria-label={`Copy the path of ${basename(file.path)}`}>
+          <Icon name={copied ? "check" : "copy"} size={13} />
+        </button>
+      </div>
       <div className="editor-body">
-        {tab ? (
-          <MonacoEditor
-            theme={monacoTheme(scheme)}
-            path={tab.path}
-            language={languageFor(tab.path)}
-            value={tab.content}
-            onChange={(v) => onTabsChange(tabsRef.current.map((t) => (t.path === tab.path ? { ...t, content: v ?? "" } : t)))}
-            options={{ fontSize: 13, minimap: { enabled: false }, automaticLayout: true, scrollBeyondLastLine: false }}
-          />
-        ) : (
-          <div className="empty small">
-            <Icon name="file" size={22} />
-            Open a file from the tree.
-          </div>
-        )}
+        <MonacoEditor
+          theme={monacoTheme(scheme)}
+          path={file.path}
+          language={languageFor(file.path)}
+          value={file.content}
+          onChange={(v) => setFiles((now) => now.map((f) => (f.path === file.path ? { ...f, content: v ?? "" } : f)))}
+          options={{ fontSize: 13, minimap: { enabled: false }, automaticLayout: true, scrollBeyondLastLine: false }}
+        />
       </div>
     </div>
   );

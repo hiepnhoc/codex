@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, type ReactNode } from "react";
-import { inTauri } from "../lib/transport";
+import { openExternal } from "../lib/open";
 import { Icon } from "./Icon";
 
 /**
@@ -115,12 +115,6 @@ function parse(source: string): Block[] {
 const INLINE =
   /(`+)(?!`)([\s\S]*?[^`])\1(?!`)|\[([^\]\n]+)\]\(([^)\s]+)\)|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|~~([\s\S]+?)~~|\*([^*\s](?:[^*]*?[^*\s])?)\*|(?<![\w])_([^_\s](?:[^_]*?[^_\s])?)_(?![\w])|(https?:\/\/[^\s<>()]*[^\s<>().,;:!?'"])/g;
 
-function openLink(url: string) {
-  if (!/^https?:\/\//i.test(url)) return;
-  if (inTauri) import("@tauri-apps/plugin-opener").then((m) => m.openUrl(url)).catch((e) => console.warn("open link:", e));
-  else window.open(url, "_blank", "noopener,noreferrer");
-}
-
 function Link({ url, children }: { url: string; children: ReactNode }) {
   return (
     <a
@@ -128,7 +122,7 @@ function Link({ url, children }: { url: string; children: ReactNode }) {
       title={url}
       onClick={(e) => {
         e.preventDefault();
-        openLink(url);
+        openExternal(url);
       }}
     >
       {children}
