@@ -3700,7 +3700,7 @@ async function removeModel(id, provider) {
 function modelsCountText() {
   if (!S.routes) return '';
   const accounts = new Set(Object.values(S.routes?.models || {}).flatMap((steps) => steps.map((s) => s.account)));
-  return `${plural(S.models.length, 'model id')} from ${plural(accounts.size, 'account')}. Clients ask for a model by name; Fusebox picks the account. Click an id to copy it.`;
+  return `${plural(S.models.length, 'model id')} from ${plural(accounts.size, 'account')}. Clients ask for a model by name; Fusebox picks the account. Click an id to copy it, or with Try a model open, to try it.`;
 }
 
 function modelsHeadHTML() {
@@ -4205,7 +4205,7 @@ document.addEventListener('click', (e) => {
     case 'confirm-page-refresh': $('#page-refresh-modal').close(); return refreshPage(true);
     case 'cancel-page-refresh': return $('#page-refresh-modal').close();
     case 'copy': return copy(el);
-    case 'copy-model': return copyText(id).then(() => toast(`Copied ${id}`));
+    case 'copy-model': return pickPlayModel(id) ? toast(`Trying ${id}`) : copyText(id).then(() => toast(`Copied ${id}`));
     case 'add-model': return openAddModel(el.dataset.provider);
     case 'close-add-model': S.addModel = null; return patchModelsPanel();
     case 'add-model-provider':

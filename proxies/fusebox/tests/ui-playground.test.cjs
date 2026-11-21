@@ -87,3 +87,31 @@ test('a body that is not JSON is explained without calling the server', async ()
   assert.equal(called, false);
   assert.match(context.S.play.inspectError, /isn't JSON/);
 });
+
+test('the model box is a real list of every id, grouped, keeping the current pick', () => {
+  const { context } = load();
+  context.S.routes.groups = { fast: { models: ['claude-sonnet-5-5'] } };
+  context.openPlay();
+  const html = context.playHTML();
+  assert.match(html, /<select id="play-model" required>/);
+  assert.doesNotMatch(html, /datalist/);
+  assert.match(html, /<optgroup label="Model groups"><option value="fast">fast<\/option><\/optgroup>/);
+  assert.match(html, /<optgroup label="claude"><option value="claude-sonnet-5-5" selected>/);
+  assert.match(html, /<optgroup label="gemini"><option value="gemini-3.8-flash">/);
+  context.S.play.model = 'gone-model';
+  assert.match(context.playHTML(), /<option value="gone-model" selected>gone-model<\/option>/);
+});
+
+test('clicking a model id fills the model box when the card is open, and only then', () => {
+  const { context, patched } = load();
+  assert.equal(context.pickPlayModel('gemini-3.8-flash'), false, 'closed card: the click copies instead');
+  context.openPlay();
+  context.setPlayMode('inspect');
+  assert.equal(context.pickPlayModel('gemini-3.8-flash'), true);
+  assert.equal(context.S.play.model, 'gemini-3.8-flash');
+  assert.equal(context.S.play.mode, 'send', 'it goes back to sending a prompt');
+  assert.match(context.playHTML(), /<option value="gemini-3.8-flash" selected>/);
+  assert.ok(patched.length >= 3);
+  context.S.play.busy = true;
+  assert.equal(context.pickPlayModel('claude-sonnet-5-5'), false, 'not while a prompt is running');
+});

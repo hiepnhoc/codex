@@ -413,7 +413,7 @@
       "Clear local cooldowns; refresh to check provider limits": "清除本地冷却；刷新以检查提供商限额",
       "Clears a usage limit early. Always asks for confirmation.": "提前清除用量限制。每次都会先确认。",
       "Click a row to filter the page": "点击一行筛选本页",
-      "Click an id to copy it.": "点击 ID 即可复制。",
+      "Click an id to copy it, or with Try a model open, to try it.": "点击 ID 即可复制；打开“试用模型”时，点击即可试用。",
       "Client": "客户端",
       "Client / origin": "客户端 / 来源",
       "Clients": "客户端",

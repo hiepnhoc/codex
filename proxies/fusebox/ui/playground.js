@@ -63,16 +63,47 @@ function playHTML() {
 }
 
 function sendFormHTML(P) {
-  const ids = [...Object.keys(S.routes?.groups || {}), ...S.models.map((m) => m.id)];
   return `<form id="play-form" class="play-form">
-      <div class="field"><label for="play-model">Model</label><input id="play-model" list="play-models" value="${esc(P.model)}" required autocomplete="off" spellcheck="false" placeholder="claude-sonnet-5-5">
-        <datalist id="play-models">${ids.map((id) => `<option value="${esc(id)}">`).join('')}</datalist></div>
+      <div class="field"><label for="play-model">Model</label><select id="play-model" required>${playModelOptions(P.model)}</select></div>
       <div class="field"><label for="play-prompt">Prompt</label><textarea id="play-prompt" rows="3" required>${esc(P.prompt)}</textarea></div>
       <div class="play-actions"><button class="btn primary" type="submit"${P.busy ? ' disabled' : ''}>${P.busy ? 'Sending…' : 'Send'}</button>
         ${P.busy ? '<button class="btn ghost" type="button" data-act="stop-play">Stop</button>' : ''}
         <span class="meta" id="play-meta" role="status">${esc(P.meta || 'Shows on the Usage page as the client dashboard.')}</span></div>
     </form>
     <pre class="play-out${P.error ? ' err' : ''}" id="play-out"${P.out || P.error ? '' : ' hidden'}>${esc(P.error || P.out)}</pre>`;
+}
+
+// Every id a prompt can go to, as a real list: model groups first, then the models
+// by family (the part before the first dash). The current pick stays even when no
+// account lists it any more.
+function playModelOptions(picked) {
+  const opt = (id) => `<option value="${esc(id)}"${id === picked ? ' selected' : ''}>${esc(id)}</option>`;
+  const groups = Object.keys(S.routes?.groups || {});
+  const byFamily = new Map();
+  for (const { id } of S.models) {
+    const fam = id.split('-')[0];
+    if (!byFamily.has(fam)) byFamily.set(fam, []);
+    byFamily.get(fam).push(id);
+  }
+  const known = new Set([...groups, ...S.models.map((m) => m.id)]);
+  return [
+    picked && !known.has(picked) ? opt(picked) : '',
+    groups.length ? `<optgroup label="Model groups">${groups.map(opt).join('')}</optgroup>` : '',
+    ...[...byFamily].map(([fam, ids]) => `<optgroup label="${esc(fam)}">${ids.map(opt).join('')}</optgroup>`),
+  ].join('');
+}
+
+// Clicking a model id on the page while the card is open puts it in the Model box.
+function pickPlayModel(id) {
+  const P = S.play;
+  if (!P || P.busy || !id) return false;
+  if (P.mode !== 'send') { keepPlayDraft(); P.mode = 'send'; }
+  else keepPlayDraft();
+  P.model = id;
+  patch('models-play', playHTML);
+  $('.play')?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  $('#play-prompt')?.focus();
+  return true;
 }
 
 function inspectFormHTML(P) {
