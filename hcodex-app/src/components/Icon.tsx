@@ -27,6 +27,7 @@ const PATHS = {
   spark: "M8 2.5l1.3 3.2 3.2 1.3-3.2 1.3L8 11.5 6.7 8.3 3.5 7l3.2-1.3zM12.5 11v2.5M11.25 12.25h2.5",
   diff: "M5 2.5v6M2 5.5h6M9.5 12h4.5M3 13.5 13 2.5",
   list: "M5.5 4h8M5.5 8h8M5.5 12h8M2.5 4h.01M2.5 8h.01M2.5 12h.01",
+  pulse: "M1.5 8.5h3l2-5 3 9.5 2-4.5h3",
 } as const;
 
 export type IconName = keyof typeof PATHS;

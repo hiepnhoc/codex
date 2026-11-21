@@ -4,13 +4,14 @@ import type { Thread } from "../protocol/v2/Thread";
 import { Icon, Logo, type IconName } from "./Icon";
 import { Sessions } from "./Sessions";
 
-export type Page = "plugins" | "skills" | "mcp" | "providers";
+export type Page = "plugins" | "skills" | "mcp" | "providers" | "proxies";
 
 const NAV: Array<{ page: Page; label: string; icon: IconName }> = [
   { page: "plugins", label: "Plugins", icon: "plug" },
   { page: "skills", label: "Skills", icon: "book" },
   { page: "mcp", label: "MCP servers", icon: "tool" },
   { page: "providers", label: "Providers", icon: "server" },
+  { page: "proxies", label: "Proxies", icon: "pulse" },
 ];
 
 type Props = {

@@ -34,6 +34,8 @@ export default function App() {
   const [cwd, setCwd] = useState("");
   /** Folder every Chat session runs in (`<hcodex home>/chat`). */
   const [chatDir, setChatDir] = useState("");
+  /** hcodex home (`~/.hcodex`), where per-user app files live. */
+  const [home, setHome] = useState("");
   const [catalog, setCatalog] = useState<Catalog>(EMPTY_CATALOG);
   const [choice, setChoice] = useState<ModelChoice>(EMPTY_CATALOG.defaultChoice);
   /** The open session of each mode, so switching Chat/Code keeps both. */
@@ -71,6 +73,7 @@ export default function App() {
         if (cancelled) return;
         setCwd(wd);
         setChatDir(chat);
+        setHome(String(init.codexHome));
         setCatalog(cat);
         setChoice(cat.defaultChoice);
         setBoot("ready");
@@ -219,7 +222,7 @@ export default function App() {
       />
 
       <main className="center">
-        {page && <Pages page={page} cwd={sessionCwd} catalog={catalog} onClose={() => setPage(null)} />}
+        {page && <Pages page={page} cwd={sessionCwd} home={home} catalog={catalog} onClose={() => setPage(null)} />}
         <div className={page ? "hidden" : "center-chat"}>
           <ChatPane
             kind={kind}

@@ -9,6 +9,7 @@ import type { PluginSummary } from "../protocol/v2/PluginSummary";
 import type { SkillMetadata } from "../protocol/v2/SkillMetadata";
 import type { SkillsListResponse } from "../protocol/v2/SkillsListResponse";
 import { Icon } from "./Icon";
+import { ProxiesPage } from "./ProxiesPage";
 import type { Page } from "./Sidebar";
 
 const TITLES: Record<Page, string> = {
@@ -16,12 +17,13 @@ const TITLES: Record<Page, string> = {
   skills: "Skills",
   mcp: "MCP servers",
   providers: "Providers",
+  proxies: "Proxies",
 };
 
-type Props = { page: Page; cwd: string; catalog: Catalog; onClose: () => void };
+type Props = { page: Page; cwd: string; home: string; catalog: Catalog; onClose: () => void };
 
-/** Read-only views of what the harness has installed. They replace the chat while open. */
-export function Pages({ page, cwd, catalog, onClose }: Props) {
+/** Views of what the harness has installed and the local proxies it uses. They replace the chat while open. */
+export function Pages({ page, cwd, home, catalog, onClose }: Props) {
   const [reload, setReload] = useState(0);
   return (
     <section className="page">
@@ -40,6 +42,7 @@ export function Pages({ page, cwd, catalog, onClose }: Props) {
         {page === "plugins" && <PluginsPage key={reload} cwd={cwd} />}
         {page === "mcp" && <McpPage key={reload} />}
         {page === "providers" && <ProvidersPage key={reload} catalog={catalog} />}
+        {page === "proxies" && <ProxiesPage key={reload} home={home} />}
       </div>
     </section>
   );
