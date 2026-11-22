@@ -1146,6 +1146,25 @@ Copy-Item -Recurse -Force docs\hcodex-skills\to-srs "$env:USERPROFILE\.hcodex\sk
 `user`, `errors: []`) và `daily-dev` vẫn nạp được. **Chưa** chạy thử với model trên một
 chức năng thật.
 
+### Skill `$clean-room-rebuild` chép từ plugin của Claude (22/11/2026)
+
+Skill local `~/.hcodex/skills/clean-room-rebuild/SKILL.md`, chép **nguyên văn** (không sửa
+chữ nào) từ plugin `clean-room-rebuild` đang cài bên Claude
+(`~/.claude/plugins/synced/…/clean-room-rebuild/skills/clean-room-rebuild/`). Cả plugin chỉ
+có một file `SKILL.md`, không kèm script hay file tham chiếu. Gọi bằng `$clean-room-rebuild`.
+
+- **Không có bản trong repo.** Khác `to-srs`, skill này chỉ sống ở `~/.hcodex/skills/`. Bên
+  Claude cập nhật plugin thì bên hcodex không tự theo, phải chép lại:
+  `cp -R <thư mục skill bên Claude> ~/.hcodex/skills/`.
+- **Chỗ không khớp:** skill viết cho Claude Code và nhắc tên nó một lần (mục "Ép quyền
+  nhìn"). Không gọi công cụ riêng nào của Claude, nên hcodex đọc được nguyên bản.
+- **Skill không đổi được giới hạn của model.** Model từ chối việc gì thì có skill vẫn từ
+  chối; skill chỉ đưa sẵn quy trình và ngữ cảnh. Phía hcodex không có rule nào chặn loại
+  việc này (`~/.hcodex/rules/default.rules` toàn `allow`, `~/.hcodex/AGENTS.md` không nhắc).
+
+Đã kiểm 22/11: `skills/list` của `hcodex app-server` trả về `clean-room-rebuild` (`enabled`,
+scope `user`, `errors: []`, tổng 91 skill). **Chưa** chạy thử với model.
+
 ## Memory + RAG cho repo lớn: OpenViking (07/10/2026)
 
 > **Trạng thái 21/11/2026: đã gỡ.** Server OpenViking không còn trên máy từ khoảng 6/11 (không
