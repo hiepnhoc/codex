@@ -293,6 +293,45 @@ giây. Tên tài khoản trong log bị che còn hai chữ đầu, bật lại b
   flight" rồi lên lại, vài giây sau đủ 59 model. Ngay sau restart số model hiện thấp hơn (41)
   cho tới khi các tài khoản nạp xong.
 
+**Tab Accounts và Settings của Fusebox, viết bằng giao diện của app (23/11/2026).** Thẻ của proxy
+nào khai `admin: "fusebox"` (Fusebox có sẵn; trong `~/.hcodex/proxies.json` thì thêm trường đó) có
+ba tab: Status (phần cũ), Accounts, Settings.
+
+| Tab | Có gì |
+|---|---|
+| Accounts | Tài khoản gom theo provider: trạng thái (Ready / Cooling / Quota used up / Out of credit / Error / Sign-in expired / Disabled, kèm thời gian còn lại), hai thanh mức dùng ngay trên dòng, số model. Bấm vào dòng: đủ mọi giới hạn và giờ reset, số request, lần dùng cuối, hạn đăng nhập, priority, và các nút Disable/Enable, Refresh sign-in, Refresh usage, Test, Clear the error, Remove (bấm hai lần). Tự làm mới 15 giây |
+| Settings | 14 thiết lập dạng công tắc / số / lựa chọn, chia nhóm Routing, Requests, Providers, Logging. Save ghi thẳng vào file config của proxy và proxy áp dụng ngay; ô đổi có vạch xanh bên trái, số ngoài khoảng thì không cho lưu |
+
+- **Gọi API thế nào:** `/api/*` của Fusebox không trả header CORS nên trang của app không
+  `fetch` thẳng được. Mọi lệnh đi qua `command/exec` chạy `curl --noproxy '*'` trên máy
+  app-server (`src/lib/fusebox.ts`), giá trị truyền bằng tham số vị trí như các lệnh proxy khác.
+  Nhờ vậy chạy được cả trong cửa sổ Tauri lẫn bản xem trên trình duyệt.
+- **Key:** proxy của máy này không đặt `management-key` nên gọi từ máy là được. Nếu sau này đặt,
+  API trả 401 và hai tab chỉ hiện thông báo kèm nút mở dashboard của Fusebox; app không đọc và
+  không giữ mã đó. Câu trả lời của `/api/accounts` và `/api/config/settings` được lọc ngay trong
+  `fusebox.ts`, chỉ giữ trường trang hiển thị, nên các danh sách key trong config không vào state.
+- **Tên tài khoản** rút còn hai chữ đầu như trong log; ô "Show account names" bật cho cả ba tab.
+- **Lưu config có chống ghi đè:** mỗi lần lưu gửi kèm `revision` của file lúc mở. File bị sửa
+  từ ngoài thì Fusebox trả 409, trang báo và có nút Reload.
+- **Chưa viết lại, vẫn làm ở dashboard của Fusebox** (nút "Connect an account" / "More in the
+  dashboard" mở nó ở trình duyệt hệ thống): đăng nhập tài khoản mới, thêm API key, client key,
+  TLS, webhook, usage, "Try a model", banked resets, window starter.
+
+Kiểm 23/11 trên trình duyệt (browser pane). Proxy thật chỉ đọc: 9 tài khoản hiện đúng trạng thái
+và mức dùng, Settings nạp đúng giá trị; sau buổi kiểm `revision` của config không đổi và không
+tài khoản nào bị tắt. Các nút ghi thử trên một Fusebox dựng tạm ở cổng 8399 (config và thư mục
+tài khoản riêng, ba key giả): Disable/Enable, priority (ghi `priority: 5` vào config), Test
+(provider không chạy nên ra đường lỗi, tài khoản chuyển Error), Clear the error, Remove (key biến
+khỏi config), Save ba thiết lập (config đổi đúng), số ngoài khoảng bị chặn, sửa file từ ngoài rồi
+Save ra 409 + Reload. `pnpm build` qua, `harness-test.sh -k SC` 12/12. **Chưa** kiểm trong cửa sổ
+Tauri thật, chưa thử Refresh sign-in / Refresh usage / Test trên tài khoản thật (đụng provider
+thật), và chưa thử đường 401 với một proxy có đặt `management-key`.
+
+Chạy bản xem trên trình duyệt khi `pnpm tauri dev` đang giữ cổng 1420: dev server giờ chấp nhận
+trang của chính cổng nó chạy (`vite.config.ts`, trước đây chỉ cổng 1420), nên mở bản thứ hai được:
+`HCODEX_APP_WS=ws://127.0.0.1:4599 pnpm exec vite --port 1421 --strictPort` (cấu hình
+`hcodex-app-check` trong `.claude/launch.json`).
+
 Từ repo cũ `~/github/Fusebox`: 4 file UI đang sửa dở (`ui/app.js`, `ui/playground.js`,
 `ui/i18n-zh.js`, `tests/ui-playground.test.cjs`: ô Model của "Try a model" thành danh sách chọn,
 bấm id model để thử) đã được áp nguyên văn sang `proxies/fusebox`; 2 test của nó qua. Một test
@@ -364,7 +403,7 @@ Quay lại cấu hình cũ: chép các file `.bak-20261121-fusebox` đè lên fi
 
 Chưa làm: cài binary build từ repo này lên proxy đang chạy (`scripts/fusebox.sh install`, cùng
 source với bản đang chạy cộng thay đổi UI ở trên); đổi mặc định trong binary khỏi `:8181`;
-trang tài khoản và usage của Fusebox trong app; test hcodex ↔ Fusebox thật trong bộ test
+trang usage, đăng nhập tài khoản và thêm key của Fusebox trong app (Accounts và Settings đã có, 23/11); test hcodex ↔ Fusebox thật trong bộ test
 harness (hiện chỉ có lượt thật qua `harness-smoke.sh` và ca `LV-22`).
 
 ## Yêu cầu

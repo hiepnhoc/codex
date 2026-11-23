@@ -10,7 +10,9 @@ const host = process.env.TAURI_DEV_HOST;
 // dropped, which keeps app-server's guard against arbitrary web pages intact.
 // @ts-expect-error process is a nodejs global
 const wsTarget: string | undefined = process.env.HCODEX_APP_WS;
-const DEV_ORIGINS = ["http://localhost:1420", "http://127.0.0.1:1420"];
+// The page this dev server itself serves, whatever port it runs on (a second copy can run next
+// to `tauri dev`, which holds 1420: `pnpm exec vite --port 1421 --strictPort`).
+const devOrigins = (port: number | undefined) => [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -44,7 +46,7 @@ export default defineConfig(async () => ({
             rewrite: () => "/",
             configure: (proxy) => {
               proxy.on("proxyReqWs", (proxyReq, req, socket) => {
-                if (!DEV_ORIGINS.includes(req.headers.origin ?? "")) {
+                if (!devOrigins(req.socket.localPort).includes(req.headers.origin ?? "")) {
                   proxyReq.destroy();
                   socket.destroy();
                   return;

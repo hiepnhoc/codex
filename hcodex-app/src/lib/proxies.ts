@@ -17,6 +17,8 @@ export type ProxyDef = {
   /** Log file and installed binary; a leading `~/` is the home folder. */
   log: string;
   bin: string;
+  /** Which management API the proxy speaks; adds the Accounts and Settings tabs. */
+  admin?: "fusebox";
 };
 
 /** Fusebox ships in this repo (`proxies/fusebox`), so it is known without any config. */
@@ -30,6 +32,7 @@ export const DEFAULT_PROXIES: ProxyDef[] = [
     provider: "hibox",
     log: "~/Library/Logs/fusebox.log",
     bin: "~/.local/bin/fusebox",
+    admin: "fusebox",
   },
 ];
 
@@ -53,7 +56,7 @@ export async function loadProxies(home: string): Promise<ProxyDef[]> {
  * script text. launchd and process queries do not work inside the command sandbox, and
  * these are the app's own commands (not the model's), so they run unsandboxed.
  */
-function sh(script: string, args: string[], timeoutMs = 10000): Promise<CommandExecResponse> {
+export function sh(script: string, args: string[], timeoutMs = 10000): Promise<CommandExecResponse> {
   return rpc.request<CommandExecResponse>("command/exec", {
     command: ["/bin/sh", "-c", script, "proxy", ...args],
     timeoutMs,
