@@ -192,8 +192,7 @@ jobs:
           else
             hash="$(shasum -a 256 "$name" | cut -d' ' -f1)"
           fi
-          printf '%s  %s
-' "$hash" "$name" > "$name.sha256"
+          printf '%s  %s\n' "$hash" "$name" > "$name.sha256"
           cat "$name.sha256"
           ls -la
 
