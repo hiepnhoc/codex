@@ -1,5 +1,6 @@
 /** Working-tree diff of a workspace, read through app-server's one-off `command/exec`. */
 import { rpc } from "./rpc";
+import { shCommand } from "./platform";
 import type { CommandExecResponse } from "../protocol/v2/CommandExecResponse";
 
 export type WorkspaceDiff =
@@ -21,7 +22,7 @@ const SCRIPT = [
 export async function workspaceDiff(cwd: string): Promise<WorkspaceDiff> {
   try {
     const r = await rpc.request<CommandExecResponse>("command/exec", {
-      command: ["/bin/sh", "-c", SCRIPT],
+      command: shCommand(SCRIPT),
       cwd,
       timeoutMs: 15000,
       outputBytesCap: 2_000_000,
@@ -44,7 +45,7 @@ const LIST_SCRIPT =
 /** Paths of the workspace's files, relative to it, for the explorer's search. */
 export async function listFiles(cwd: string): Promise<string[]> {
   const r = await rpc.request<CommandExecResponse>("command/exec", {
-    command: ["/bin/sh", "-c", LIST_SCRIPT],
+    command: shCommand(LIST_SCRIPT),
     cwd,
     timeoutMs: 15000,
     outputBytesCap: 4_000_000,

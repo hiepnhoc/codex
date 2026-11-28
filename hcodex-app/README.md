@@ -50,6 +50,13 @@ Three columns: sidebar, conversation, workspace pane.
 - A provider that answers, e.g. the Responses API proxy at `http://127.0.0.1:8181/v1`
   (hcodex's default `local-proxy`).
 - Node 22 + pnpm, Rust stable.
+- Windows: Visual Studio Build Tools 2022 with the C++ workload (Tauri needs the MSVC
+  toolchain; `rustup toolchain install stable-x86_64-pc-windows-msvc` and pin it for
+  `src-tauri` with `rustup override set`), WebView2 (built into Windows 11), and Git for
+  Windows at `C:\Program Files\Git`: the Changes tab and the file search run their POSIX
+  scripts through its `bin/bash.exe` (`src/lib/platform.ts`). The Terminal pane opens
+  PowerShell there instead of zsh. The Proxies page's start/stop/status is launchd-only
+  (macOS); the Accounts and Settings tabs work anywhere Fusebox answers on 127.0.0.1:8317.
 
 ## Run
 
@@ -58,6 +65,8 @@ cd hcodex-app
 pnpm install
 pnpm tauri dev      # or: pnpm tauri build
 ```
+
+On Windows `pnpm tauri build` leaves the installer in `<cargo target>/release/bundle/nsis/hcodex_<version>_x64-setup.exe`.
 
 Env overrides read by the Rust side:
 

@@ -6,7 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 
-const bin = process.env.CODEX_BIN ?? path.join(os.homedir(), ".cargo/bin/hcodex");
+const exe = process.platform === "win32" ? "hcodex.exe" : "hcodex";
+const bin = process.env.CODEX_BIN ?? [path.join(os.homedir(), ".hcodex", "bin", exe), path.join(os.homedir(), ".cargo", "bin", exe)].find((p) => fs.existsSync(p)) ?? "hcodex";
 const home = process.env.CODEX_HOME ?? path.join(os.homedir(), ".hcodex");
 const dir = process.argv[2] ?? fs.mkdtempSync(path.join(os.tmpdir(), "hcodex-app-smoke-"));
 
@@ -61,10 +62,11 @@ const read = await request("fs/readFile", { path: path.join(dir, "hello.txt") })
 ok("fs/readFile roundtrip", unb64(read.dataBase64) === "hi from ide\n");
 await request("fs/unwatch", { watchId: "w1" });
 
-console.log("process/spawn (pty zsh)");
+const shell = process.platform === "win32" ? ["powershell.exe", "-NoLogo"] : ["/bin/zsh", "-f"];
+console.log("process/spawn (pty " + shell[0] + ")");
 const h = "smoke-term";
 await request("process/spawn", {
-  command: ["/bin/zsh", "-f"], processHandle: h, cwd: dir, tty: true, streamStdin: true, streamStdoutStderr: true,
+  command: shell, processHandle: h, cwd: dir, tty: true, streamStdin: true, streamStdoutStderr: true,
   outputBytesCap: null, timeoutMs: null, env: { TERM: "xterm-256color" }, size: { rows: 24, cols: 80 },
 });
 await request("process/writeStdin", { processHandle: h, deltaBase64: b64("echo TERM_$((1+1))_OK\n"), closeStdin: false });

@@ -1,4 +1,5 @@
 import { rpc } from "./rpc";
+import { shCommand } from "./platform";
 import { join, readFile } from "./fs";
 import type { CommandExecResponse } from "../protocol/v2/CommandExecResponse";
 import type { ModelListResponse } from "../protocol/v2/ModelListResponse";
@@ -58,7 +59,7 @@ export async function loadProxies(home: string): Promise<ProxyDef[]> {
  */
 export function sh(script: string, args: string[], timeoutMs = 10000): Promise<CommandExecResponse> {
   return rpc.request<CommandExecResponse>("command/exec", {
-    command: ["/bin/sh", "-c", script, "proxy", ...args],
+    command: shCommand(script, "proxy", ...args),
     timeoutMs,
     outputBytesCap: 400_000,
     sandboxPolicy: { type: "dangerFullAccess" },

@@ -1,3 +1,4 @@
+import { terminalShell } from "../lib/platform";
 import { useEffect, useRef } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -78,10 +79,9 @@ export function Terminal({ cwd, scheme, active, focusOnStart }: Props) {
       }
     });
 
-    const shell = "/bin/zsh";
     rpc
       .request("process/spawn", {
-        command: [shell, "-l"],
+        command: terminalShell,
         processHandle: handle,
         cwd,
         tty: true,

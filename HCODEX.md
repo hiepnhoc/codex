@@ -505,6 +505,23 @@ Lưu ý Windows native: hooks, `scripts/*.sh`, `ocr-safe.sh` của harness là b
 **Git for Windows** để có `bash` trên PATH; sandbox dùng helper Windows đi kèm zip. Bản
 Linux/WSL2 không còn trong release (build từ source theo mục dưới nếu cần).
 
+## Máy bàn Windows chạy hcodex + hcodex-app (28/11/2026)
+
+Đã dựng xong trên máy bàn (Windows 11, không WSL). Những gì khác Mac:
+
+| Việc | Cách làm trên Windows |
+|---|---|
+| hcodex | `install.ps1` của release → `%USERPROFILE%\.hcodexin` (0.1.3). Khi `hcodex.exe` đang chạy (app-server của app) thì installer rename nó thành `.old` rồi mới ghi |
+| Config, skill, role | Gói trên Mac: `cd ~/.hcodex && tar -chzf ~/hcodex-config.tgz config.toml *.config.toml AGENTS.md hooks.json agents skills rules provider-credentials jira.env proxy`, giải nén vào `%USERPROFILE%\.hcodex`, rồi đổi `/Users/hiepln/` → `C:/Users/<user>/`; riêng `~/.cargo/bin/hcodex` → `.hcodex/bin/hcodex.exe`, `uvx` → `uvx.exe`. Dấu `/` dùng được trong TOML và trong lệnh của Windows |
+| Provider | `cliproxy.acbs.tech` bị chặn từ mạng nhà (TCP 443 timeout). Dùng **Fusebox cài trên Windows** (`%LOCALAPPDATA%\Fuseboxusebox.exe`, config `%USERPROFILE%\.fusebox\config.yaml`, cùng cổng 8317) nên provider `hibox` trong config dùng y nguyên; account của Fusebox là file JSON trong `~/.fusebox`, login bằng `fusebox --config ... login <provider>`, xoá account = xoá file |
+| Build app | Cần Visual Studio Build Tools 2022 (workload C++, cài bằng `winget install Microsoft.VisualStudio.2022.BuildTools --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"`, ~4 GB trên C:) và toolchain `stable-x86_64-pc-windows-msvc` pin riêng cho `hcodex-app/src-tauri` (`rustup override set`). Vỏ Tauri compile ~3 phút, `pnpm tauri build` ra `…/release/bundle/nsis/hcodex_0.1.0_x64-setup.exe` |
+| App trên Windows | Terminal mở PowerShell; Changes/Files chạy script qua `C:/Program Files/Git/bin/bash.exe` (Git for Windows). `command/exec` của app-server **không tìm được program viết bằng dấu `\`**, phải dùng `/`; `bash.exe` theo PATH có thể trúng launcher WSL nên dùng đường dẫn tuyệt đối. Trang Proxies chỉ Accounts/Settings dùng được (start/stop là launchd) |
+| Smoke | `CODEX_BIN=… node scripts/smoke-fs-process.mjs` qua hết trên Windows (fs/*, PTY PowerShell, resize, kill) |
+
+Lưu ý: ổ C: của máy bàn chỉ còn ~1 GB sau khi cài Build Tools, `gh run download` ghi zip tạm vào `%TEMP%` nên hết chỗ; đặt `TMP`/`TEMP` sang ổ khác khi tải artifact lớn. Cargo target của máy bàn ở `D:ust	arget` (`CARGO_TARGET_DIR`).
+
+GitHub lại tắt Actions trên fork sau 3 tuần không chạy ("due to the scale of GitHub Actions usage"); bật lại ở tab Actions rồi `gh workflow run hcodex-release -f version=X.Y.Z` vì tag đã push trong lúc tắt không tạo run. Workflow từng hỏng YAML từ 07/11 (chuỗi `printf` bị tách dòng), sửa ở 066b563d45.
+
 ## Cách cũ: cài trên Windows qua WSL2 (05/11/2026, thay bằng mục trên)
 
 Dùng **WSL2 Ubuntu**, không build native Windows: script (`scripts/*.sh`, `ocr-safe.sh`,
